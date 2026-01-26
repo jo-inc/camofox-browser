@@ -1,4 +1,4 @@
-const { chromium } = require('playwright-core');
+const { chromium } = require('playwright');
 const express = require('express');
 const crypto = require('crypto');
 
@@ -15,9 +15,7 @@ const MAX_SNAPSHOT_NODES = 500;
 
 async function ensureBrowser() {
   if (!browser) {
-    const executablePath = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
-    browser = await chromium.launch({
-      executablePath,
+    const launchOptions = {
       args: [
         '--no-sandbox',
         '--disable-dev-shm-usage',
@@ -27,7 +25,17 @@ async function ensureBrowser() {
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding'
       ]
-    });
+    };
+    
+    // Use CHROMIUM_PATH if set (for Docker/Fly.io), otherwise use Playwright's bundled browser
+    if (process.env.CHROMIUM_PATH) {
+      launchOptions.executablePath = process.env.CHROMIUM_PATH;
+      console.log(`Using custom Chromium path: ${process.env.CHROMIUM_PATH}`);
+    } else {
+      console.log('Using Playwright bundled Chromium');
+    }
+    
+    browser = await chromium.launch(launchOptions);
     console.log('Browser launched');
   }
   return browser;
@@ -77,37 +85,87 @@ function createTabState(page) {
   };
 }
 
-// Build element refs from accessibility snapshot (like Clawdbot's role refs)
-async function buildRefs(page) {
-  const snapshot = await page.accessibility.snapshot({ interestingOnly: true });
-  const refs = new Map();
-  let refCounter = 1;
+// Wait for page to be ready for accessibility snapshot
+async function waitForPageReady(page, options = {}) {
+  const { timeout = 10000, waitForNetwork = true } = options;
   
-  function walk(node, depth = 0) {
-    if (!node || refCounter > MAX_SNAPSHOT_NODES) return;
+  try {
+    // Wait for DOM to be ready
+    await page.waitForLoadState('domcontentloaded', { timeout });
     
-    const { role, name, children } = node;
-    
-    // Only create refs for interactive elements
-    const interactiveRoles = [
-      'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
-      'menuitem', 'tab', 'searchbox', 'slider', 'spinbutton', 'switch'
-    ];
-    
-    if (role && interactiveRoles.includes(role.toLowerCase())) {
-      const refId = `e${refCounter++}`;
-      refs.set(refId, { role: role.toLowerCase(), name: name || '', nth: 0 });
+    // Optionally wait for network to settle (useful for SPAs)
+    if (waitForNetwork) {
+      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+        // networkidle can timeout on busy pages, that's ok
+        console.log('waitForPageReady: networkidle timeout (continuing anyway)');
+      });
     }
     
-    if (children) {
-      for (const child of children) {
-        walk(child, depth + 1);
+    // Small delay for JS frameworks to finish rendering
+    await page.waitForTimeout(200);
+    
+    return true;
+  } catch (err) {
+    console.log(`waitForPageReady: ${err.message}`);
+    return false;
+  }
+}
+
+// Build element refs from aria snapshot (Playwright 1.48+ uses locator.ariaSnapshot())
+async function buildRefs(page) {
+  const refs = new Map();
+  
+  if (!page || page.isClosed()) {
+    console.log('buildRefs: Page is closed or invalid');
+    return refs;
+  }
+  
+  // Wait for page to be ready before taking snapshot
+  await waitForPageReady(page, { waitForNetwork: false });
+  
+  // Use the new ariaSnapshot API (Playwright 1.48+)
+  // This returns a YAML string representation of the accessibility tree
+  const ariaYaml = await page.locator('body').ariaSnapshot();
+  
+  if (!ariaYaml) {
+    console.log('buildRefs: No aria snapshot available');
+    return refs;
+  }
+  
+  // Parse the YAML to extract interactive elements
+  // Format: "- role \"name\"" or "- role \"name\" [attr=value]"
+  const lines = ariaYaml.split('\n');
+  let refCounter = 1;
+  
+  const interactiveRoles = [
+    'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
+    'menuitem', 'tab', 'searchbox', 'slider', 'spinbutton', 'switch'
+  ];
+  
+  for (const line of lines) {
+    if (refCounter > MAX_SNAPSHOT_NODES) break;
+    
+    // Match patterns like "- button \"Click me\"" or "- link \"Home\""
+    const match = line.match(/^\s*-\s+(\w+)(?:\s+"([^"]*)")?/);
+    if (match) {
+      const [, role, name] = match;
+      if (interactiveRoles.includes(role.toLowerCase())) {
+        const refId = `e${refCounter++}`;
+        refs.set(refId, { role: role.toLowerCase(), name: name || '', nth: 0 });
       }
     }
   }
   
-  walk(snapshot);
   return refs;
+}
+
+// Get aria snapshot as YAML string (new Playwright API)
+async function getAriaSnapshot(page) {
+  if (!page || page.isClosed()) {
+    return null;
+  }
+  await waitForPageReady(page, { waitForNetwork: false });
+  return await page.locator('body').ariaSnapshot();
 }
 
 // Resolve ref to Playwright locator (like Clawdbot's refLocator)
@@ -343,11 +401,34 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
   }
 });
 
+// Wait for page to be ready (explicit wait endpoint)
+app.post('/tabs/:tabId/wait', async (req, res) => {
+  try {
+    const { userId, timeout = 10000, waitForNetwork = true } = req.body;
+    const session = sessions.get(userId);
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    
+    const { tabState } = found;
+    const ready = await waitForPageReady(tabState.page, { timeout, waitForNetwork });
+    
+    res.json({ 
+      ok: ready, 
+      url: tabState.page.url(),
+      message: ready ? 'Page is ready' : 'Page may still be loading'
+    });
+  } catch (err) {
+    console.error('Wait error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get accessibility snapshot with element refs
 app.get('/tabs/:tabId/snapshot', async (req, res) => {
   try {
     const userId = req.query.userId;
     const format = req.query.format || 'json'; // 'json' or 'text'
+    const waitForReady = req.query.wait !== 'false'; // Default: wait for page
     const session = sessions.get(userId);
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
@@ -355,12 +436,38 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     const { tabState, listItemId } = found;
     const page = tabState.page;
     
-    // Build refs from accessibility tree
+    // Validate page state
+    if (!page || page.isClosed()) {
+      return res.status(500).json({ error: 'Page is closed or invalid' });
+    }
+    
+    // Wait for page to be ready before taking snapshot
+    if (waitForReady) {
+      await waitForPageReady(page, { waitForNetwork: true });
+    }
+    
+    // Build refs from aria snapshot (uses new Playwright API)
     const refs = await buildRefs(page);
     tabState.refs = refs;
     tabState.toolCalls++;
     
-    const rawSnapshot = await page.accessibility.snapshot({ interestingOnly: true });
+    // Get aria snapshot as YAML (new Playwright 1.48+ API)
+    let ariaSnapshot = await getAriaSnapshot(page);
+    
+    // Retry once if snapshot is empty
+    if (!ariaSnapshot) {
+      console.log('Snapshot empty, retrying after short wait...');
+      await page.waitForTimeout(500);
+      ariaSnapshot = await getAriaSnapshot(page);
+    }
+    
+    if (!ariaSnapshot) {
+      return res.status(500).json({ 
+        error: 'Failed to get aria snapshot - page may not be ready',
+        url: page.url(),
+        hint: 'Try waiting longer or check if the page loaded correctly'
+      });
+    }
     
     // Convert refs Map to plain object for JSON response
     const refsObj = {};
@@ -368,27 +475,15 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       refsObj[refId] = info;
     }
     
-    if (format === 'text') {
-      // Return formatted text snapshot (more token efficient for LLMs)
-      const textSnapshot = formatSnapshotAsText(rawSnapshot, refs);
-      res.json({
-        snapshot: textSnapshot,
-        refs: refsObj,
-        url: page.url(),
-        title: await page.title(),
-        listItemId,
-        format: 'text'
-      });
-    } else {
-      res.json({ 
-        snapshot: rawSnapshot,
-        refs: refsObj,
-        url: page.url(),
-        title: await page.title(),
-        listItemId,
-        format: 'json'
-      });
-    }
+    // Both formats now return the YAML aria snapshot (text is more token efficient)
+    res.json({
+      snapshot: ariaSnapshot,
+      refs: refsObj,
+      url: page.url(),
+      title: await page.title(),
+      listItemId,
+      format: 'text'
+    });
   } catch (err) {
     console.error('Snapshot error:', err);
     res.status(500).json({ error: err.message });

@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "playwright-core": "^1.40.0"
+    "playwright": "^1.58.0"
   }
 }
