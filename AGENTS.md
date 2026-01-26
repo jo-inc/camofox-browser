@@ -46,6 +46,19 @@ JO_BROWSER_URL=http://localhost:3000 python evals/features/browser/client_test.p
 fly deploy
 ```
 
+## Camoufox Version
+
+The Dockerfile.camoufox pre-bakes a pinned version of Camoufox for reproducible builds:
+- **Current**: v135.0.1-beta.24 (Linux x86_64)
+- **Image size**: ~1.85GB
+- **Source**: https://github.com/daijro/camoufox/releases
+
+To upgrade Camoufox, update the `ARG` values at the top of Dockerfile.camoufox:
+```dockerfile
+ARG CAMOUFOX_VERSION=135.0.1
+ARG CAMOUFOX_RELEASE=beta.24
+```
+
 ## Key Files
 
 - `server-camoufox.js` - Camoufox engine (Firefox-based anti-detect) **(DEFAULT)**
