@@ -1,6 +1,10 @@
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const express = require('express');
 const crypto = require('crypto');
+
+// Add stealth plugin to avoid bot detection
+chromium.use(StealthPlugin());
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -47,8 +51,48 @@ async function getSession(userId) {
     const b = await ensureBrowser();
     const context = await b.newContext({
       viewport: { width: 1280, height: 720 },
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      locale: 'en-US',
+      timezoneId: 'America/Los_Angeles',
+      // Add realistic browser permissions
+      permissions: ['geolocation'],
+      geolocation: { latitude: 37.7749, longitude: -122.4194 }, // San Francisco
     });
+    
+    // Add anti-detection init script (similar to WebView.swift stealth approach)
+    await context.addInitScript(() => {
+      // Hide webdriver property
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      
+      // Override plugins to look like real Chrome
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin' }
+        ]
+      });
+      
+      // Override languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en']
+      });
+      
+      // Add chrome object (missing in headless)
+      window.chrome = {
+        runtime: {},
+        loadTimes: function() {},
+        csi: function() {},
+        app: {}
+      };
+      
+      // Override permissions query to return 'prompt' for notifications
+      const originalQuery = window.Notification?.permission;
+      if (window.Notification) {
+        window.Notification.permission = 'default';
+      }
+    });
+    
     session = { context, tabGroups: new Map(), lastAccess: Date.now() };
     sessions.set(userId, session);
     console.log(`Session created for user ${userId}`);
@@ -764,5 +808,5 @@ process.on('SIGTERM', async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`jo-browser listening on port ${PORT}`);
+  console.log(`🌐 jo-browser [Chrome/Playwright] listening on port ${PORT}`);
 });

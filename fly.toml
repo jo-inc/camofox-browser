@@ -2,6 +2,7 @@ app = "jo-browser"
 primary_region = "sjc"
 
 [build]
+  dockerfile = "Dockerfile.camoufox"
 
 # Internal-only service (Fly private network)
 [[services]]
@@ -20,9 +21,9 @@ primary_region = "sjc"
     path = "/health"
 
 [[vm]]
-  memory = "1gb"
+  memory = "2gb"
   cpu_kind = "shared"
-  cpus = 1
+  cpus = 2
 
 [env]
   NODE_ENV = "production"

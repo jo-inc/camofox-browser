@@ -1,13 +1,19 @@
 {
   "name": "jo-browser",
   "version": "1.0.0",
-  "description": "Headless Chrome service for Jo",
+  "description": "Headless browser service for Jo",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server-camoufox.js",
+    "start:chrome": "node server.js",
+    "postinstall": "npx camoufox-js fetch || true"
   },
   "dependencies": {
+    "camoufox-js": "^0.8.5",
     "express": "^4.18.2",
-    "playwright": "^1.58.0"
+    "playwright": "^1.50.0",
+    "playwright-core": "^1.58.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
