@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node server-camoufox.js",
     "start:chrome": "node server.js",
+    "test": "jest --runInBand --forceExit",
+    "test:e2e": "jest --runInBand --forceExit tests/e2e",
+    "test:live": "RUN_LIVE_TESTS=1 jest --runInBand --forceExit tests/live",
+    "test:debug": "DEBUG_SERVER=1 jest --runInBand --forceExit",
     "postinstall": "npx camoufox-js fetch || true"
   },
   "dependencies": {
@@ -15,5 +19,8 @@
     "playwright-core": "^1.58.0",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }

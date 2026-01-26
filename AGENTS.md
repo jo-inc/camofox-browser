@@ -34,8 +34,33 @@ Both serve on http://localhost:3000 with identical APIs.
 
 ## Testing
 
+### Jest Test Suite (Recommended)
 ```bash
-# Run client test from jo_bot
+# Install dependencies
+npm install
+
+# Run all tests (e2e only, skips live Google tests)
+npm test
+
+# Run specific test suites
+npm run test:e2e          # Local deterministic tests only
+npm run test:live         # Live Google tests (may hit captcha)
+npm run test:debug        # Show server stdout for debugging
+```
+
+Test structure:
+- `tests/e2e/` - Deterministic tests using local test site
+  - `tabLifecycle.test.js` - Create, close tabs, sessions
+  - `navigation.test.js` - Navigate, back, forward, refresh
+  - `snapshotLinks.test.js` - Get page content, extract links
+  - `typingEnter.test.js` - Type text, press Enter
+  - `formSubmission.test.js` - Fill forms, click buttons
+  - `scroll.test.js` - Scroll page
+- `tests/live/` - Live web tests (opt-in via RUN_LIVE_TESTS=1)
+  - `googleSearch.test.js` - @google_search macro, click results
+
+### Python Client Test (Legacy)
+```bash
 cd ../jo_bot
 JO_BROWSER_URL=http://localhost:3000 python evals/features/browser/client_test.py
 ```
