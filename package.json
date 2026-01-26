@@ -1,0 +1,13 @@
+{
+  "name": "jo-browser",
+  "version": "1.0.0",
+  "description": "Headless Chrome service for Jo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "playwright-core": "^1.40.0"
+  }
+}

@@ -1,0 +1,28 @@
+app = "jo-browser"
+primary_region = "sjc"
+
+[build]
+
+# Internal-only service (Fly private network)
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 3000
+
+  [[services.http_checks]]
+    interval = 30000
+    timeout = 5000
+    path = "/health"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[env]
+  NODE_ENV = "production"
