@@ -1,0 +1,43 @@
+FROM node:20-slim
+
+# Install dependencies for Camoufox (Firefox-based)
+RUN apt-get update && apt-get install -y \
+    # Firefox dependencies
+    libgtk-3-0 \
+    libdbus-glib-1-2 \
+    libxt6 \
+    libasound2 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    # Fonts
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    fontconfig \
+    # Utils
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --production
+
+# Fetch the Camoufox browser binary
+RUN npx camoufox-js fetch
+
+COPY server-camoufox.js ./
+
+ENV NODE_ENV=production
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["node", "server-camoufox.js"]
