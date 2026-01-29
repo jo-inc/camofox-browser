@@ -236,7 +236,14 @@ async function buildRefs(page) {
   // Get ARIA snapshot including shadow DOM content
   // Playwright's ariaSnapshot already traverses shadow roots, but we also
   // inject a script to collect shadow DOM elements for additional coverage
-  let ariaYaml = await page.locator('body').ariaSnapshot();
+  let ariaYaml;
+  try {
+    ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 10000 });
+  } catch (err) {
+    console.log('buildRefs: ariaSnapshot failed, retrying after navigation settles');
+    await page.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
+    ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 10000 });
+  }
   
   // Collect additional interactive elements from shadow DOM
   const shadowElements = await page.evaluate(() => {
@@ -318,7 +325,7 @@ async function getAriaSnapshot(page) {
     return null;
   }
   await waitForPageReady(page, { waitForNetwork: false });
-  return await page.locator('body').ariaSnapshot();
+  return await page.locator('body').ariaSnapshot({ timeout: 10000 });
 }
 
 function refToLocator(page, ref, refs) {
@@ -435,7 +442,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 // Snapshot
 app.get('/tabs/:tabId/snapshot', async (req, res) => {
   try {
-    const userId = req.query.userId;
+    const userId = parseInt(req.query.userId, 10);
     const format = req.query.format || 'text';
     const session = sessions.get(userId);
     const found = session && findTab(session, req.params.tabId);
