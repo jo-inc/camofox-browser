@@ -123,8 +123,14 @@ async function ensureBrowser() {
   return browser;
 }
 
+// Helper to normalize userId to string (JSON body may parse as number)
+function normalizeUserId(userId) {
+  return String(userId);
+}
+
 async function getSession(userId) {
-  let session = sessions.get(userId);
+  const key = normalizeUserId(userId);
+  let session = sessions.get(key);
   if (!session) {
     const b = await ensureBrowser();
     const context = await b.newContext({
@@ -136,8 +142,8 @@ async function getSession(userId) {
     });
     
     session = { context, tabGroups: new Map(), lastAccess: Date.now() };
-    sessions.set(userId, session);
-    console.log(`Session created for user ${userId}`);
+    sessions.set(key, session);
+    console.log(`Session created for user ${key}`);
   }
   session.lastAccess = Date.now();
   return session;
@@ -429,7 +435,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
   
   try {
     const { userId, url, macro, query } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -481,7 +487,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
   try {
     const userId = parseInt(req.query.userId, 10);
     const format = req.query.format || 'text';
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -556,7 +562,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
 app.post('/tabs/:tabId/wait', async (req, res) => {
   try {
     const { userId, timeout = 10000, waitForNetwork = true } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -576,7 +582,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
   
   try {
     const { userId, ref, selector } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -669,7 +675,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
   
   try {
     const { userId, ref, selector, text } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -703,7 +709,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
   
   try {
     const { userId, key } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -725,7 +731,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
 app.post('/tabs/:tabId/scroll', async (req, res) => {
   try {
     const { userId, direction = 'down', amount = 500 } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -749,7 +755,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
   
   try {
     const { userId } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -775,7 +781,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
   
   try {
     const { userId } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -801,7 +807,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
   
   try {
     const { userId } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -827,9 +833,12 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     const userId = req.query.userId;
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
-    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    if (!found) {
+      console.log(`GET /tabs/${req.params.tabId}/links -> 404 (userId=${userId}, hasSession=${!!session}, sessionUsers=${[...sessions.keys()].join(',')})`);
+      return res.status(404).json({ error: 'Tab not found' });
+    }
     
     const { tabState } = found;
     tabState.toolCalls++;
@@ -864,7 +873,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
   try {
     const userId = req.query.userId;
     const fullPage = req.query.fullPage === 'true';
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -882,7 +891,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
 app.get('/tabs/:tabId/stats', async (req, res) => {
   try {
     const userId = req.query.userId;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
@@ -905,7 +914,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
 app.delete('/tabs/:tabId', async (req, res) => {
   try {
     const { userId } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
       await found.tabState.page.close();
@@ -926,7 +935,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
 app.delete('/tabs/group/:listItemId', async (req, res) => {
   try {
     const { userId } = req.body;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     const group = session?.tabGroups.get(req.params.listItemId);
     if (group) {
       for (const [tabId, tabState] of group) {
@@ -946,7 +955,7 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
 app.delete('/sessions/:userId', async (req, res) => {
   try {
     const userId = req.params.userId;
-    const session = sessions.get(userId);
+    const session = sessions.get(normalizeUserId(userId));
     if (session) {
       await session.context.close();
       sessions.delete(userId);
