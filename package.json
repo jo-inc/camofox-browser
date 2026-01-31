@@ -1,7 +1,7 @@
 {
-  "name": "jo-browser",
+  "name": "browser-use-server",
   "version": "1.0.0",
-  "description": "Headless browser service for Jo",
+  "description": "Headless browser automation server for AI agents - REST API with anti-detection, element refs, and session isolation",
   "main": "server.js",
   "scripts": {
     "start": "node server-camoufox.js",

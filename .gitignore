@@ -1,2 +1,40 @@
+node_modules/
+.env
+.env.local
+.env.*.local
 
-node_modules
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Runtime
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Build
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Camoufox cache
+.camoufox/
+
+# Test artifacts
+test-results/
+playwright-report/

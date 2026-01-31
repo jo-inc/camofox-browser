@@ -1,4 +1,4 @@
-app = "jo-browser"
+app = "browser-use-server"
 primary_region = "sjc"
 
 [build]
