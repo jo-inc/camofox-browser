@@ -65,60 +65,20 @@ function getHostOS() {
   return 'linux';
 }
 
-function getProxyConfig() {
-  const host = process.env.PROXY_HOST;
-  const port = process.env.PROXY_PORT;
-  const username = process.env.PROXY_USERNAME;
-  const password = process.env.PROXY_PASSWORD;
-  
-  if (host && port) {
-    console.log(`🔒 Using ISP proxy: ${host}:${port}`);
-    return {
-      server: `http://${host}:${port}`,
-      username,
-      password,
-    };
-  }
-  return null;
-}
-
 async function ensureBrowser() {
   if (!browser) {
     const hostOS = getHostOS();
-    const proxy = getProxyConfig();
     console.log(`Launching Camoufox browser (host OS: ${hostOS})...`);
     
-    // Use launchOptions for more control, then launch with firefox
-    const launchConfig = {
+    const options = await launchOptions({
       headless: true,
-      // Generate fingerprints matching the host OS to avoid detection
       os: hostOS,
-      // Enable humanized cursor movement
       humanize: true,
-      // Enable cache for better performance
       enable_cache: true,
-    };
+    });
     
-    // Add proxy if configured
-    if (proxy) {
-      launchConfig.proxy = proxy;
-      launchConfig.i_know_what_im_doing = true; // Suppress geoip warning on fallback
-      // Try with geoip first, fall back without if it fails
-      launchConfig.geoip = true;
-      try {
-        const options = await launchOptions(launchConfig);
-        browser = await firefox.launch(options);
-        console.log('Camoufox browser launched with ISP proxy + geoip');
-        return browser;
-      } catch (err) {
-        console.log(`geoip lookup failed (${err.message}), retrying without geoip...`);
-        launchConfig.geoip = false;
-      }
-    }
-    
-    const options = await launchOptions(launchConfig);
     browser = await firefox.launch(options);
-    console.log('Camoufox browser launched' + (proxy ? ' with ISP proxy' : ''));
+    console.log('Camoufox browser launched');
   }
   return browser;
 }
