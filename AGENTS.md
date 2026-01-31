@@ -1,4 +1,4 @@
-# browser-use-server Agent Guide
+# jo-camoufox-browser Agent Guide
 
 Headless browser automation server for AI agents. Run locally or deploy to any cloud provider.
 
@@ -141,8 +141,8 @@ npm run test:debug    # With server output
 ## Docker
 
 ```bash
-docker build -f Dockerfile.camoufox -t browser-use-server .
-docker run -p 3000:3000 browser-use-server
+docker build -f Dockerfile.camoufox -t jo-camoufox-browser .
+docker run -p 3000:3000 jo-camoufox-browser
 ```
 
 ## Key Files

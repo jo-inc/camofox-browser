@@ -1,6 +1,6 @@
 ---
-name: browser-use-server
-description: Control a headless browser with anti-detection capabilities. Browse websites, search Google/YouTube/Amazon, click elements, fill forms, and extract content.
+name: jo-camoufox-browser
+description: Control a headless Camoufox browser with anti-detection. Browse websites, search Google/YouTube/Amazon, click elements, fill forms, and extract content.
 globs:
 requirements:
   bins:
@@ -9,9 +9,9 @@ requirements:
   install: npm install && npm start
 ---
 
-# Browser Use Server Skill
+# jo-camoufox-browser Skill
 
-You can control a headless browser running at `http://localhost:3000`. This browser has anti-detection capabilities and can bypass Google captcha.
+You can control a headless Camoufox browser running at `http://localhost:3000`. Camoufox is a Firefox-based browser with C++ anti-detection that bypasses bot detection including Google captcha.
 
 ## Installation
 

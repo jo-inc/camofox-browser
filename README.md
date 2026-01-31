@@ -1,12 +1,12 @@
-# browser-use-server
+# jo-camoufox-browser
 
-A headless browser automation server designed for AI agents. Provides a REST API with anti-detection capabilities, stable element references, and multi-user session isolation.
+A headless browser automation server designed for AI agents. Powered by [Camoufox](https://camoufox.com) - a Firefox-based browser with C++ anti-detection that bypasses bot detection including Google captcha.
 
 **Perfect for:** Clawdbot/Moltbot, Claude Code, LangChain agents, AutoGPT, and any AI system that needs to browse the web.
 
 ## Features
 
-- **Anti-Detection** - Camoufox engine (Firefox-based) bypasses bot detection including Google captcha
+- **Anti-Detection** - Camoufox engine (Firefox-based) with C++ fingerprint spoofing, bypasses Google captcha
 - **Element Refs** - Stable `e1`, `e2`, `e3` references for clicking/typing (like Clawdbot's browser)
 - **Session Isolation** - Separate cookies/storage per user, tabs grouped by conversation
 - **Search Macros** - `@google_search`, `@youtube_search`, `@amazon_search` and more
@@ -17,8 +17,8 @@ A headless browser automation server designed for AI agents. Provides a REST API
 
 ```bash
 # Clone and install
-git clone https://github.com/anthropics/browser-use-server
-cd browser-use-server
+git clone https://github.com/jo-inc/jo-camoufox-browser
+cd jo-camoufox-browser
 npm install
 
 # Start server (downloads Camoufox browser on first run)
@@ -150,10 +150,10 @@ First run downloads the Camoufox browser (~300MB).
 
 ```bash
 # Build with Camoufox (recommended)
-docker build -f Dockerfile.camoufox -t browser-use-server .
+docker build -f Dockerfile.camoufox -t jo-camoufox-browser .
 
 # Run
-docker run -p 3000:3000 browser-use-server
+docker run -p 3000:3000 jo-camoufox-browser
 ```
 
 ## Fly.io Deployment

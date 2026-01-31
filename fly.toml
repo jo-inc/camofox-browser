@@ -1,4 +1,4 @@
-app = "browser-use-server"
+app = "jo-camoufox-browser"
 primary_region = "sjc"
 
 [build]
