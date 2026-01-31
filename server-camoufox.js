@@ -64,13 +64,31 @@ function getHostOS() {
   return 'linux';
 }
 
+function getProxyConfig() {
+  const host = process.env.PROXY_HOST;
+  const port = process.env.PROXY_PORT;
+  const username = process.env.PROXY_USERNAME;
+  const password = process.env.PROXY_PASSWORD;
+  
+  if (host && port) {
+    console.log(`🔒 Using ISP proxy: ${host}:${port}`);
+    return {
+      server: `http://${host}:${port}`,
+      username,
+      password,
+    };
+  }
+  return null;
+}
+
 async function ensureBrowser() {
   if (!browser) {
     const hostOS = getHostOS();
+    const proxy = getProxyConfig();
     console.log(`Launching Camoufox browser (host OS: ${hostOS})...`);
     
     // Use launchOptions for more control, then launch with firefox
-    const options = await launchOptions({
+    const launchConfig = {
       headless: true,
       // Generate fingerprints matching the host OS to avoid detection
       os: hostOS,
@@ -78,10 +96,17 @@ async function ensureBrowser() {
       humanize: true,
       // Enable cache for better performance
       enable_cache: true,
-    });
+    };
+    
+    // Add proxy if configured
+    if (proxy) {
+      launchConfig.proxy = proxy;
+    }
+    
+    const options = await launchOptions(launchConfig);
     
     browser = await firefox.launch(options);
-    console.log('Camoufox browser launched');
+    console.log('Camoufox browser launched' + (proxy ? ' with ISP proxy' : ''));
   }
   return browser;
 }
