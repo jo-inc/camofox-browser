@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "camoufox-js": "^0.8.5",
+    "dotenv": "^17.2.3",
     "express": "^4.18.2",
     "playwright": "^1.50.0",
     "playwright-core": "^1.58.0",

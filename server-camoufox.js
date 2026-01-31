@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { Camoufox, launchOptions } = require('camoufox-js');
 const { firefox } = require('playwright-core');
 const express = require('express');
@@ -101,10 +102,21 @@ async function ensureBrowser() {
     // Add proxy if configured
     if (proxy) {
       launchConfig.proxy = proxy;
+      launchConfig.i_know_what_im_doing = true; // Suppress geoip warning on fallback
+      // Try with geoip first, fall back without if it fails
+      launchConfig.geoip = true;
+      try {
+        const options = await launchOptions(launchConfig);
+        browser = await firefox.launch(options);
+        console.log('Camoufox browser launched with ISP proxy + geoip');
+        return browser;
+      } catch (err) {
+        console.log(`geoip lookup failed (${err.message}), retrying without geoip...`);
+        launchConfig.geoip = false;
+      }
     }
     
     const options = await launchOptions(launchConfig);
-    
     browser = await firefox.launch(options);
     console.log('Camoufox browser launched' + (proxy ? ' with ISP proxy' : ''));
   }
@@ -970,6 +982,10 @@ process.on('SIGTERM', async () => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🦊 jo-browser [Camoufox/Firefox] listening on port ${PORT}`);
+  // Pre-launch browser so it's ready for first request
+  await ensureBrowser().catch(err => {
+    console.error('Failed to pre-launch browser:', err.message);
+  });
 });
