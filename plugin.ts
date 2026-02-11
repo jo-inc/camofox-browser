@@ -377,8 +377,23 @@ export default function register(api: PluginApi) {
     async execute(_id, params) {
       const { tabId } = params as { tabId: string };
       const userId = ctx.agentId || "openclaw";
-      const result = await fetchApi(baseUrl, `/tabs/${tabId}/screenshot?userId=${userId}`);
-      return toToolResult(result);
+      const url = `${baseUrl}/tabs/${tabId}/screenshot?userId=${userId}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${res.status}: ${text}`);
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      const base64 = Buffer.from(arrayBuffer).toString("base64");
+      return {
+        content: [
+          {
+            type: "image",
+            data: base64,
+            mimeType: "image/png",
+          },
+        ],
+      };
     },
   }));
 
