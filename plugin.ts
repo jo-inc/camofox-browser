@@ -187,6 +187,48 @@ function toToolResult(data: unknown): ToolResult {
   };
 }
 
+function parseNetscapeCookieFile(text: string) {
+  // Netscape cookie file format:
+  // domain \t includeSubdomains \t path \t secure \t expires \t name \t value
+  // HttpOnly cookies are prefixed with: #HttpOnly_
+  const cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+  }> = [];
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('#') && !line.startsWith('#HttpOnly_')) continue;
+
+    let httpOnly = false;
+    let working = line;
+    if (working.startsWith('#HttpOnly_')) {
+      httpOnly = true;
+      working = working.replace(/^#HttpOnly_/, '');
+    }
+
+    const parts = working.split('\t');
+    if (parts.length < 7) continue;
+
+    const domain = parts[0];
+    const path = parts[2];
+    const secure = parts[3].toUpperCase() == 'TRUE';
+    const expires = Number(parts[4]);
+    const name = parts[5];
+    const value = parts.slice(6).join('\t');
+
+    cookies.push({ name, value, domain, path, expires, httpOnly, secure });
+  }
+
+  return cookies;
+}
+
 export default function register(api: PluginApi) {
   const port = api.config.port || 9377;
   const baseUrl = api.config.url || `http://localhost:${port}`;
@@ -429,6 +471,60 @@ export default function register(api: PluginApi) {
       const userId = ctx.agentId || "openclaw";
       const result = await fetchApi(baseUrl, `/tabs?userId=${userId}`);
       return toToolResult(result);
+    },
+  }));
+
+  api.registerTool((ctx: ToolContext) => ({
+    name: "camofox_import_cookies",
+    description:
+      "Import cookies into the current Camoufox user session (Netscape cookie file). Use to authenticate to sites like LinkedIn without interactive login.",
+    parameters: {
+      type: "object",
+      properties: {
+        cookiesPath: { type: "string", description: "Path to Netscape-format cookies.txt file" },
+        domainSuffix: {
+          type: "string",
+          description: "Only import cookies whose domain ends with this suffix",
+        },
+      },
+      required: ["cookiesPath"],
+    },
+    async execute(_id, params) {
+      const { cookiesPath, domainSuffix } = params as {
+        cookiesPath: string;
+        domainSuffix?: string;
+      };
+
+      const userId = ctx.agentId || "openclaw";
+
+      const fs = await import("fs/promises");
+      const text = await fs.readFile(cookiesPath, "utf8");
+      let cookies = parseNetscapeCookieFile(text);
+      if (domainSuffix) {
+        cookies = cookies.filter((c) => c.domain.endsWith(domainSuffix));
+      }
+
+      // Translate into Playwright cookie objects
+      const pwCookies = cookies.map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        expires: c.expires,
+        httpOnly: !!c.httpOnly,
+        secure: !!c.secure,
+      }));
+
+      const result = await fetchApi(
+        baseUrl,
+        `/sessions/${encodeURIComponent(userId)}/cookies`,
+        {
+          method: "POST",
+          body: JSON.stringify({ cookies: pwCookies }),
+        }
+      );
+
+      return toToolResult({ imported: pwCookies.length, userId, result });
     },
   }));
 

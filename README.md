@@ -44,7 +44,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 openclaw plugins install @askjo/camofox-browser
 ```
 
-**Tools:** `camofox_create_tab` · `camofox_snapshot` · `camofox_click` · `camofox_type` · `camofox_navigate` · `camofox_scroll` · `camofox_screenshot` · `camofox_close_tab` · `camofox_list_tabs`
+**Tools:** `camofox_create_tab` · `camofox_snapshot` · `camofox_click` · `camofox_type` · `camofox_navigate` · `camofox_scroll` · `camofox_screenshot` · `camofox_close_tab` · `camofox_list_tabs` · `camofox_import_cookies`
 
 ### Standalone
 
@@ -67,6 +67,25 @@ docker run -p 9377:9377 camofox-browser
 ### Fly.io / Railway
 
 `fly.toml` and `railway.toml` are included. Deploy with `fly deploy` or connect the repo to Railway.
+
+## Usage
+
+### Cookie Injection (Netscape cookie file → Playwright cookies)
+
+If you’re using the OpenClaw plugin, you can import a Netscape-format cookie file (e.g., exported from a browser) to authenticate sessions without interactive login.
+
+- Tool: `camofox_import_cookies`
+- Server endpoint: `POST /sessions/:userId/cookies`
+
+```bash
+# OpenClaw tool usage (conceptual)
+# camofox_import_cookies({ cookiesPath: "/path/to/cookies.txt", domainSuffix: "linkedin.com" })
+
+# Direct server usage (Playwright cookie objects)
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Content-Type: application/json' \
+  -d '{"cookies":[{"name":"foo","value":"bar","domain":"example.com","path":"/","expires":-1,"httpOnly":false,"secure":false}]}'
+```
 
 ## Usage
 
@@ -133,6 +152,12 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `GET` | `/health` | Health check |
 | `POST` | `/start` | Start browser engine |
 | `POST` | `/stop` | Stop browser engine |
+
+### Sessions
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/sessions/:userId/cookies` | Add cookies to a user session (Playwright cookie objects) |
 
 ## Search Macros
 
