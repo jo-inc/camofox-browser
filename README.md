@@ -77,6 +77,8 @@ If you’re using the OpenClaw plugin, you can import a Netscape-format cookie f
 - Tool: `camofox_import_cookies`
 - Server endpoint: `POST /sessions/:userId/cookies`
 
+**Security:** this endpoint is disabled unless `CAMOFOX_API_KEY` is set on the server. When enabled, callers must include `Authorization: Bearer <CAMOFOX_API_KEY>`.
+
 ```bash
 # OpenClaw tool usage (conceptual)
 # camofox_import_cookies({ cookiesPath: "/path/to/cookies.txt", domainSuffix: "linkedin.com" })
@@ -84,10 +86,11 @@ If you’re using the OpenClaw plugin, you can import a Netscape-format cookie f
 # Direct server usage (Playwright cookie objects)
 curl -X POST http://localhost:9377/sessions/agent1/cookies \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
   -d '{"cookies":[{"name":"foo","value":"bar","domain":"example.com","path":"/","expires":-1,"httpOnly":false,"secure":false}]}'
 ```
 
-## Usage
+### Basic Browsing
 
 ```bash
 # Create a tab

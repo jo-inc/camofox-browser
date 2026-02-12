@@ -11,13 +11,53 @@ app.use(express.json({ limit: '5mb' }));
 
 // Import cookies into a user's browser context (Playwright cookies format)
 // POST /sessions/:userId/cookies { cookies: Cookie[] }
+//
+// SECURITY:
+// Cookie injection moves this from "anonymous browsing" to "authenticated browsing".
+// This endpoint is DISABLED unless CAMOFOX_API_KEY is set.
+// When enabled, caller must send: Authorization: Bearer <CAMOFOX_API_KEY>
 app.post('/sessions/:userId/cookies', async (req, res) => {
   try {
+    const apiKey = process.env.CAMOFOX_API_KEY;
+    if (!apiKey) {
+      return res.status(403).json({
+        error: 'Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint.',
+      });
+    }
+
+    const auth = String(req.headers['authorization'] || '');
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (!match || match[1] !== apiKey) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
     const userId = req.params.userId;
     const cookies = (req.body && req.body.cookies) || [];
     if (!Array.isArray(cookies)) {
       return res.status(400).json({ error: 'cookies must be an array' });
     }
+
+    // Validate before passing to Playwright to avoid cryptic 500s
+    const invalid = [];
+    for (let i = 0; i < cookies.length; i++) {
+      const c = cookies[i];
+      const missing = [];
+      if (!c || typeof c !== 'object') {
+        invalid.push({ index: i, error: 'cookie must be an object' });
+        continue;
+      }
+      if (typeof c.name !== 'string' || !c.name) missing.push('name');
+      if (typeof c.value !== 'string') missing.push('value');
+      if (typeof c.domain !== 'string' || !c.domain) missing.push('domain');
+      if (missing.length) invalid.push({ index: i, missing });
+    }
+    if (invalid.length) {
+      return res.status(400).json({
+        error: 'Invalid cookie objects: each cookie must include name, value, and domain',
+        invalid,
+      });
+    }
+
     const session = await getSession(userId);
     await session.context.addCookies(cookies);
     const result = { ok: true, userId: String(userId), count: cookies.length };

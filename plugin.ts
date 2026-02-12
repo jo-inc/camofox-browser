@@ -218,7 +218,7 @@ function parseNetscapeCookieFile(text: string) {
 
     const domain = parts[0];
     const path = parts[2];
-    const secure = parts[3].toUpperCase() == 'TRUE';
+    const secure = parts[3].toUpperCase() === 'TRUE';
     const expires = Number(parts[4]);
     const name = parts[5];
     const value = parts.slice(6).join('\t');
@@ -515,14 +515,20 @@ export default function register(api: PluginApi) {
         secure: !!c.secure,
       }));
 
-      const result = await fetchApi(
-        baseUrl,
-        `/sessions/${encodeURIComponent(userId)}/cookies`,
-        {
-          method: "POST",
-          body: JSON.stringify({ cookies: pwCookies }),
-        }
-      );
+      const apiKey = process.env.CAMOFOX_API_KEY;
+      if (!apiKey) {
+        throw new Error(
+          "CAMOFOX_API_KEY is not set. Cookie import is disabled unless you set CAMOFOX_API_KEY for both the server and the OpenClaw plugin environment."
+        );
+      }
+
+      const result = await fetchApi(baseUrl, `/sessions/${encodeURIComponent(userId)}/cookies`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ cookies: pwCookies }),
+      });
 
       return toToolResult({ imported: pwCookies.length, userId, result });
     },
