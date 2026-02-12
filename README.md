@@ -9,7 +9,7 @@
     <a href="https://hub.docker.com"><img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker" /></a>
   </p>
   <p>
-    Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> — a Firefox fork with fingerprint spoofing at the C++ level.
+    Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> - a Firefox fork with fingerprint spoofing at the C++ level.
     <br/><br/>
     The same engine behind <a href="https://askjo.ai">askjo.ai</a>'s web browsing.
   </p>
@@ -23,21 +23,21 @@
 
 AI agents need to browse the real web. Playwright gets blocked. Headless Chrome gets fingerprinted. Stealth plugins become the fingerprint.
 
-Camoufox patches Firefox at the **C++ implementation level** — `navigator.hardwareConcurrency`, WebGL renderers, AudioContext, screen geometry, WebRTC — all spoofed before JavaScript ever sees them. No shims, no wrappers, no tells.
+Camoufox patches Firefox at the **C++ implementation level** - `navigator.hardwareConcurrency`, WebGL renderers, AudioContext, screen geometry, WebRTC - all spoofed before JavaScript ever sees them. No shims, no wrappers, no tells.
 
 This project wraps that engine in a REST API built for agents: accessibility snapshots instead of bloated HTML, stable element refs for clicking, and search macros for common sites.
 
 ## Features
 
-- **C++ Anti-Detection** — bypasses Google, Cloudflare, and most bot detection
-- **Element Refs** — stable `e1`, `e2`, `e3` identifiers for reliable interaction
-- **Token-Efficient** — accessibility snapshots are ~90% smaller than raw HTML
-- **Session Isolation** — separate cookies/storage per user
-- **Cookie Import** — inject Netscape-format cookie files for authenticated browsing
-- **Proxy + GeoIP** — route traffic through residential proxies with automatic locale/timezone
-- **Structured Logging** — JSON log lines with request IDs for production observability
-- **Search Macros** — `@google_search`, `@youtube_search`, `@amazon_search`, `@reddit_subreddit`, and 10 more
-- **Deploy Anywhere** — Docker, Fly.io, Railway
+- **C++ Anti-Detection** - bypasses Google, Cloudflare, and most bot detection
+- **Element Refs** - stable `e1`, `e2`, `e3` identifiers for reliable interaction
+- **Token-Efficient** - accessibility snapshots are ~90% smaller than raw HTML
+- **Session Isolation** - separate cookies/storage per user
+- **Cookie Import** - inject Netscape-format cookie files for authenticated browsing
+- **Proxy + GeoIP** - route traffic through residential proxies with automatic locale/timezone
+- **Structured Logging** - JSON log lines with request IDs for production observability
+- **Search Macros** - `@google_search`, `@youtube_search`, `@amazon_search`, `@reddit_subreddit`, and 10 more
+- **Deploy Anywhere** - Docker, Fly.io, Railway
 
 ## Quick Start
 
@@ -73,24 +73,95 @@ docker run -p 9377:9377 camofox-browser
 
 ## Usage
 
-### Cookie Injection (Netscape cookie file → Playwright cookies)
+### Cookie Import
 
-If you’re using the OpenClaw plugin, you can import a Netscape-format cookie file (e.g., exported from a browser) to authenticate sessions without interactive login.
+Import cookies from your browser into Camoufox to skip interactive login on sites like LinkedIn, Amazon, etc.
 
-- Tool: `camofox_import_cookies`
-- Server endpoint: `POST /sessions/:userId/cookies`
+#### Setup
 
-**Security:** this endpoint is disabled unless `CAMOFOX_API_KEY` is set on the server. When enabled, callers must include `Authorization: Bearer <CAMOFOX_API_KEY>`.
+**1. Generate a secret key:**
 
 ```bash
-# OpenClaw tool usage (conceptual)
-# camofox_import_cookies({ cookiesPath: "linkedin.txt", domainSuffix: "linkedin.com" })
+# macOS / Linux
+openssl rand -hex 32
+```
 
-# Direct server usage (Playwright cookie objects)
+**2. Set the environment variable before starting OpenClaw:**
+
+```bash
+export CAMOFOX_API_KEY="your-generated-key"
+openclaw start
+```
+
+The same key is used by both the plugin (to authenticate requests) and the server (to verify them). Both run from the same environment — set it once.
+
+> **Why an env var?** The key is a secret. Plugin config in `openclaw.json` is stored in plaintext, so secrets don't belong there. Set `CAMOFOX_API_KEY` in your shell profile, systemd unit, Docker env, or Fly.io secrets.
+
+> **Cookie import is disabled by default.** If `CAMOFOX_API_KEY` is not set, the server rejects all cookie requests with 403.
+
+**3. Export cookies from your browser:**
+
+Install a browser extension that exports Netscape-format cookie files (e.g., "cookies.txt" for Chrome/Firefox). Export the cookies for the site you want to authenticate.
+
+**4. Place the cookie file:**
+
+```bash
+mkdir -p ~/.camofox/cookies
+cp ~/Downloads/linkedin_cookies.txt ~/.camofox/cookies/linkedin.txt
+```
+
+The default directory is `~/.camofox/cookies/`. Override with `CAMOFOX_COOKIES_DIR`.
+
+**5. Ask your agent to import them:**
+
+> Import my LinkedIn cookies from linkedin.txt
+
+The agent calls `camofox_import_cookies` → reads the file → POSTs to the server with the Bearer token → cookies are injected into the browser session. Subsequent `camofox_create_tab` calls to linkedin.com will be authenticated.
+
+#### How it works
+
+```
+~/.camofox/cookies/linkedin.txt          (Netscape format, on disk)
+        │
+        ▼
+camofox_import_cookies tool              (parses file, filters by domain)
+        │
+        ▼  POST /sessions/:userId/cookies
+        │  Authorization: Bearer <CAMOFOX_API_KEY>
+        │  Body: { cookies: [Playwright cookie objects] }
+        ▼
+camofox server                           (validates, sanitizes, injects)
+        │
+        ▼  context.addCookies(...)
+        │
+Camoufox browser session                 (authenticated browsing)
+```
+
+- `cookiesPath` is resolved relative to the cookies directory — path traversal outside it is blocked
+- Max 500 cookies per request, 5MB file size limit
+- Cookie objects are sanitized to an allowlist of Playwright fields
+
+#### Standalone server usage
+
+```bash
 curl -X POST http://localhost:9377/sessions/agent1/cookies \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
   -d '{"cookies":[{"name":"foo","value":"bar","domain":"example.com","path":"/","expires":-1,"httpOnly":false,"secure":false}]}'
+```
+
+#### Docker / Fly.io
+
+```bash
+docker run -p 9377:9377 \
+  -e CAMOFOX_API_KEY="your-generated-key" \
+  -v ~/.camofox/cookies:/home/node/.camofox/cookies:ro \
+  camofox-browser
+```
+
+For Fly.io:
+```bash
+fly secrets set CAMOFOX_API_KEY="your-generated-key"
 ```
 
 ### Proxy + GeoIP
@@ -212,27 +283,27 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 `@google_search` · `@youtube_search` · `@amazon_search` · `@reddit_search` · `@reddit_subreddit` · `@wikipedia_search` · `@twitter_search` · `@yelp_search` · `@spotify_search` · `@netflix_search` · `@linkedin_search` · `@instagram_search` · `@tiktok_search` · `@twitch_search`
 
 Reddit macros return JSON directly (no HTML parsing needed):
-- `@reddit_search` — search all of Reddit, returns JSON with 25 results
-- `@reddit_subreddit` — browse a subreddit (e.g., query `"programming"` → `/r/programming.json`)
+- `@reddit_search` - search all of Reddit, returns JSON with 25 results
+- `@reddit_subreddit` - browse a subreddit (e.g., query `"programming"` → `/r/programming.json`)
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CAMOFOX_PORT` | Server port | `9377` |
-| `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | — |
-| `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | — |
+| `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
+| `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
-| `PROXY_HOST` | Proxy hostname or IP | — |
-| `PROXY_PORT` | Proxy port | — |
-| `PROXY_USERNAME` | Proxy auth username | — |
-| `PROXY_PASSWORD` | Proxy auth password | — |
+| `PROXY_HOST` | Proxy hostname or IP | - |
+| `PROXY_PORT` | Proxy port | - |
+| `PROXY_USERNAME` | Proxy auth username | - |
+| `PROXY_PASSWORD` | Proxy auth password | - |
 
 ## Architecture
 
 ```
 Browser Instance (Camoufox)
-└── User Session (BrowserContext) — isolated cookies/storage
+└── User Session (BrowserContext) - isolated cookies/storage
     ├── Tab Group (sessionKey: "conv1")
     │   ├── Tab (google.com)
     │   └── Tab (github.com)
@@ -259,9 +330,9 @@ npm install @askjo/camofox-browser
 
 ## Credits
 
-- [Camoufox](https://camoufox.com) — Firefox-based browser with C++ anti-detection
+- [Camoufox](https://camoufox.com) - Firefox-based browser with C++ anti-detection
 - [Donate to Camoufox's original creator daijro](https://camoufox.com/about/)
-- [OpenClaw](https://openclaw.ai) — Open-source AI agent framework
+- [OpenClaw](https://openclaw.ai) - Open-source AI agent framework
 
 ## Crypto Scam Warning
 

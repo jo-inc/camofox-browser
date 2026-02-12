@@ -93,7 +93,8 @@ interface PluginApi {
     name: string,
     check: () => Promise<HealthCheckResult>
   ) => void;
-  config: PluginConfig;
+  config: Record<string, unknown>;
+  pluginConfig?: PluginConfig;
   log: {
     info: (msg: string) => void;
     error: (msg: string) => void;
@@ -246,9 +247,10 @@ function parseNetscapeCookieFile(text: string) {
 }
 
 export default function register(api: PluginApi) {
-  const port = api.config.port || 9377;
-  const baseUrl = api.config.url || `http://localhost:${port}`;
-  const autoStart = api.config.autoStart !== false; // default true
+  const cfg = api.pluginConfig ?? (api.config as unknown as PluginConfig);
+  const port = cfg.port || 9377;
+  const baseUrl = cfg.url || `http://localhost:${port}`;
+  const autoStart = cfg.autoStart !== false; // default true
   const pluginDir = getPluginDir();
   const fallbackUserId = `camofox-${randomUUID()}`;
 
