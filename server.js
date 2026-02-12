@@ -43,6 +43,19 @@ app.use((req, res, next) => {
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
+// Interactive roles to include - exclude combobox to avoid opening complex widgets
+// (date pickers, dropdowns) that can interfere with navigation
+const INTERACTIVE_ROLES = [
+  'button', 'link', 'textbox', 'checkbox', 'radio',
+  'menuitem', 'tab', 'searchbox', 'slider', 'spinbutton', 'switch'
+  // 'combobox' excluded - can trigger date pickers and complex dropdowns
+];
+
+// Patterns to skip (date pickers, calendar widgets)
+const SKIP_PATTERNS = [
+  /date/i, /calendar/i, /picker/i, /datepicker/i
+];
+
 function timingSafeCompare(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   const bufA = Buffer.from(a);
@@ -411,26 +424,6 @@ async function buildRefs(page) {
     ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 10000 });
   }
   
-  // Collect additional interactive elements from shadow DOM
-  const shadowElements = await page.evaluate(() => {
-    const elements = [];
-    const collectFromShadow = (root, depth = 0) => {
-      if (depth > 5) return; // Limit recursion
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-      while (walker.nextNode()) {
-        const el = walker.currentNode;
-        if (el.shadowRoot) {
-          collectFromShadow(el.shadowRoot, depth + 1);
-        }
-      }
-    };
-    // Start collection from all shadow roots
-    document.querySelectorAll('*').forEach(el => {
-      if (el.shadowRoot) collectFromShadow(el.shadowRoot);
-    });
-    return elements;
-  }).catch(() => []);
-  
   if (!ariaYaml) {
     log('warn', 'buildRefs: no aria snapshot');
     return refs;
@@ -438,19 +431,6 @@ async function buildRefs(page) {
   
   const lines = ariaYaml.split('\n');
   let refCounter = 1;
-  
-  // Interactive roles to include - exclude combobox to avoid opening complex widgets
-  // (date pickers, dropdowns) that can interfere with navigation
-  const interactiveRoles = [
-    'button', 'link', 'textbox', 'checkbox', 'radio',
-    'menuitem', 'tab', 'searchbox', 'slider', 'spinbutton', 'switch'
-    // 'combobox' excluded - can trigger date pickers and complex dropdowns
-  ];
-  
-  // Patterns to skip (date pickers, calendar widgets)
-  const skipPatterns = [
-    /date/i, /calendar/i, /picker/i, /datepicker/i
-  ];
   
   // Track occurrences of each role+name combo for nth disambiguation
   const seenCounts = new Map(); // "role:name" -> count
@@ -463,13 +443,11 @@ async function buildRefs(page) {
       const [, role, name] = match;
       const normalizedRole = role.toLowerCase();
       
-      // Skip combobox role entirely (date pickers, complex dropdowns)
       if (normalizedRole === 'combobox') continue;
       
-      // Skip elements with date/calendar-related names
-      if (name && skipPatterns.some(p => p.test(name))) continue;
+      if (name && SKIP_PATTERNS.some(p => p.test(name))) continue;
       
-      if (interactiveRoles.includes(normalizedRole)) {
+      if (INTERACTIVE_ROLES.includes(normalizedRole)) {
         const normalizedName = name || '';
         const key = `${normalizedRole}:${normalizedName}`;
         
@@ -632,12 +610,6 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       // Track occurrences while annotating
       const annotationCounts = new Map();
       const lines = annotatedYaml.split('\n');
-      // Must match buildRefs - excludes combobox to avoid date pickers/complex dropdowns
-      const interactiveRoles = [
-        'button', 'link', 'textbox', 'checkbox', 'radio',
-        'menuitem', 'tab', 'searchbox', 'slider', 'spinbutton', 'switch'
-      ];
-      const skipPatterns = [/date/i, /calendar/i, /picker/i, /datepicker/i];
       
       annotatedYaml = lines.map(line => {
         const match = line.match(/^(\s*-\s+)(\w+)(\s+"([^"]*)")?(.*)$/);
@@ -645,11 +617,10 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
           const [, prefix, role, nameMatch, name, suffix] = match;
           const normalizedRole = role.toLowerCase();
           
-          // Skip combobox and date-related elements (same as buildRefs)
           if (normalizedRole === 'combobox') return line;
-          if (name && skipPatterns.some(p => p.test(name))) return line;
+          if (name && SKIP_PATTERNS.some(p => p.test(name))) return line;
           
-          if (interactiveRoles.includes(normalizedRole)) {
+          if (INTERACTIVE_ROLES.includes(normalizedRole)) {
             const normalizedName = name || '';
             const countKey = `${normalizedRole}:${normalizedName}`;
             const nth = annotationCounts.get(countKey) || 0;
