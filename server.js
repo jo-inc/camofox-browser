@@ -10,6 +10,17 @@ app.use(express.json({ limit: '100kb' }));
 
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
+function timingSafeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function safeError(err) {
   if (process.env.NODE_ENV === 'production') {
     console.error(err);
@@ -48,12 +59,15 @@ app.post('/sessions/:userId/cookies', async (req, res) => {
 
     const auth = String(req.headers['authorization'] || '');
     const match = auth.match(/^Bearer\s+(.+)$/i);
-    if (!match || match[1] !== apiKey) {
+    if (!match || !timingSafeCompare(match[1], apiKey)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
     const userId = req.params.userId;
-    const cookies = (req.body && req.body.cookies) || [];
+    if (!req.body || !('cookies' in req.body)) {
+      return res.status(400).json({ error: 'Missing "cookies" field in request body' });
+    }
+    const cookies = req.body.cookies;
     if (!Array.isArray(cookies)) {
       return res.status(400).json({ error: 'cookies must be an array' });
     }
@@ -79,9 +93,22 @@ app.post('/sessions/:userId/cookies', async (req, res) => {
       });
     }
 
+    if (cookies.length > 500) {
+      return res.status(400).json({ error: 'Too many cookies. Maximum 500 per request.' });
+    }
+
+    const allowedFields = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
+    const sanitized = cookies.map(c => {
+      const clean = {};
+      for (const k of allowedFields) {
+        if (c[k] !== undefined) clean[k] = c[k];
+      }
+      return clean;
+    });
+
     const session = await getSession(userId);
-    await session.context.addCookies(cookies);
-    const result = { ok: true, userId: String(userId), count: cookies.length };
+    await session.context.addCookies(sanitized);
+    const result = { ok: true, userId: String(userId), count: sanitized.length };
     logResponse('POST /sessions/:userId/cookies', result);
     res.json(result);
   } catch (err) {
@@ -1140,7 +1167,7 @@ app.post('/start', async (req, res) => {
 app.post('/stop', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (!adminKey || adminKey !== process.env.CAMOFOX_ADMIN_KEY) {
+    if (!adminKey || !timingSafeCompare(adminKey, process.env.CAMOFOX_ADMIN_KEY || '')) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     if (browser) {

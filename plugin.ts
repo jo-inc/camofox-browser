@@ -6,9 +6,10 @@
  */
 
 import { spawn, ChildProcess } from "child_process";
-import { join, dirname } from "path";
+import { join, dirname, resolve, sep } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
+import { homedir } from "os";
 
 // Get plugin directory - works in both ESM and CJS contexts
 const getPluginDir = (): string => {
@@ -116,6 +117,7 @@ async function startServer(
       CAMOFOX_PORT: String(port),
       CAMOFOX_ADMIN_KEY: process.env.CAMOFOX_ADMIN_KEY,
       CAMOFOX_API_KEY: process.env.CAMOFOX_API_KEY,
+      CAMOFOX_COOKIES_DIR: process.env.CAMOFOX_COOKIES_DIR,
     },
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
@@ -507,7 +509,19 @@ export default function register(api: PluginApi) {
       const userId = ctx.agentId || fallbackUserId;
 
       const fs = await import("fs/promises");
-      const text = await fs.readFile(cookiesPath, "utf8");
+
+      const cookiesDir = resolve(process.env.CAMOFOX_COOKIES_DIR || join(homedir(), ".camofox", "cookies"));
+      const resolved = resolve(cookiesDir, cookiesPath);
+      if (!resolved.startsWith(cookiesDir + sep)) {
+        throw new Error(`cookiesPath must be within ${cookiesDir}`);
+      }
+
+      const stat = await fs.stat(resolved);
+      if (stat.size > 5 * 1024 * 1024) {
+        throw new Error("Cookie file too large (max 5MB)");
+      }
+
+      const text = await fs.readFile(resolved, "utf8");
       let cookies = parseNetscapeCookieFile(text);
       if (domainSuffix) {
         cookies = cookies.filter((c) => c.domain.endsWith(domainSuffix));

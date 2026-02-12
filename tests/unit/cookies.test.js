@@ -93,6 +93,81 @@ async function postCookies(userId, cookies, headers = {}) {
   });
 }
 
+describe('Cookie endpoint - field sanitization', () => {
+  beforeAll(async () => {
+    await startServerWithApiKey(TEST_API_KEY);
+  }, 120000);
+
+  afterAll(async () => {
+    await stopServer();
+  }, 30000);
+
+  test('strips unknown fields from cookies', async () => {
+    const cookies = [
+      {
+        name: 'sess',
+        value: 'abc',
+        domain: '.example.com',
+        path: '/',
+        evil: 'payload',
+        __proto__: { admin: true },
+      },
+    ];
+    const res = await postCookies('user1', cookies, {
+      Authorization: `Bearer ${TEST_API_KEY}`,
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.count).toBe(1);
+  });
+
+  test('rejects more than 500 cookies', async () => {
+    const cookies = Array.from({ length: 501 }, (_, i) => ({
+      name: `c${i}`,
+      value: `v${i}`,
+      domain: '.example.com',
+      path: '/',
+    }));
+    const res = await postCookies('user1', cookies, {
+      Authorization: `Bearer ${TEST_API_KEY}`,
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('Too many cookies');
+  });
+
+  test('rejects request with missing cookies field', async () => {
+    const res = await fetch(`${serverUrl}/sessions/user1/cookies`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${TEST_API_KEY}`,
+      },
+      body: JSON.stringify({ data: 'no cookies key' }),
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('Missing');
+  });
+
+  test('preserves sameSite field', async () => {
+    const cookies = [
+      {
+        name: 'strict',
+        value: 'val',
+        domain: '.example.com',
+        path: '/',
+        sameSite: 'Strict',
+      },
+    ];
+    const res = await postCookies('user1', cookies, {
+      Authorization: `Bearer ${TEST_API_KEY}`,
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('Cookie endpoint - with API key', () => {
   beforeAll(async () => {
     await startServerWithApiKey(TEST_API_KEY);
