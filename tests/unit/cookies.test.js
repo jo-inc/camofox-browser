@@ -1,6 +1,7 @@
-const { spawn } = require('child_process');
 const path = require('path');
 const crypto = require('crypto');
+const { launchServer } = require('../../lib/launcher');
+const { loadConfig } = require('../../lib/config');
 
 const TEST_API_KEY = 'test-cookie-key-' + crypto.randomUUID();
 let serverProcess = null;
@@ -8,25 +9,15 @@ let serverUrl = null;
 
 async function startServerWithApiKey(apiKey) {
   const port = Math.floor(3100 + Math.random() * 900);
-  const serverPath = path.join(__dirname, '../../server.js');
+  const cfg = loadConfig();
+  const pluginDir = path.join(__dirname, '../..');
 
-  serverProcess = spawn('node', [serverPath], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      NODE_ENV: process.env.NODE_ENV,
-      CAMOFOX_PORT: port.toString(),
-      CAMOFOX_API_KEY: apiKey,
-      DEBUG_RESPONSES: 'false',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
+  serverProcess = launchServer({
+    pluginDir,
+    port,
+    env: { ...cfg.serverEnv, CAMOFOX_API_KEY: apiKey, DEBUG_RESPONSES: 'false' },
+    log: { info: () => {}, error: (msg) => console.error(msg) },
   });
-
-  if (process.env.DEBUG_SERVER) {
-    serverProcess.stdout.on('data', (d) => console.log(`[server] ${d.toString().trim()}`));
-    serverProcess.stderr.on('data', (d) => console.error(`[server:err] ${d.toString().trim()}`));
-  }
 
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 500));
@@ -43,18 +34,17 @@ async function startServerWithApiKey(apiKey) {
 
 async function startServerWithoutApiKey() {
   const port = Math.floor(3100 + Math.random() * 900);
-  const serverPath = path.join(__dirname, '../../server.js');
+  const cfg = loadConfig();
+  const pluginDir = path.join(__dirname, '../..');
 
-  serverProcess = spawn('node', [serverPath], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      NODE_ENV: process.env.NODE_ENV,
-      CAMOFOX_PORT: port.toString(),
-      DEBUG_RESPONSES: 'false',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
+  const env = { ...cfg.serverEnv, DEBUG_RESPONSES: 'false' };
+  delete env.CAMOFOX_API_KEY;
+
+  serverProcess = launchServer({
+    pluginDir,
+    port,
+    env,
+    log: { info: () => {}, error: (msg) => console.error(msg) },
   });
 
   for (let i = 0; i < 30; i++) {

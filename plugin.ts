@@ -5,11 +5,14 @@
  * Server auto-starts when plugin loads (configurable via autoStart: false).
  */
 
-import { spawn, ChildProcess } from "child_process";
-import { join, dirname, resolve, sep } from "path";
+import type { ChildProcess } from "child_process";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
-import { homedir } from "os";
+
+import { loadConfig } from "./lib/config.js";
+import { launchServer } from "./lib/launcher.js";
+import { readCookieFile } from "./lib/cookies.js";
 
 // Get plugin directory - works in both ESM and CJS contexts
 const getPluginDir = (): string => {
@@ -108,42 +111,15 @@ async function startServer(
   port: number,
   log: PluginApi["log"]
 ): Promise<ChildProcess> {
-  const serverPath = join(pluginDir, "server.js");
-  const proc = spawn("node", [serverPath], {
-    cwd: pluginDir,
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      NODE_ENV: process.env.NODE_ENV,
-      CAMOFOX_PORT: String(port),
-      CAMOFOX_ADMIN_KEY: process.env.CAMOFOX_ADMIN_KEY,
-      CAMOFOX_API_KEY: process.env.CAMOFOX_API_KEY,
-      CAMOFOX_COOKIES_DIR: process.env.CAMOFOX_COOKIES_DIR,
-      PROXY_HOST: process.env.PROXY_HOST,
-      PROXY_PORT: process.env.PROXY_PORT,
-      PROXY_USERNAME: process.env.PROXY_USERNAME,
-      PROXY_PASSWORD: process.env.PROXY_PASSWORD,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: false,
-  });
+  const cfg = loadConfig();
+  const proc = launchServer({ pluginDir, port, env: cfg.serverEnv, log });
 
-  proc.stdout?.on("data", (data: Buffer) => {
-    const msg = data.toString().trim();
-    if (msg) log?.info?.(`[server] ${msg}`);
-  });
-
-  proc.stderr?.on("data", (data: Buffer) => {
-    const msg = data.toString().trim();
-    if (msg) log?.error?.(`[server] ${msg}`);
-  });
-
-  proc.on("error", (err) => {
+  proc.on("error", (err: Error) => {
     log?.error?.(`Server process error: ${err.message}`);
     serverProcess = null;
   });
 
-  proc.on("exit", (code) => {
+  proc.on("exit", (code: number | null) => {
     if (code !== 0 && code !== null) {
       log?.error?.(`Server exited with code ${code}`);
     }
@@ -200,50 +176,6 @@ function toToolResult(data: unknown): ToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
   };
-}
-
-function parseNetscapeCookieFile(text: string) {
-  // Netscape cookie file format:
-  // domain \t includeSubdomains \t path \t secure \t expires \t name \t value
-  // HttpOnly cookies are prefixed with: #HttpOnly_
-  const cookies: Array<{
-    name: string;
-    value: string;
-    domain: string;
-    path: string;
-    expires: number;
-    httpOnly?: boolean;
-    secure?: boolean;
-  }> = [];
-
-  const cleaned = text.replace(/^\uFEFF/, '');
-
-  for (const rawLine of cleaned.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (line.startsWith('#') && !line.startsWith('#HttpOnly_')) continue;
-
-    let httpOnly = false;
-    let working = line;
-    if (working.startsWith('#HttpOnly_')) {
-      httpOnly = true;
-      working = working.replace(/^#HttpOnly_/, '');
-    }
-
-    const parts = working.split('\t');
-    if (parts.length < 7) continue;
-
-    const domain = parts[0];
-    const path = parts[2];
-    const secure = parts[3].toUpperCase() === 'TRUE';
-    const expires = Number(parts[4]);
-    const name = parts[5];
-    const value = parts.slice(6).join('\t');
-
-    cookies.push({ name, value, domain, path, expires, httpOnly, secure });
-  }
-
-  return cookies;
 }
 
 export default function register(api: PluginApi) {
@@ -516,38 +448,16 @@ export default function register(api: PluginApi) {
 
       const userId = ctx.agentId || fallbackUserId;
 
-      const fs = await import("fs/promises");
+      const envCfg = loadConfig();
+      const cookiesDir = resolve(envCfg.cookiesDir);
 
-      const cookiesDir = resolve(process.env.CAMOFOX_COOKIES_DIR || join(homedir(), ".camofox", "cookies"));
-      const resolved = resolve(cookiesDir, cookiesPath);
-      if (!resolved.startsWith(cookiesDir + sep)) {
-        throw new Error("cookiesPath must be a relative path within the cookies directory");
-      }
+      const pwCookies = await readCookieFile({
+        cookiesDir,
+        cookiesPath,
+        domainSuffix,
+      });
 
-      const stat = await fs.stat(resolved);
-      if (stat.size > 5 * 1024 * 1024) {
-        throw new Error("Cookie file too large (max 5MB)");
-      }
-
-      const text = await fs.readFile(resolved, "utf8");
-      let cookies = parseNetscapeCookieFile(text);
-      if (domainSuffix) {
-        cookies = cookies.filter((c) => c.domain.endsWith(domainSuffix));
-      }
-
-      // Translate into Playwright cookie objects
-      const pwCookies = cookies.map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path,
-        expires: c.expires,
-        httpOnly: !!c.httpOnly,
-        secure: !!c.secure,
-      }));
-
-      const apiKey = process.env.CAMOFOX_API_KEY;
-      if (!apiKey) {
+      if (!envCfg.apiKey) {
         throw new Error(
           "CAMOFOX_API_KEY is not set. Cookie import is disabled unless you set CAMOFOX_API_KEY for both the server and the OpenClaw plugin environment."
         );
@@ -556,7 +466,7 @@ export default function register(api: PluginApi) {
       const result = await fetchApi(baseUrl, `/sessions/${encodeURIComponent(userId)}/cookies`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${envCfg.apiKey}`,
         },
         body: JSON.stringify({ cookies: pwCookies }),
       });

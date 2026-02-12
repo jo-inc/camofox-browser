@@ -1,5 +1,6 @@
-const { spawn } = require('child_process');
 const path = require('path');
+const { launchServer } = require('../../lib/launcher');
+const { loadConfig } = require('../../lib/config');
 
 let serverProcess = null;
 let serverPort = null;
@@ -21,35 +22,29 @@ async function waitForServer(port, maxRetries = 30, interval = 1000) {
 
 async function startServer(port = 0, extraEnv = {}) {
   const usePort = port || Math.floor(3100 + Math.random() * 900);
-  
-  const serverPath = path.join(__dirname, '../../server.js');
-  
-  serverProcess = spawn('node', [serverPath], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: process.env.NODE_ENV, CAMOFOX_PORT: usePort.toString(), DEBUG_RESPONSES: 'false', ...extraEnv },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false
+  const cfg = loadConfig();
+  const pluginDir = path.join(__dirname, '../..');
+
+  const log = {
+    info: (msg) => { if (cfg.serverEnv.DEBUG_SERVER) console.log(msg); },
+    error: (msg) => { if (cfg.serverEnv.DEBUG_SERVER) console.error(msg); },
+  };
+
+  serverProcess = launchServer({
+    pluginDir,
+    port: usePort,
+    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', ...extraEnv },
+    log,
   });
-  
-  serverProcess.stdout.on('data', (data) => {
-    if (process.env.DEBUG_SERVER) {
-      console.log(`[server] ${data.toString().trim()}`);
-    }
-  });
-  
-  serverProcess.stderr.on('data', (data) => {
-    if (process.env.DEBUG_SERVER) {
-      console.error(`[server:err] ${data.toString().trim()}`);
-    }
-  });
-  
+
   serverProcess.on('error', (err) => {
     console.error('Failed to start server:', err);
   });
-  
+
   serverPort = usePort;
-  
+
   await waitForServer(usePort);
-  
+
   console.log(`camofox-browser server started on port ${usePort}`);
   return usePort;
 }
@@ -62,9 +57,9 @@ async function stopServer() {
         serverPort = null;
         resolve();
       });
-      
+
       serverProcess.kill('SIGTERM');
-      
+
       setTimeout(() => {
         if (serverProcess) {
           serverProcess.kill('SIGKILL');

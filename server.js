@@ -4,6 +4,9 @@ const express = require('express');
 const crypto = require('crypto');
 const os = require('os');
 const { expandMacro } = require('./lib/macros');
+const { loadConfig } = require('./lib/config');
+
+const CONFIG = loadConfig();
 
 // --- Structured logging ---
 function log(level, msg, fields = {}) {
@@ -68,7 +71,7 @@ function timingSafeCompare(a, b) {
 }
 
 function safeError(err) {
-  if (process.env.NODE_ENV === 'production') {
+  if (CONFIG.nodeEnv === 'production') {
     log('error', 'internal error', { error: err.message, stack: err.stack });
     return 'Internal server error';
   }
@@ -96,12 +99,12 @@ function validateUrl(url) {
 // When enabled, caller must send: Authorization: Bearer <CAMOFOX_API_KEY>
 app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
-    const apiKey = process.env.CAMOFOX_API_KEY;
-    if (!apiKey) {
+    if (!CONFIG.apiKey) {
       return res.status(403).json({
         error: 'Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint.',
       });
     }
+    const apiKey = CONFIG.apiKey;
 
     const auth = String(req.headers['authorization'] || '');
     const match = auth.match(/^Bearer\s+(.+)$/i);
@@ -211,10 +214,7 @@ function getHostOS() {
 }
 
 function buildProxyConfig() {
-  const host = process.env.PROXY_HOST;
-  const port = process.env.PROXY_PORT;
-  const username = process.env.PROXY_USERNAME;
-  const password = process.env.PROXY_PASSWORD;
+  const { host, port, username, password } = CONFIG.proxy;
   
   if (!host || !port) {
     log('info', 'no proxy configured');
@@ -270,7 +270,7 @@ async function getSession(userId) {
     };
     // When geoip is active (proxy configured), camoufox auto-configures
     // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
-    if (!process.env.PROXY_HOST) {
+    if (!CONFIG.proxy.host) {
       contextOptions.locale = 'en-US';
       contextOptions.timezoneId = 'America/Los_Angeles';
       contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
@@ -1186,7 +1186,7 @@ app.post('/start', async (req, res) => {
 app.post('/stop', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (!adminKey || !timingSafeCompare(adminKey, process.env.CAMOFOX_ADMIN_KEY || '')) {
+    if (!adminKey || !timingSafeCompare(adminKey, CONFIG.adminKey)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     if (browser) {
@@ -1496,7 +1496,7 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-const PORT = process.env.CAMOFOX_PORT || process.env.PORT || 9377;
+const PORT = CONFIG.port;
 const server = app.listen(PORT, () => {
   log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
   ensureBrowser().catch(err => {
