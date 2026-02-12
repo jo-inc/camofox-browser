@@ -86,7 +86,7 @@ app.post('/sessions/:userId/cookies', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Cookie import error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeError(err) });
   }
 });
 

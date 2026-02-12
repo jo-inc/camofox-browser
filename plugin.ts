@@ -115,6 +115,7 @@ async function startServer(
       NODE_ENV: process.env.NODE_ENV,
       CAMOFOX_PORT: String(port),
       CAMOFOX_ADMIN_KEY: process.env.CAMOFOX_ADMIN_KEY,
+      CAMOFOX_API_KEY: process.env.CAMOFOX_API_KEY,
     },
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
@@ -503,7 +504,7 @@ export default function register(api: PluginApi) {
         domainSuffix?: string;
       };
 
-      const userId = ctx.agentId || "openclaw";
+      const userId = ctx.agentId || fallbackUserId;
 
       const fs = await import("fs/promises");
       const text = await fs.readFile(cookiesPath, "utf8");
