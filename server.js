@@ -177,6 +177,9 @@ const MAX_TABS_PER_SESSION = 10;
 // tabId -> Promise (the currently executing operation)
 const tabLocks = new Map();
 
+// Track last known mouse position for distance-proportional movement
+let lastMousePos = { x: 640, y: 360 };
+
 async function withTabLock(tabId, operation) {
   // Wait for any pending operation on this tab to complete
   const pending = tabLocks.get(tabId);
@@ -198,6 +201,101 @@ async function withTabLock(tabId, operation) {
     // Clean up if this is still the active lock
     if (tabLocks.get(tabId) === promise) {
       tabLocks.delete(tabId);
+    }
+  }
+}
+
+// Navigate with retry logic for transient network errors (DNS hiccups, connection resets)
+async function resilientGoto(page, url, options = {}) {
+  const { maxAttempts = 3, ...gotoOpts } = options;
+  const timeouts = [30000, 25000, 20000];
+  const backoffs = [0, 2000, 5000];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (backoffs[attempt - 1] > 0) {
+        log('info', 'navigate retry backoff', { url, waitMs: backoffs[attempt - 1] });
+        await new Promise(r => setTimeout(r, backoffs[attempt - 1]));
+      }
+      return await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        ...gotoOpts,
+        timeout: timeouts[attempt - 1] || timeouts[timeouts.length - 1]
+      });
+    } catch (err) {
+      const isRetryable =
+        err.message.includes('net::ERR_') ||
+        err.message.includes('NS_ERROR_') ||
+        err.message.toLowerCase().includes('timeout') ||
+        err.message.includes('ECONNREFUSED') ||
+        err.message.includes('ECONNRESET') ||
+        err.message.includes('ETIMEDOUT') ||
+        err.message.includes('EAI_AGAIN');
+
+      if (attempt >= maxAttempts || !isRetryable) throw err;
+      log('warn', 'navigate attempt failed', {
+        attempt, maxAttempts, error: err.message.slice(0, 80), url
+      });
+    }
+  }
+}
+
+// Humanized mouse event sequence for anti-detection
+// Glides cursor with distance-proportional steps, random click offset, variable timing
+async function humanMouseSequence(page, locator) {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error('Element not visible (no bounding box)');
+
+  // Random offset: +/- 30% from center (avoids always-dead-center pattern)
+  const offsetX = (Math.random() - 0.5) * 0.6 * box.width;
+  const offsetY = (Math.random() - 0.5) * 0.6 * box.height;
+  const x = box.x + box.width / 2 + offsetX;
+  const y = box.y + box.height / 2 + offsetY;
+
+  // Distance-proportional steps (5-25): short moves quick, long moves smooth
+  const dx = x - lastMousePos.x;
+  const dy = y - lastMousePos.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(5, Math.min(25, Math.round(distance / 50)));
+
+  await page.mouse.move(x, y, { steps });
+
+  // Variable pre-click delay: 30-100ms
+  await page.waitForTimeout(30 + Math.floor(Math.random() * 70));
+  await page.mouse.down();
+
+  // Variable hold: 50-150ms
+  await page.waitForTimeout(50 + Math.floor(Math.random() * 100));
+  await page.mouse.up();
+
+  lastMousePos = { x, y };
+  log('info', 'mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0), steps });
+}
+
+// Humanized scroll: breaks a single scroll into 2-5 variable-sized chunks with micro-pauses
+async function humanScroll(page, totalDelta) {
+  const direction = totalDelta > 0 ? 1 : -1;
+  const absDelta = Math.abs(totalDelta);
+  const numChunks = 2 + Math.floor(Math.random() * 4); // 2-5 chunks
+  const baseChunk = absDelta / numChunks;
+
+  let remaining = absDelta;
+  for (let i = 0; i < numChunks; i++) {
+    let chunk;
+    if (i === numChunks - 1) {
+      chunk = remaining;
+    } else {
+      chunk = Math.round(baseChunk * (1 + (Math.random() - 0.5) * 0.4)); // +/- 20%
+      chunk = Math.min(chunk, remaining);
+    }
+
+    // Tiny horizontal drift: -2 to +2px (humans don't scroll perfectly vertical)
+    const drift = Math.round((Math.random() - 0.5) * 4);
+    await page.mouse.wheel(drift, chunk * direction);
+    remaining -= chunk;
+
+    if (i < numChunks - 1) {
+      await page.waitForTimeout(50 + Math.floor(Math.random() * 100)); // 50-150ms
     }
   }
 }
@@ -528,7 +626,7 @@ app.post('/tabs', async (req, res) => {
     if (url) {
       const urlErr = validateUrl(url);
       if (urlErr) return res.status(400).json({ error: urlErr });
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await resilientGoto(page, url);
       tabState.visitedUrls.add(url);
     }
     
@@ -567,7 +665,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     
     // Serialize navigation operations on the same tab
     const result = await withTabLock(tabId, async () => {
-      await tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await resilientGoto(tabState.page, targetUrl);
       tabState.visitedUrls.add(targetUrl);
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
@@ -686,30 +784,9 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     }
     
     const result = await withTabLock(tabId, async () => {
-      // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
-      // Dispatches: mouseover → mouseenter → mousedown → mouseup → click
-      const dispatchMouseSequence = async (locator) => {
-        const box = await locator.boundingBox();
-        if (!box) throw new Error('Element not visible (no bounding box)');
-        
-        const x = box.x + box.width / 2;
-        const y = box.y + box.height / 2;
-        
-        // Move mouse to element (triggers mouseover/mouseenter)
-        await tabState.page.mouse.move(x, y);
-        await tabState.page.waitForTimeout(50);
-        
-        // Full click sequence
-        await tabState.page.mouse.down();
-        await tabState.page.waitForTimeout(50);
-        await tabState.page.mouse.up();
-        
-        log('info', 'mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0) });
-      };
-      
       const doClick = async (locatorOrSelector, isLocator) => {
         const locator = isLocator ? locatorOrSelector : tabState.page.locator(locatorOrSelector);
-        
+
         try {
           // First try normal click (respects visibility, enabled, not-obscured)
           await locator.click({ timeout: 5000 });
@@ -720,14 +797,14 @@ app.post('/tabs/:tabId/click', async (req, res) => {
             try {
               await locator.click({ timeout: 5000, force: true });
             } catch (forceErr) {
-              // Fallback 2: Full mouse event sequence for stubborn JS handlers
+              // Fallback 2: Humanized mouse event sequence for stubborn JS handlers
               log('warn', 'force click failed, trying mouse sequence');
-              await dispatchMouseSequence(locator);
+              await humanMouseSequence(tabState.page, locator);
             }
           } else if (err.message.includes('not visible') || err.message.includes('timeout')) {
             // Fallback 2: Element not responding to click, try mouse sequence
             log('warn', 'click timeout, trying mouse sequence');
-            await dispatchMouseSequence(locator);
+            await humanMouseSequence(tabState.page, locator);
           } else {
             throw err;
           }
@@ -831,9 +908,9 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     tabState.toolCalls++;
     
     const delta = direction === 'up' ? -amount : amount;
-    await tabState.page.mouse.wheel(0, delta);
-    await tabState.page.waitForTimeout(300);
-    
+    await humanScroll(tabState.page, delta);
+    await tabState.page.waitForTimeout(150);
+
     res.json({ ok: true });
   } catch (err) {
     log('error', 'scroll failed', { reqId: req.reqId, error: err.message });
@@ -855,11 +932,19 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     tabState.toolCalls++;
     
     const result = await withTabLock(tabId, async () => {
-      await tabState.page.goBack({ timeout: 10000 });
+      try {
+        await tabState.page.goBack({ timeout: 10000 });
+      } catch (navErr) {
+        if (navErr.message.toLowerCase().includes('timeout') || navErr.message.includes('NS_ERROR_') || navErr.message.includes('net::ERR_')) {
+          log('warn', 'back retry', { error: navErr.message.slice(0, 60) });
+          await new Promise(r => setTimeout(r, 2000));
+          await tabState.page.goBack({ timeout: 10000 });
+        } else { throw navErr; }
+      }
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
     });
-    
+
     res.json(result);
   } catch (err) {
     log('error', 'back failed', { reqId: req.reqId, error: err.message });
@@ -881,11 +966,19 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     tabState.toolCalls++;
     
     const result = await withTabLock(tabId, async () => {
-      await tabState.page.goForward({ timeout: 10000 });
+      try {
+        await tabState.page.goForward({ timeout: 10000 });
+      } catch (navErr) {
+        if (navErr.message.toLowerCase().includes('timeout') || navErr.message.includes('NS_ERROR_') || navErr.message.includes('net::ERR_')) {
+          log('warn', 'forward retry', { error: navErr.message.slice(0, 60) });
+          await new Promise(r => setTimeout(r, 2000));
+          await tabState.page.goForward({ timeout: 10000 });
+        } else { throw navErr; }
+      }
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
     });
-    
+
     res.json(result);
   } catch (err) {
     log('error', 'forward failed', { reqId: req.reqId, error: err.message });
@@ -907,7 +1000,15 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     tabState.toolCalls++;
     
     const result = await withTabLock(tabId, async () => {
-      await tabState.page.reload({ timeout: 30000 });
+      try {
+        await tabState.page.reload({ timeout: 30000 });
+      } catch (navErr) {
+        if (navErr.message.toLowerCase().includes('timeout') || navErr.message.includes('NS_ERROR_') || navErr.message.includes('net::ERR_')) {
+          log('warn', 'reload retry', { error: navErr.message.slice(0, 60) });
+          await new Promise(r => setTimeout(r, 2000));
+          await tabState.page.reload({ timeout: 30000 });
+        } else { throw navErr; }
+      }
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, url: tabState.page.url() };
     });
@@ -1155,9 +1256,9 @@ app.post('/tabs/open', async (req, res) => {
     const tabState = createTabState(page);
     group.set(tabId, tabState);
     
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await resilientGoto(page, url);
     tabState.visitedUrls.add(url);
-    
+
     log('info', 'openclaw tab opened', { reqId: req.reqId, tabId, url: page.url() });
     res.json({ 
       ok: true,
@@ -1224,7 +1325,7 @@ app.post('/navigate', async (req, res) => {
     tabState.toolCalls++;
     
     const result = await withTabLock(targetId, async () => {
-      await tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await resilientGoto(tabState.page, url);
       tabState.visitedUrls.add(url);
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, targetId, url: tabState.page.url() };
@@ -1391,9 +1492,9 @@ app.post('/act', async (req, res) => {
             await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
           } else {
             const delta = direction === 'up' ? -amount : amount;
-            await tabState.page.mouse.wheel(0, delta);
+            await humanScroll(tabState.page, delta);
           }
-          await tabState.page.waitForTimeout(300);
+          await tabState.page.waitForTimeout(150);
           return { ok: true, targetId };
         }
         
