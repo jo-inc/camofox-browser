@@ -171,10 +171,10 @@ let browser = null;
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
 const sessions = new Map();
 
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
+const SESSION_TIMEOUT_MS = parseInt(process.env.SESSION_TIMEOUT_MS) || 1800000; // 30 min
 const MAX_SNAPSHOT_NODES = 500;
-const MAX_SESSIONS = 50;
-const MAX_TABS_PER_SESSION = 10;
+const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 50;
+const MAX_TABS_PER_SESSION = parseInt(process.env.MAX_TABS_PER_SESSION) || 10;
 
 // Per-tab locks to serialize operations on the same tab
 // tabId -> Promise (the currently executing operation)
@@ -229,26 +229,60 @@ function buildProxyConfig() {
   };
 }
 
-async function ensureBrowser() {
-  if (!browser) {
-    const hostOS = getHostOS();
-    const proxy = buildProxyConfig();
-    
-    log('info', 'launching camoufox', { hostOS, geoip: !!proxy });
-    
-    const options = await launchOptions({
-      headless: true,
-      os: hostOS,
-      humanize: true,
-      enable_cache: true,
-      proxy: proxy,
-      geoip: !!proxy,
-    });
-    
-    browser = await firefox.launch(options);
-    log('info', 'camoufox launched');
+const BROWSER_IDLE_TIMEOUT_MS = parseInt(process.env.BROWSER_IDLE_TIMEOUT_MS) || 300000; // 5 min
+let browserIdleTimer = null;
+let browserLaunchPromise = null;
+
+function scheduleBrowserIdleShutdown() {
+  clearBrowserIdleTimer();
+  if (sessions.size === 0 && browser) {
+    browserIdleTimer = setTimeout(async () => {
+      if (sessions.size === 0 && browser) {
+        log('info', 'browser idle shutdown (no sessions)');
+        const b = browser;
+        browser = null;
+        await b.close().catch(() => {});
+      }
+    }, BROWSER_IDLE_TIMEOUT_MS);
   }
+}
+
+function clearBrowserIdleTimer() {
+  if (browserIdleTimer) {
+    clearTimeout(browserIdleTimer);
+    browserIdleTimer = null;
+  }
+}
+
+async function launchBrowserInstance() {
+  const hostOS = getHostOS();
+  const proxy = buildProxyConfig();
+  
+  log('info', 'launching camoufox', { hostOS, geoip: !!proxy });
+  
+  const options = await launchOptions({
+    headless: true,
+    os: hostOS,
+    humanize: true,
+    enable_cache: true,
+    proxy: proxy,
+    geoip: !!proxy,
+  });
+  
+  browser = await firefox.launch(options);
+  log('info', 'camoufox launched');
   return browser;
+}
+
+async function ensureBrowser() {
+  clearBrowserIdleTimer();
+  if (browser) return browser;
+  if (browserLaunchPromise) return browserLaunchPromise;
+  browserLaunchPromise = Promise.race([
+    launchBrowserInstance(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Browser launch timeout (30s)')), 30000)),
+  ]).finally(() => { browserLaunchPromise = null; });
+  return browserLaunchPromise;
 }
 
 // Helper to normalize userId to string (JSON body may parse as number)
@@ -486,18 +520,16 @@ function refToLocator(page, ref, refs) {
   return locator;
 }
 
-// Health check
-app.get('/health', async (req, res) => {
-  try {
-    const b = await ensureBrowser();
-    res.json({ 
-      ok: true, 
-      engine: 'camoufox',
-      browserConnected: b.isConnected()
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: safeError(err) });
-  }
+// Health check (passive — does not launch browser)
+app.get('/health', (req, res) => {
+  const running = browser !== null && (browser.isConnected?.() ?? false);
+  res.json({ 
+    ok: true, 
+    engine: 'camoufox',
+    browserConnected: running,
+    browserRunning: running,
+    sessions: sessions.size,
+  });
 });
 
 // Create new tab
@@ -1056,6 +1088,7 @@ app.delete('/sessions/:userId', async (req, res) => {
       sessions.delete(userId);
       log('info', 'session closed', { userId });
     }
+    if (sessions.size === 0) scheduleBrowserIdleShutdown();
     res.json({ ok: true });
   } catch (err) {
     log('error', 'session close failed', { error: err.message });
@@ -1073,6 +1106,10 @@ setInterval(() => {
       log('info', 'session expired', { userId });
     }
   }
+  // When all sessions gone, start idle timer to kill browser
+  if (sessions.size === 0) {
+    scheduleBrowserIdleShutdown();
+  }
 }, 60_000);
 
 // =============================================================================
@@ -1080,20 +1117,18 @@ setInterval(() => {
 // These allow camoufox to be used as a profile backend for OpenClaw's browser tool
 // =============================================================================
 
-// GET / - Status (alias for GET /health)
-app.get('/', async (req, res) => {
-  try {
-    const b = await ensureBrowser();
-    res.json({ 
-      ok: true,
-      enabled: true,
-      running: b.isConnected(),
-      engine: 'camoufox',
-      browserConnected: b.isConnected()
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: safeError(err) });
-  }
+// GET / - Status (passive — does not launch browser)
+app.get('/', (req, res) => {
+  const running = browser !== null && (browser.isConnected?.() ?? false);
+  res.json({ 
+    ok: true,
+    enabled: true,
+    running,
+    engine: 'camoufox',
+    browserConnected: running,
+    browserRunning: running,
+    sessions: sessions.size,
+  });
 });
 
 // GET /tabs - List all tabs (OpenClaw expects this)
@@ -1499,9 +1534,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 const PORT = CONFIG.port;
 const server = app.listen(PORT, () => {
   log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
-  ensureBrowser().catch(err => {
-    log('error', 'browser pre-launch failed', { error: err.message });
-  });
+  // Browser launches lazily on first request (saves ~550MB when idle)
 });
 
 server.on('error', (err) => {
