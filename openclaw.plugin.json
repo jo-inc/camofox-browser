@@ -2,7 +2,7 @@
   "id": "camofox-browser",
   "name": "Camofox Browser",
   "description": "Anti-detection browser automation for AI agents using Camoufox (Firefox-based)",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -19,6 +19,31 @@
         "type": "boolean",
         "description": "Auto-start the camofox-browser server with the Gateway",
         "default": true
+      },
+      "maxSessions": {
+        "type": "number",
+        "description": "Maximum concurrent browser sessions (server default: 50)",
+        "default": 5
+      },
+      "maxTabsPerSession": {
+        "type": "number",
+        "description": "Maximum tabs per session (server default: 10)",
+        "default": 3
+      },
+      "sessionTimeoutMs": {
+        "type": "number",
+        "description": "Session inactivity timeout in milliseconds (server default: 1800000)",
+        "default": 600000
+      },
+      "browserIdleTimeoutMs": {
+        "type": "number",
+        "description": "Kill browser after this many ms with no sessions (0 = never)",
+        "default": 300000
+      },
+      "maxOldSpaceSize": {
+        "type": "number",
+        "description": "Node.js V8 heap limit in MB",
+        "default": 128
       }
     },
     "additionalProperties": false
@@ -34,6 +59,26 @@
     },
     "autoStart": {
       "label": "Auto-start server with Gateway"
+    },
+    "maxSessions": {
+      "label": "Max Sessions",
+      "placeholder": "5"
+    },
+    "maxTabsPerSession": {
+      "label": "Max Tabs per Session",
+      "placeholder": "3"
+    },
+    "sessionTimeoutMs": {
+      "label": "Session Timeout (ms)",
+      "placeholder": "600000"
+    },
+    "browserIdleTimeoutMs": {
+      "label": "Browser Idle Timeout (ms)",
+      "placeholder": "300000"
+    },
+    "maxOldSpaceSize": {
+      "label": "Node Heap Limit (MB)",
+      "placeholder": "128"
     }
   }
 }

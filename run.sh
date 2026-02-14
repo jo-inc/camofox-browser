@@ -32,6 +32,6 @@ fi
 
 echo "Starting camofox-browser on http://localhost:$CAMOFOX_PORT (with auto-reload)"
 echo "Logs: /tmp/camofox-browser.log"
-nodemon --watch server.js --exec "node server.js" 2>&1 | while IFS= read -r line; do
+nodemon --watch server.js --exec "node --max-old-space-size=128 server.js" 2>&1 | while IFS= read -r line; do
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"
 done | tee -a /tmp/camofox-browser.log
