@@ -601,7 +601,6 @@ app.get('/health', (req, res) => {
     engine: 'camoufox',
     browserConnected: running,
     browserRunning: running,
-    sessions: sessions.size,
   });
 });
 
@@ -699,7 +698,8 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'navigate failed', { reqId: req.reqId, tabId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    const status = err.message && err.message.startsWith('Blocked URL scheme') ? 400 : 500;
+    res.status(status).json({ error: safeError(err) });
   }
 });
 
@@ -1215,7 +1215,6 @@ app.get('/', (req, res) => {
     engine: 'camoufox',
     browserConnected: running,
     browserRunning: running,
-    sessions: sessions.size,
   });
 });
 
