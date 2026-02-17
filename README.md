@@ -32,6 +32,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **C++ Anti-Detection** - bypasses Google, Cloudflare, and most bot detection
 - **Element Refs** - stable `e1`, `e2`, `e3` identifiers for reliable interaction
 - **Token-Efficient** - accessibility snapshots are ~90% smaller than raw HTML
+- **Runs on Anything** - lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Designed to share a box with the rest of your stack — Raspberry Pi, $5 VPS, shared Railway infra.
 - **Session Isolation** - separate cookies/storage per user
 - **Cookie Import** - inject Netscape-format cookie files for authenticated browsing
 - **Proxy + GeoIP** - route traffic through residential proxies with automatic locale/timezone
@@ -294,6 +295,13 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+| `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
+| `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
+| `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
+| `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle (0 = never) | `300000` (5min) |
+| `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
+| `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
+| `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
 | `PROXY_HOST` | Proxy hostname or IP | - |
 | `PROXY_PORT` | Proxy port | - |
 | `PROXY_USERNAME` | Proxy auth username | - |
@@ -311,7 +319,7 @@ Browser Instance (Camoufox)
         └── Tab (amazon.com)
 ```
 
-Sessions auto-expire after 30 minutes of inactivity.
+Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.
 
 ## Testing
 
