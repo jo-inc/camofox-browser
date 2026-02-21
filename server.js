@@ -690,7 +690,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         await tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         tabState.visitedUrls.add(targetUrl);
         tabState.refs = await buildRefs(tabState.page);
-        return { ok: true, tabId, url: tabState.page.url() };
+        return { ok: true, tabId, url: tabState.page.url(), refsAvailable: tabState.refs.size > 0 };
       });
     })(), HANDLER_TIMEOUT_MS, 'navigate'));
     
@@ -851,7 +851,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
               log('warn', 'force click failed, trying mouse sequence');
               await dispatchMouseSequence(locator);
             }
-          } else if (err.message.includes('not visible') || err.message.includes('timeout')) {
+          } else if (err.message.includes('not visible') || err.message.toLowerCase().includes('timeout')) {
             // Fallback 2: Element not responding to click, try mouse sequence
             log('warn', 'click timeout, trying mouse sequence');
             await dispatchMouseSequence(locator);
@@ -862,7 +862,13 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       };
       
       if (ref) {
-        const locator = refToLocator(tabState.page, ref, tabState.refs);
+        let locator = refToLocator(tabState.page, ref, tabState.refs);
+        if (!locator && tabState.refs.size === 0) {
+          // Auto-refresh refs on stale state before failing
+          log('info', 'auto-refreshing stale refs before click', { ref });
+          tabState.refs = await buildRefs(tabState.page);
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+        }
         if (!locator) {
           const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
           throw new Error(`Unknown ref: ${ref} (valid refs: e1-${maxRef}, ${tabState.refs.size} total). Refs reset after navigation - call snapshot first.`);
@@ -877,7 +883,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       
       const newUrl = tabState.page.url();
       tabState.visitedUrls.add(newUrl);
-      return { ok: true, url: newUrl };
+      return { ok: true, url: newUrl, refsAvailable: tabState.refs.size > 0 };
     }), HANDLER_TIMEOUT_MS, 'click'));
     
     log('info', 'clicked', { reqId: req.reqId, tabId, url: result.url });
