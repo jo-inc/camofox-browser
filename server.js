@@ -754,14 +754,21 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         }).join('\n');
       }
       
-      return {
+      const response = {
         url: tabState.page.url(),
         snapshot: annotatedYaml,
         refsCount: tabState.refs.size
       };
+
+      if (req.query.includeScreenshot === 'true') {
+        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
+        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      }
+
+      return response;
     })(), HANDLER_TIMEOUT_MS, 'snapshot'));
 
-    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount });
+    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot });
     res.json(result);
   } catch (err) {
     log('error', 'snapshot failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
@@ -1403,14 +1410,21 @@ app.get('/snapshot', async (req, res) => {
       }).join('\n');
     }
     
-    res.json({
+    const response = {
       ok: true,
       format: 'aria',
       targetId,
       url: tabState.page.url(),
       snapshot: annotatedYaml,
       refsCount: tabState.refs.size
-    });
+    };
+
+    if (req.query.includeScreenshot === 'true') {
+      const pngBuffer = await tabState.page.screenshot({ type: 'png' });
+      response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+    }
+
+    res.json(response);
   } catch (err) {
     log('error', 'openclaw snapshot failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });

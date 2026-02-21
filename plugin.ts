@@ -37,7 +37,7 @@ interface PluginConfig {
 }
 
 interface ToolResult {
-  content: Array<{ type: string; text: string }>;
+  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 }
 
 interface HealthCheckResult {
@@ -238,7 +238,7 @@ export default function register(api: PluginApi) {
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_snapshot",
     description:
-      "Get accessibility snapshot of a Camoufox page with element refs (e1, e2, etc.) for interaction. Use with camofox_create_tab.",
+      "Get accessibility snapshot of a Camoufox page with element refs (e1, e2, etc.) for interaction, plus a visual screenshot. Use with camofox_create_tab.",
     parameters: {
       type: "object",
       properties: {
@@ -249,8 +249,15 @@ export default function register(api: PluginApi) {
     async execute(_id, params) {
       const { tabId } = params as { tabId: string };
       const userId = ctx.agentId || fallbackUserId;
-      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}`);
-      return toToolResult(result);
+      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}&includeScreenshot=true`) as Record<string, unknown>;
+      const content: ToolResult["content"] = [
+        { type: "text", text: JSON.stringify({ url: result.url, refsCount: result.refsCount, snapshot: result.snapshot }, null, 2) },
+      ];
+      const screenshot = result.screenshot as { data?: string; mimeType?: string } | undefined;
+      if (screenshot?.data) {
+        content.push({ type: "image", data: screenshot.data, mimeType: screenshot.mimeType || "image/png" });
+      }
+      return { content };
     },
   }));
 
