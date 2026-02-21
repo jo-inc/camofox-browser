@@ -184,6 +184,22 @@ function createTestApp() {
     `);
   });
   
+  // Page with a distinctive red box for screenshot content verification
+  app.get('/redbox', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Red Box</title>
+      <style>
+        body { margin: 0; padding: 0; background: white; }
+        #box { width: 200px; height: 200px; background: #ff0000; margin: 50px auto; }
+      </style>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body></html>
+    `);
+  });
+
   // Page with scrollable content
   app.get('/scroll', (req, res) => {
     const items = Array.from({ length: 100 }, (_, i) => `<p id="item${i}">Item ${i}</p>`).join('\n');
