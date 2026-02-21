@@ -175,9 +175,13 @@ const SESSION_TIMEOUT_MS = parseInt(process.env.SESSION_TIMEOUT_MS) || 1800000; 
 const MAX_SNAPSHOT_NODES = 500;
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 50;
 const MAX_TABS_PER_SESSION = parseInt(process.env.MAX_TABS_PER_SESSION) || 10;
+const MAX_TABS_GLOBAL = parseInt(process.env.MAX_TABS_GLOBAL) || 10;
 const HANDLER_TIMEOUT_MS = parseInt(process.env.HANDLER_TIMEOUT_MS) || 30000;
 const MAX_CONCURRENT_PER_USER = parseInt(process.env.MAX_CONCURRENT_PER_USER) || 3;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
+const BUILDREFS_TIMEOUT_MS = parseInt(process.env.BUILDREFS_TIMEOUT_MS) || 12000;
+const FAILURE_THRESHOLD = 3;
+const TAB_LOCK_TIMEOUT_MS = 30000;
 
 // Per-tab locks to serialize operations on the same tab
 // tabId -> Promise (the currently executing operation)
@@ -188,9 +192,14 @@ async function withTabLock(tabId, operation) {
   const pending = tabLocks.get(tabId);
   if (pending) {
     try {
-      await pending;
+      await Promise.race([
+        pending,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Tab lock timeout')), TAB_LOCK_TIMEOUT_MS))
+      ]);
     } catch (e) {
-      // Previous operation failed, continue anyway
+      if (e.message === 'Tab lock timeout') {
+        log('warn', 'tab lock timeout, proceeding', { tabId });
+      }
     }
   }
   
@@ -233,9 +242,13 @@ async function withUserLimit(userId, operation) {
     });
   }
   state.active++;
+  healthState.activeOps++;
   try {
-    return await operation();
+    const result = await operation();
+    healthState.lastSuccessfulNav = Date.now();
+    return result;
   } finally {
+    healthState.activeOps--;
     state.active--;
     if (state.queue.length > 0) {
       const next = state.queue.shift();
@@ -305,6 +318,59 @@ function clearBrowserIdleTimer() {
     clearTimeout(browserIdleTimer);
     browserIdleTimer = null;
   }
+}
+
+// --- Browser health tracking ---
+const healthState = {
+  consecutiveNavFailures: 0,
+  lastSuccessfulNav: Date.now(),
+  isRecovering: false,
+  activeOps: 0,
+};
+
+function recordNavSuccess() {
+  healthState.consecutiveNavFailures = 0;
+  healthState.lastSuccessfulNav = Date.now();
+}
+
+function recordNavFailure() {
+  healthState.consecutiveNavFailures++;
+  return healthState.consecutiveNavFailures >= FAILURE_THRESHOLD;
+}
+
+async function restartBrowser(reason) {
+  if (healthState.isRecovering) return;
+  healthState.isRecovering = true;
+  log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
+  try {
+    for (const [, session] of sessions) {
+      await session.context.close().catch(() => {});
+    }
+    sessions.clear();
+    if (browser) {
+      await browser.close().catch(() => {});
+      browser = null;
+    }
+    browserLaunchPromise = null;
+    await ensureBrowser();
+    healthState.consecutiveNavFailures = 0;
+    healthState.lastSuccessfulNav = Date.now();
+    log('info', 'browser restarted successfully');
+  } catch (err) {
+    log('error', 'browser restart failed', { error: err.message });
+  } finally {
+    healthState.isRecovering = false;
+  }
+}
+
+function getTotalTabCount() {
+  let total = 0;
+  for (const session of sessions.values()) {
+    for (const group of session.tabGroups.values()) {
+      total += group.size;
+    }
+  }
+  return total;
 }
 
 async function launchBrowserInstance() {
@@ -406,7 +472,8 @@ function createTabState(page) {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
-    toolCalls: 0
+    toolCalls: 0,
+    lastSnapshot: null,
   };
 }
 
@@ -507,19 +574,47 @@ async function buildRefs(page) {
     return refs;
   }
   
+  const start = Date.now();
+  
+  // Hard total timeout on the entire buildRefs operation
+  const timeoutPromise = new Promise((_, reject) => 
+    setTimeout(() => reject(new Error('buildRefs_timeout')), BUILDREFS_TIMEOUT_MS)
+  );
+  
+  try {
+    return await Promise.race([
+      _buildRefsInner(page, refs, start),
+      timeoutPromise
+    ]);
+  } catch (err) {
+    if (err.message === 'buildRefs_timeout') {
+      log('warn', 'buildRefs: total timeout exceeded', { elapsed: Date.now() - start });
+      return refs;
+    }
+    throw err;
+  }
+}
+
+async function _buildRefsInner(page, refs, start) {
   await waitForPageReady(page, { waitForNetwork: false });
   
-  // Get ARIA snapshot including shadow DOM content
-  // Playwright's ariaSnapshot already traverses shadow roots, but we also
-  // inject a script to collect shadow DOM elements for additional coverage
+  // Budget remaining time for ariaSnapshot
+  const elapsed = Date.now() - start;
+  const remaining = BUILDREFS_TIMEOUT_MS - elapsed;
+  if (remaining < 2000) {
+    log('warn', 'buildRefs: insufficient time for ariaSnapshot', { elapsed });
+    return refs;
+  }
+  
   let ariaYaml;
   try {
-    ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
+    ariaYaml = await page.locator('body').ariaSnapshot({ timeout: Math.min(remaining - 1000, 5000) });
   } catch (err) {
     log('warn', 'ariaSnapshot failed, retrying');
+    const retryBudget = BUILDREFS_TIMEOUT_MS - (Date.now() - start);
+    if (retryBudget < 2000) return refs;
     try {
-      await page.waitForLoadState('load', { timeout: 3000 }).catch(() => {});
-      ariaYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
+      ariaYaml = await page.locator('body').ariaSnapshot({ timeout: Math.min(retryBudget - 500, 5000) });
     } catch (retryErr) {
       log('warn', 'ariaSnapshot retry failed, returning empty refs', { error: retryErr.message });
       return refs;
@@ -595,12 +690,17 @@ function refToLocator(page, ref, refs) {
 
 // Health check (passive — does not launch browser)
 app.get('/health', (req, res) => {
+  if (healthState.isRecovering) {
+    return res.status(503).json({ ok: false, engine: 'camoufox', recovering: true });
+  }
   const running = browser !== null && (browser.isConnected?.() ?? false);
   res.json({ 
     ok: true, 
     engine: 'camoufox',
     browserConnected: running,
     browserRunning: running,
+    activeTabs: getTotalTabCount(),
+    consecutiveFailures: healthState.consecutiveNavFailures,
   });
 });
 
@@ -657,23 +757,46 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       let session = sessions.get(normalizeUserId(userId));
       let found = session && findTab(session, tabId);
       
+      let tabState;
       if (!found) {
         const resolvedSessionKey = sessionKey || listItemId || 'default';
         session = await getSession(userId);
-        let totalTabs = 0;
-        for (const g of session.tabGroups.values()) totalTabs += g.size;
-        if (totalTabs >= MAX_TABS_PER_SESSION) {
-          throw new Error('Maximum tabs per session reached');
+        let sessionTabs = 0;
+        for (const g of session.tabGroups.values()) sessionTabs += g.size;
+        if (getTotalTabCount() >= MAX_TABS_GLOBAL || sessionTabs >= MAX_TABS_PER_SESSION) {
+          // Reuse oldest tab in session instead of rejecting
+          let oldestTab = null;
+          let oldestGroup = null;
+          let oldestTabId = null;
+          for (const [gKey, group] of session.tabGroups) {
+            for (const [tid, ts] of group) {
+              if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
+                oldestTab = ts;
+                oldestGroup = group;
+                oldestTabId = tid;
+              }
+            }
+          }
+          if (oldestTab) {
+            tabState = oldestTab;
+            const group = getTabGroup(session, resolvedSessionKey);
+            if (oldestGroup) oldestGroup.delete(oldestTabId);
+            group.set(tabId, tabState);
+            tabLocks.delete(oldestTabId);
+            log('info', 'tab recycled (limit reached)', { reqId: req.reqId, tabId, recycledFrom: oldestTabId, userId });
+          } else {
+            throw new Error('Maximum tabs per session reached');
+          }
+        } else {
+          const page = await session.context.newPage();
+          tabState = createTabState(page);
+          const group = getTabGroup(session, resolvedSessionKey);
+          group.set(tabId, tabState);
+          log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
         }
-        const page = await session.context.newPage();
-        const newTabState = createTabState(page);
-        const group = getTabGroup(session, resolvedSessionKey);
-        group.set(tabId, newTabState);
-        found = { tabState: newTabState, listItemId: resolvedSessionKey, group };
-        log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
+      } else {
+        tabState = found.tabState;
       }
-      
-      const { tabState } = found;
       tabState.toolCalls++;
       
       let targetUrl = url;
@@ -689,6 +812,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       return await withTabLock(tabId, async () => {
         await tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         tabState.visitedUrls.add(targetUrl);
+        tabState.lastSnapshot = null;
         tabState.refs = await buildRefs(tabState.page);
         return { ok: true, tabId, url: tabState.page.url(), refsAvailable: tabState.refs.size > 0 };
       });
@@ -879,6 +1003,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       }
       
       await tabState.page.waitForTimeout(500);
+      tabState.lastSnapshot = null;
       tabState.refs = await buildRefs(tabState.page);
       
       const newUrl = tabState.page.url();
@@ -1602,6 +1727,32 @@ setInterval(() => {
     browserConnected: browser?.isConnected() ?? false,
   });
 }, 5 * 60_000);
+
+// Active health probe — detect hung browser even when isConnected() lies
+setInterval(async () => {
+  if (!browser || healthState.isRecovering) return;
+  // Skip probe if operations are in flight
+  if (healthState.activeOps > 0) {
+    log('info', 'health probe skipped, operations active', { activeOps: healthState.activeOps });
+    return;
+  }
+  const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
+  if (timeSinceSuccess < 120000) return;
+  
+  let testContext;
+  try {
+    testContext = await browser.newContext();
+    const page = await testContext.newPage();
+    await page.goto('about:blank', { timeout: 5000 });
+    await page.close();
+    await testContext.close();
+    healthState.lastSuccessfulNav = Date.now();
+  } catch (err) {
+    log('warn', 'health probe failed', { error: err.message, timeSinceSuccessMs: timeSinceSuccess });
+    if (testContext) await testContext.close().catch(() => {});
+    restartBrowser('health probe failed').catch(() => {});
+  }
+}, 60_000);
 
 // Crash logging
 process.on('uncaughtException', (err) => {
