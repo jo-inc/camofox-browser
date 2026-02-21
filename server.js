@@ -180,6 +180,7 @@ const MAX_TABS_GLOBAL = parseInt(process.env.MAX_TABS_GLOBAL) || 10;
 const HANDLER_TIMEOUT_MS = parseInt(process.env.HANDLER_TIMEOUT_MS) || 30000;
 const MAX_CONCURRENT_PER_USER = parseInt(process.env.MAX_CONCURRENT_PER_USER) || 3;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
+const NAVIGATE_TIMEOUT_MS = parseInt(process.env.NAVIGATE_TIMEOUT_MS) || 25000;
 const BUILDREFS_TIMEOUT_MS = parseInt(process.env.BUILDREFS_TIMEOUT_MS) || 12000;
 const FAILURE_THRESHOLD = 3;
 const TAB_LOCK_TIMEOUT_MS = 30000;
@@ -690,6 +691,254 @@ function refToLocator(page, ref, refs) {
 }
 
 // Health check (passive — does not launch browser)
+// --- YouTube transcript extraction ---
+// POST /youtube/transcript { url, userId? }
+// Navigates to the YouTube page with Camoufox anti-detection,
+// extracts caption track URLs from the embedded player response,
+// fetches and parses the transcript, returns it in one call.
+app.post('/youtube/transcript', async (req, res) => {
+  const reqId = req.reqId;
+  try {
+    const { url, userId = '__yt_transcript__', languages = ['en'] } = req.body;
+    if (!url) return res.status(400).json({ error: 'url is required' });
+
+    const urlErr = validateUrl(url);
+    if (urlErr) return res.status(400).json({ error: urlErr });
+
+    const videoIdMatch = url.match(
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/
+    );
+    if (!videoIdMatch) {
+      return res.status(400).json({ error: 'Could not extract YouTube video ID from URL' });
+    }
+    const videoId = videoIdMatch[1];
+
+    log('info', 'youtube transcript: starting', { reqId, videoId, url });
+
+    const result = await withUserLimit(userId, async () => {
+      await ensureBrowser();
+      const session = await getSession(userId);
+      const page = await session.context.newPage();
+
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATE_TIMEOUT_MS });
+        await page.waitForTimeout(2000);
+
+        const captionData = await page.evaluate((preferredLangs) => {
+          const playerResponse =
+            window.ytInitialPlayerResponse ||
+            (typeof ytInitialPlayerResponse !== 'undefined' ? ytInitialPlayerResponse : null);
+
+          if (!playerResponse) {
+            const scripts = document.querySelectorAll('script');
+            for (const script of scripts) {
+              const text = script.textContent || '';
+              const match = text.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
+              if (match) {
+                try {
+                  const parsed = JSON.parse(match[1]);
+                  return extractCaptions(parsed, preferredLangs);
+                } catch (e) { /* continue */ }
+              }
+            }
+            return { error: 'no_player_response' };
+          }
+
+          return extractCaptions(playerResponse, preferredLangs);
+
+          function extractCaptions(response, langs) {
+            const title = response?.videoDetails?.title || '';
+            const captions = response?.captions;
+            if (!captions) return { error: 'no_captions', title };
+
+            const renderer = captions.playerCaptionsTracklistRenderer;
+            if (!renderer) return { error: 'no_caption_renderer', title };
+
+            const tracks = renderer.captionTracks || [];
+            if (tracks.length === 0) return { error: 'no_caption_tracks', title };
+
+            let bestTrack = null;
+            for (const lang of langs) {
+              for (const track of tracks) {
+                if (track.languageCode === lang && !track.kind) { bestTrack = track; break; }
+              }
+              if (bestTrack) break;
+              for (const track of tracks) {
+                if (track.languageCode === lang) { bestTrack = track; break; }
+              }
+              if (bestTrack) break;
+            }
+            if (!bestTrack) bestTrack = tracks[0];
+
+            return {
+              title,
+              captionUrl: bestTrack.baseUrl,
+              languageCode: bestTrack.languageCode,
+              kind: bestTrack.kind || 'manual',
+              availableLanguages: tracks.map(t => ({
+                code: t.languageCode,
+                name: t.name?.simpleText || t.languageCode,
+                kind: t.kind || 'manual',
+              })),
+            };
+          }
+        }, languages);
+
+        log('info', 'youtube transcript: caption data extracted', {
+          reqId, videoId, hasUrl: !!captionData?.captionUrl, error: captionData?.error,
+          title: captionData?.title?.slice(0, 50),
+        });
+
+        if (captionData.error) {
+          return {
+            status: 'error', code: 404,
+            message: `YouTube captions not available: ${captionData.error}`,
+            video_url: url, video_id: videoId, title: captionData.title || '',
+          };
+        }
+
+        const captionUrl = captionData.captionUrl;
+        let transcriptText = null;
+
+        // Try JSON3 format first
+        try {
+          const json3Url = captionUrl.includes('?') ? `${captionUrl}&fmt=json3` : `${captionUrl}?fmt=json3`;
+          const json3Resp = await page.evaluate(async (fetchUrl) => {
+            const resp = await fetch(fetchUrl);
+            return resp.ok ? await resp.text() : null;
+          }, json3Url);
+          if (json3Resp) transcriptText = parseJson3(json3Resp);
+        } catch (e) {
+          log('warn', 'youtube transcript: json3 fetch failed', { reqId, error: e.message });
+        }
+
+        // Fallback to VTT
+        if (!transcriptText) {
+          try {
+            const vttUrl = captionUrl.includes('?') ? `${captionUrl}&fmt=vtt` : `${captionUrl}?fmt=vtt`;
+            const vttResp = await page.evaluate(async (fetchUrl) => {
+              const resp = await fetch(fetchUrl);
+              return resp.ok ? await resp.text() : null;
+            }, vttUrl);
+            if (vttResp) transcriptText = parseVtt(vttResp);
+          } catch (e) {
+            log('warn', 'youtube transcript: vtt fetch failed', { reqId, error: e.message });
+          }
+        }
+
+        // Final fallback: raw XML
+        if (!transcriptText) {
+          try {
+            const xmlResp = await page.evaluate(async (fetchUrl) => {
+              const resp = await fetch(fetchUrl);
+              return resp.ok ? await resp.text() : null;
+            }, captionUrl);
+            if (xmlResp) transcriptText = parseXml(xmlResp);
+          } catch (e) {
+            log('warn', 'youtube transcript: xml fetch failed', { reqId, error: e.message });
+          }
+        }
+
+        if (!transcriptText || !transcriptText.trim()) {
+          return {
+            status: 'error', code: 404,
+            message: 'Caption URL found but transcript content was empty',
+            video_url: url, video_id: videoId, title: captionData.title || '',
+          };
+        }
+
+        return {
+          status: 'ok', transcript: transcriptText,
+          video_url: url, video_id: videoId, video_title: captionData.title || '',
+          language: captionData.languageCode, caption_kind: captionData.kind,
+          total_words: transcriptText.split(/\s+/).length,
+          available_languages: captionData.availableLanguages,
+        };
+      } finally {
+        await safePageClose(page);
+      }
+    });
+
+    log('info', 'youtube transcript: done', { reqId, videoId, status: result.status, words: result.total_words });
+    res.json(result);
+  } catch (err) {
+    log('error', 'youtube transcript failed', { reqId, error: err.message, stack: err.stack });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// --- YouTube transcript parsers ---
+
+function parseJson3(content) {
+  try {
+    const data = JSON.parse(content);
+    const events = data.events || [];
+    const lines = [];
+    for (const event of events) {
+      const segs = event.segs || [];
+      if (!segs.length) continue;
+      const text = segs.map(s => s.utf8 || '').join('').trim();
+      if (!text) continue;
+      const tsMs = event.tStartMs || 0;
+      const tsSec = Math.floor(tsMs / 1000);
+      const mm = Math.floor(tsSec / 60);
+      const ss = tsSec % 60;
+      lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}] ${text}`);
+    }
+    return lines.join('\n');
+  } catch (e) {
+    return null;
+  }
+}
+
+function parseVtt(content) {
+  const lines = content.split('\n');
+  const result = [];
+  let currentTimestamp = '';
+  for (const line of lines) {
+    const stripped = line.trim();
+    if (!stripped || stripped === 'WEBVTT' || stripped.startsWith('Kind:') || stripped.startsWith('Language:') || stripped.startsWith('NOTE')) continue;
+    if (stripped.includes(' --> ')) {
+      const parts = stripped.split(' --> ');
+      if (parts[0]) currentTimestamp = formatVttTs(parts[0].trim());
+      continue;
+    }
+    const text = stripped.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+    if (text && currentTimestamp) { result.push(`[${currentTimestamp}] ${text}`); currentTimestamp = ''; }
+    else if (text) result.push(text);
+  }
+  return result.join('\n');
+}
+
+function parseXml(content) {
+  const lines = [];
+  const regex = /<text\s+start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    const startSec = parseFloat(match[1]) || 0;
+    const text = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+    if (!text) continue;
+    const mm = Math.floor(startSec / 60);
+    const ss = Math.floor(startSec % 60);
+    lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}] ${text}`);
+  }
+  return lines.join('\n');
+}
+
+function formatVttTs(ts) {
+  const parts = ts.split(':');
+  if (parts.length >= 3) {
+    const hours = parseInt(parts[0]) || 0;
+    const minutes = parseInt(parts[1]) || 0;
+    const totalMin = hours * 60 + minutes;
+    const seconds = (parts[2] || '00').split('.')[0];
+    return `${String(totalMin).padStart(2, '0')}:${seconds}`;
+  } else if (parts.length === 2) {
+    return `${String(parseInt(parts[0])).padStart(2, '0')}:${(parts[1] || '00').split('.')[0]}`;
+  }
+  return ts;
+}
+
 app.get('/health', (req, res) => {
   if (healthState.isRecovering) {
     return res.status(503).json({ ok: false, engine: 'camoufox', recovering: true });
