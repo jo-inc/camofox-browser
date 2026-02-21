@@ -83,6 +83,7 @@ class BrowserClient {
   async getSnapshot(tabId, options = {}) {
     const params = new URLSearchParams({ userId: this.userId });
     if (options.includeScreenshot) params.append('includeScreenshot', 'true');
+    if (options.offset) params.append('offset', String(options.offset));
     return this.request('GET', `/tabs/${tabId}/snapshot?${params}`);
   }
   

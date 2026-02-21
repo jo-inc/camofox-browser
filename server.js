@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const os = require('os');
 const { expandMacro } = require('./lib/macros');
 const { loadConfig } = require('./lib/config');
+const { windowSnapshot } = require('./lib/snapshot');
 
 const CONFIG = loadConfig();
 
@@ -833,12 +834,25 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     const userId = req.query.userId;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const format = req.query.format || 'text';
+    const offset = parseInt(req.query.offset) || 0;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
     tabState.toolCalls++;
+
+    // Cached chunk retrieval for offset>0 requests
+    if (offset > 0 && tabState.lastSnapshot) {
+      const win = windowSnapshot(tabState.lastSnapshot, offset);
+      const response = { url: tabState.page.url(), snapshot: win.text, refsCount: tabState.refs.size, truncated: win.truncated, totalChars: win.totalChars, hasMore: win.hasMore, nextOffset: win.nextOffset };
+      if (req.query.includeScreenshot === 'true') {
+        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
+        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      }
+      log('info', 'snapshot (cached offset)', { reqId: req.reqId, tabId: req.params.tabId, offset, totalChars: win.totalChars });
+      return res.json(response);
+    }
 
     const result = await withUserLimit(userId, () => withTimeout((async () => {
       tabState.refs = await buildRefs(tabState.page);
@@ -878,10 +892,17 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         }).join('\n');
       }
       
+      tabState.lastSnapshot = annotatedYaml;
+      const win = windowSnapshot(annotatedYaml, 0);
+
       const response = {
         url: tabState.page.url(),
-        snapshot: annotatedYaml,
-        refsCount: tabState.refs.size
+        snapshot: win.text,
+        refsCount: tabState.refs.size,
+        truncated: win.truncated,
+        totalChars: win.totalChars,
+        hasMore: win.hasMore,
+        nextOffset: win.nextOffset,
       };
 
       if (req.query.includeScreenshot === 'true') {
@@ -892,7 +913,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       return response;
     })(), HANDLER_TIMEOUT_MS, 'snapshot'));
 
-    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot });
+    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot, truncated: result.truncated });
     res.json(result);
   } catch (err) {
     log('error', 'snapshot failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
@@ -1501,6 +1522,7 @@ app.post('/navigate', async (req, res) => {
 app.get('/snapshot', async (req, res) => {
   try {
     const { targetId, userId, format = 'text' } = req.query;
+    const offset = parseInt(req.query.offset) || 0;
     if (!userId) {
       return res.status(400).json({ error: 'userId is required' });
     }
@@ -1513,6 +1535,18 @@ app.get('/snapshot', async (req, res) => {
     
     const { tabState } = found;
     tabState.toolCalls++;
+
+    // Cached chunk retrieval
+    if (offset > 0 && tabState.lastSnapshot) {
+      const win = windowSnapshot(tabState.lastSnapshot, offset);
+      const response = { ok: true, format: 'aria', targetId, url: tabState.page.url(), snapshot: win.text, refsCount: tabState.refs.size, truncated: win.truncated, totalChars: win.totalChars, hasMore: win.hasMore, nextOffset: win.nextOffset };
+      if (req.query.includeScreenshot === 'true') {
+        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
+        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      }
+      return res.json(response);
+    }
+
     tabState.refs = await buildRefs(tabState.page);
     
     const ariaYaml = await getAriaSnapshot(tabState.page);
@@ -1541,13 +1575,20 @@ app.get('/snapshot', async (req, res) => {
       }).join('\n');
     }
     
+    tabState.lastSnapshot = annotatedYaml;
+    const win = windowSnapshot(annotatedYaml, 0);
+
     const response = {
       ok: true,
       format: 'aria',
       targetId,
       url: tabState.page.url(),
-      snapshot: annotatedYaml,
-      refsCount: tabState.refs.size
+      snapshot: win.text,
+      refsCount: tabState.refs.size,
+      truncated: win.truncated,
+      totalChars: win.totalChars,
+      hasMore: win.hasMore,
+      nextOffset: win.nextOffset,
     };
 
     if (req.query.includeScreenshot === 'true') {

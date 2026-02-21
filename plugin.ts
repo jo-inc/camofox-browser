@@ -238,20 +238,24 @@ export default function register(api: PluginApi) {
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_snapshot",
     description:
-      "Get accessibility snapshot of a Camoufox page with element refs (e1, e2, etc.) for interaction, plus a visual screenshot. Use with camofox_create_tab.",
+      "Get accessibility snapshot of a Camoufox page with element refs (e1, e2, etc.) for interaction, plus a visual screenshot. " +
+      "Large pages are truncated with pagination links preserved at the bottom. " +
+      "If the response includes hasMore=true and nextOffset, call again with that offset to see more content.",
     parameters: {
       type: "object",
       properties: {
         tabId: { type: "string", description: "Tab identifier" },
+        offset: { type: "number", description: "Character offset for paginated snapshots. Use nextOffset from a previous truncated response." },
       },
       required: ["tabId"],
     },
     async execute(_id, params) {
-      const { tabId } = params as { tabId: string };
+      const { tabId, offset } = params as { tabId: string; offset?: number };
       const userId = ctx.agentId || fallbackUserId;
-      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}&includeScreenshot=true`) as Record<string, unknown>;
+      const qs = offset ? `&offset=${offset}` : '';
+      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}&includeScreenshot=true${qs}`) as Record<string, unknown>;
       const content: ToolResult["content"] = [
-        { type: "text", text: JSON.stringify({ url: result.url, refsCount: result.refsCount, snapshot: result.snapshot }, null, 2) },
+        { type: "text", text: JSON.stringify({ url: result.url, refsCount: result.refsCount, snapshot: result.snapshot, truncated: result.truncated, totalChars: result.totalChars, hasMore: result.hasMore, nextOffset: result.nextOffset }, null, 2) },
       ];
       const screenshot = result.screenshot as { data?: string; mimeType?: string } | undefined;
       if (screenshot?.data) {
