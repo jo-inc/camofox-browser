@@ -37,8 +37,19 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Cookie Import** - inject Netscape-format cookie files for authenticated browsing
 - **Proxy + GeoIP** - route traffic through residential proxies with automatic locale/timezone
 - **Structured Logging** - JSON log lines with request IDs for production observability
+- **YouTube Transcripts** - extract captions from any YouTube video via yt-dlp, no API key needed
 - **Search Macros** - `@google_search`, `@youtube_search`, `@amazon_search`, `@reddit_subreddit`, and 10 more
+- **Snapshot Screenshots** - include a base64 PNG screenshot alongside the accessibility snapshot
+- **Large Page Handling** - automatic snapshot truncation with offset-based pagination
 - **Deploy Anywhere** - Docker, Fly.io, Railway
+
+## Optional Dependencies
+
+| Dependency | Purpose | Install |
+|-----------|---------|---------|
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | YouTube transcript extraction (fast path) | `pip install yt-dlp` or `brew install yt-dlp` |
+
+The Docker image includes yt-dlp. For local dev, install it for the `/youtube/transcript` endpoint. Without it, the endpoint falls back to a slower browser-based method.
 
 ## Quick Start
 
@@ -252,7 +263,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs |
+| `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots) |
 | `POST` | `/tabs/:id/click` | Click element by ref or CSS selector |
 | `POST` | `/tabs/:id/type` | Type text into element |
 | `POST` | `/tabs/:id/press` | Press a keyboard key |
@@ -264,6 +275,21 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `POST` | `/tabs/:id/back` | Go back |
 | `POST` | `/tabs/:id/forward` | Go forward |
 | `POST` | `/tabs/:id/refresh` | Refresh page |
+
+### YouTube Transcript
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/youtube/transcript` | Extract captions from a YouTube video |
+
+```bash
+curl -X POST http://localhost:9377/youtube/transcript \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "languages": ["en"]}'
+# → { "status": "ok", "transcript": "[00:18] ♪ We're no strangers to love ♪\n...", "video_title": "...", "total_words": 548 }
+```
+
+Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser needed). Falls back to a browser-based intercept method if yt-dlp is not installed — this is slower and less reliable due to YouTube ad pre-rolls.
 
 ### Server
 
