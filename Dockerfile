@@ -31,7 +31,13 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
+    # yt-dlp runtime dependency
+    python3-minimal \
     && rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp for YouTube transcript extraction (no browser needed)
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
 
 # Pre-bake Camoufox browser binary into image
 # This avoids downloading at runtime and pins the version

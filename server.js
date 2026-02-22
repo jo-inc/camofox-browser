@@ -690,16 +690,40 @@ function refToLocator(page, ref, refs) {
   return locator;
 }
 
-// Health check (passive — does not launch browser)
-// --- YouTube transcript extraction ---
-// POST /youtube/transcript { url, userId? }
-// Navigates to the YouTube page with Camoufox anti-detection,
-// extracts caption track URLs from the embedded player response,
-// fetches and parses the transcript, returns it in one call.
+// --- YouTube transcript extraction via yt-dlp ---
+// POST /youtube/transcript { url, languages? }
+// Uses yt-dlp to extract subtitles — no browser needed, no ads, no playback.
+// yt-dlp handles YouTube's signed caption URLs correctly.
+// Falls back to Camoufox page intercept if yt-dlp is not installed.
+
+const { execFile } = require('child_process');
+const { mkdtemp, readFile, readdir, rm } = require('fs/promises');
+const { tmpdir } = require('os');
+const { join } = require('path');
+
+// Detect yt-dlp binary at startup
+let ytDlpPath = null;
+(async () => {
+  for (const candidate of ['yt-dlp', '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp']) {
+    try {
+      await new Promise((resolve, reject) => {
+        execFile(candidate, ['--version'], { timeout: 5000 }, (err, stdout) => {
+          if (err) return reject(err);
+          resolve(stdout.trim());
+        });
+      });
+      ytDlpPath = candidate;
+      log('info', 'yt-dlp found', { path: candidate });
+      break;
+    } catch {}
+  }
+  if (!ytDlpPath) log('warn', 'yt-dlp not found — YouTube transcript endpoint will use browser fallback');
+})();
+
 app.post('/youtube/transcript', async (req, res) => {
   const reqId = req.reqId;
   try {
-    const { url, userId = '__yt_transcript__', languages = ['en'] } = req.body;
+    const { url, languages = ['en'] } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
 
     const urlErr = validateUrl(url);
@@ -712,152 +736,16 @@ app.post('/youtube/transcript', async (req, res) => {
       return res.status(400).json({ error: 'Could not extract YouTube video ID from URL' });
     }
     const videoId = videoIdMatch[1];
+    const lang = languages[0] || 'en';
 
-    log('info', 'youtube transcript: starting', { reqId, videoId, url });
+    log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: ytDlpPath ? 'yt-dlp' : 'browser' });
 
-    const result = await withUserLimit(userId, async () => {
-      await ensureBrowser();
-      const session = await getSession(userId);
-      const page = await session.context.newPage();
-
-      try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATE_TIMEOUT_MS });
-        await page.waitForTimeout(2000);
-
-        const captionData = await page.evaluate((preferredLangs) => {
-          const playerResponse =
-            window.ytInitialPlayerResponse ||
-            (typeof ytInitialPlayerResponse !== 'undefined' ? ytInitialPlayerResponse : null);
-
-          if (!playerResponse) {
-            const scripts = document.querySelectorAll('script');
-            for (const script of scripts) {
-              const text = script.textContent || '';
-              const match = text.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
-              if (match) {
-                try {
-                  const parsed = JSON.parse(match[1]);
-                  return extractCaptions(parsed, preferredLangs);
-                } catch (e) { /* continue */ }
-              }
-            }
-            return { error: 'no_player_response' };
-          }
-
-          return extractCaptions(playerResponse, preferredLangs);
-
-          function extractCaptions(response, langs) {
-            const title = response?.videoDetails?.title || '';
-            const captions = response?.captions;
-            if (!captions) return { error: 'no_captions', title };
-
-            const renderer = captions.playerCaptionsTracklistRenderer;
-            if (!renderer) return { error: 'no_caption_renderer', title };
-
-            const tracks = renderer.captionTracks || [];
-            if (tracks.length === 0) return { error: 'no_caption_tracks', title };
-
-            let bestTrack = null;
-            for (const lang of langs) {
-              for (const track of tracks) {
-                if (track.languageCode === lang && !track.kind) { bestTrack = track; break; }
-              }
-              if (bestTrack) break;
-              for (const track of tracks) {
-                if (track.languageCode === lang) { bestTrack = track; break; }
-              }
-              if (bestTrack) break;
-            }
-            if (!bestTrack) bestTrack = tracks[0];
-
-            return {
-              title,
-              captionUrl: bestTrack.baseUrl,
-              languageCode: bestTrack.languageCode,
-              kind: bestTrack.kind || 'manual',
-              availableLanguages: tracks.map(t => ({
-                code: t.languageCode,
-                name: t.name?.simpleText || t.languageCode,
-                kind: t.kind || 'manual',
-              })),
-            };
-          }
-        }, languages);
-
-        log('info', 'youtube transcript: caption data extracted', {
-          reqId, videoId, hasUrl: !!captionData?.captionUrl, error: captionData?.error,
-          title: captionData?.title?.slice(0, 50),
-        });
-
-        if (captionData.error) {
-          return {
-            status: 'error', code: 404,
-            message: `YouTube captions not available: ${captionData.error}`,
-            video_url: url, video_id: videoId, title: captionData.title || '',
-          };
-        }
-
-        const captionUrl = captionData.captionUrl;
-        let transcriptText = null;
-
-        // Try JSON3 format first
-        try {
-          const json3Url = captionUrl.includes('?') ? `${captionUrl}&fmt=json3` : `${captionUrl}?fmt=json3`;
-          const json3Resp = await page.evaluate(async (fetchUrl) => {
-            const resp = await fetch(fetchUrl);
-            return resp.ok ? await resp.text() : null;
-          }, json3Url);
-          if (json3Resp) transcriptText = parseJson3(json3Resp);
-        } catch (e) {
-          log('warn', 'youtube transcript: json3 fetch failed', { reqId, error: e.message });
-        }
-
-        // Fallback to VTT
-        if (!transcriptText) {
-          try {
-            const vttUrl = captionUrl.includes('?') ? `${captionUrl}&fmt=vtt` : `${captionUrl}?fmt=vtt`;
-            const vttResp = await page.evaluate(async (fetchUrl) => {
-              const resp = await fetch(fetchUrl);
-              return resp.ok ? await resp.text() : null;
-            }, vttUrl);
-            if (vttResp) transcriptText = parseVtt(vttResp);
-          } catch (e) {
-            log('warn', 'youtube transcript: vtt fetch failed', { reqId, error: e.message });
-          }
-        }
-
-        // Final fallback: raw XML
-        if (!transcriptText) {
-          try {
-            const xmlResp = await page.evaluate(async (fetchUrl) => {
-              const resp = await fetch(fetchUrl);
-              return resp.ok ? await resp.text() : null;
-            }, captionUrl);
-            if (xmlResp) transcriptText = parseXml(xmlResp);
-          } catch (e) {
-            log('warn', 'youtube transcript: xml fetch failed', { reqId, error: e.message });
-          }
-        }
-
-        if (!transcriptText || !transcriptText.trim()) {
-          return {
-            status: 'error', code: 404,
-            message: 'Caption URL found but transcript content was empty',
-            video_url: url, video_id: videoId, title: captionData.title || '',
-          };
-        }
-
-        return {
-          status: 'ok', transcript: transcriptText,
-          video_url: url, video_id: videoId, video_title: captionData.title || '',
-          language: captionData.languageCode, caption_kind: captionData.kind,
-          total_words: transcriptText.split(/\s+/).length,
-          available_languages: captionData.availableLanguages,
-        };
-      } finally {
-        await safePageClose(page);
-      }
-    });
+    let result;
+    if (ytDlpPath) {
+      result = await ytDlpTranscript(reqId, url, videoId, lang);
+    } else {
+      result = await browserTranscript(reqId, url, videoId, lang);
+    }
 
     log('info', 'youtube transcript: done', { reqId, videoId, status: result.status, words: result.total_words });
     res.json(result);
@@ -866,6 +754,165 @@ app.post('/youtube/transcript', async (req, res) => {
     res.status(500).json({ error: safeError(err) });
   }
 });
+
+// Strategy 1: yt-dlp (preferred — fast, no browser, no ads)
+async function ytDlpTranscript(reqId, url, videoId, lang) {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'yt-'));
+  try {
+    // Step 1: Get title via --print (fast, no download)
+    const title = await new Promise((resolve, reject) => {
+      execFile(ytDlpPath, [
+        '--skip-download', '--no-warnings', '--print', '%(title)s', url,
+      ], { timeout: 15000 }, (err, stdout) => {
+        if (err) return reject(new Error(`yt-dlp metadata failed: ${err.message}`));
+        resolve(stdout.trim().split('\n')[0] || '');
+      });
+    });
+
+    // Step 2: Download subtitles to temp dir
+    await new Promise((resolve, reject) => {
+      execFile(ytDlpPath, [
+        '--skip-download',
+        '--write-sub', '--write-auto-sub',
+        '--sub-lang', lang,
+        '--sub-format', 'json3',
+        '-o', join(tmpDir, '%(id)s'),
+        url,
+      ], { timeout: 30000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(`yt-dlp subtitle download failed: ${err.message}\n${stderr}`));
+        resolve();
+      });
+    });
+
+    // Find the subtitle file
+    const files = await readdir(tmpDir);
+    const subFile = files.find(f => f.endsWith('.json3') || f.endsWith('.vtt') || f.endsWith('.srv3'));
+    if (!subFile) {
+      return {
+        status: 'error', code: 404,
+        message: 'No captions available for this video',
+        video_url: url, video_id: videoId, title,
+      };
+    }
+
+    const content = await readFile(join(tmpDir, subFile), 'utf8');
+    let transcriptText = null;
+
+    if (subFile.endsWith('.json3')) {
+      transcriptText = parseJson3(content);
+    } else if (subFile.endsWith('.vtt')) {
+      transcriptText = parseVtt(content);
+    } else {
+      transcriptText = parseXml(content);
+    }
+
+    if (!transcriptText || !transcriptText.trim()) {
+      return {
+        status: 'error', code: 404,
+        message: 'Subtitle file found but content was empty',
+        video_url: url, video_id: videoId, title,
+      };
+    }
+
+    // Detect language from filename (e.g., dQw4w9WgXcQ.en.json3)
+    const langMatch = subFile.match(/\.([a-z]{2}(?:-[a-zA-Z]+)?)\.(?:json3|vtt|srv3)$/);
+
+    return {
+      status: 'ok', transcript: transcriptText,
+      video_url: url, video_id: videoId, video_title: title,
+      language: langMatch?.[1] || lang,
+      total_words: transcriptText.split(/\s+/).length,
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Strategy 2: Browser fallback — play video, intercept timedtext network response
+async function browserTranscript(reqId, url, videoId, lang) {
+  return await withUserLimit('__yt_transcript__', async () => {
+    await ensureBrowser();
+    const session = await getSession('__yt_transcript__');
+    const page = await session.context.newPage();
+
+    try {
+      // Mute audio
+      await page.addInitScript(() => {
+        const origPlay = HTMLMediaElement.prototype.play;
+        HTMLMediaElement.prototype.play = function() { this.volume = 0; this.muted = true; return origPlay.call(this); };
+      });
+
+      // Intercept timedtext responses — filter by video ID to skip ad captions
+      let interceptedCaptions = null;
+      page.on('response', async (response) => {
+        const respUrl = response.url();
+        if (respUrl.includes('/api/timedtext') && respUrl.includes(`v=${videoId}`) && !interceptedCaptions) {
+          try {
+            const body = await response.text();
+            if (body && body.length > 0) interceptedCaptions = body;
+          } catch {}
+        }
+      });
+
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATE_TIMEOUT_MS });
+      await page.waitForTimeout(2000);
+
+      // Extract metadata from ytInitialPlayerResponse
+      const meta = await page.evaluate(() => {
+        const r = window.ytInitialPlayerResponse || (typeof ytInitialPlayerResponse !== 'undefined' ? ytInitialPlayerResponse : null);
+        if (!r) return { title: '' };
+        const tracks = r?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+        return {
+          title: r?.videoDetails?.title || '',
+          languages: tracks.map(t => ({ code: t.languageCode, name: t.name?.simpleText || t.languageCode, kind: t.kind || 'manual' })),
+        };
+      });
+
+      // Start playback to trigger caption loading
+      await page.evaluate(() => {
+        const v = document.querySelector('video');
+        if (v) { v.muted = true; v.play().catch(() => {}); }
+      }).catch(() => {});
+
+      // Wait up to 20s for the target video's captions (may need to sit through an ad)
+      for (let i = 0; i < 40 && !interceptedCaptions; i++) {
+        await page.waitForTimeout(500);
+      }
+
+      if (!interceptedCaptions) {
+        return {
+          status: 'error', code: 404,
+          message: 'No captions loaded during playback (video may have no captions, or ad blocked it)',
+          video_url: url, video_id: videoId, title: meta.title,
+        };
+      }
+
+      log('info', 'youtube transcript: intercepted captions', { reqId, len: interceptedCaptions.length });
+
+      let transcriptText = null;
+      if (interceptedCaptions.trimStart().startsWith('{')) transcriptText = parseJson3(interceptedCaptions);
+      else if (interceptedCaptions.includes('WEBVTT')) transcriptText = parseVtt(interceptedCaptions);
+      else if (interceptedCaptions.includes('<text')) transcriptText = parseXml(interceptedCaptions);
+
+      if (!transcriptText || !transcriptText.trim()) {
+        return {
+          status: 'error', code: 404,
+          message: 'Caption data intercepted but could not be parsed',
+          video_url: url, video_id: videoId, title: meta.title,
+        };
+      }
+
+      return {
+        status: 'ok', transcript: transcriptText,
+        video_url: url, video_id: videoId, video_title: meta.title,
+        language: lang, total_words: transcriptText.split(/\s+/).length,
+        available_languages: meta.languages,
+      };
+    } finally {
+      await safePageClose(page);
+    }
+  });
+}
 
 // --- YouTube transcript parsers ---
 
