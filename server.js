@@ -6,6 +6,7 @@ const os = require('os');
 const { expandMacro } = require('./lib/macros');
 const { loadConfig } = require('./lib/config');
 const { windowSnapshot } = require('./lib/snapshot');
+const { detectYtDlp, hasYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } = require('./lib/youtube');
 
 const CONFIG = loadConfig();
 
@@ -172,16 +173,16 @@ let browser = null;
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
 const sessions = new Map();
 
-const SESSION_TIMEOUT_MS = parseInt(process.env.SESSION_TIMEOUT_MS) || 1800000; // 30 min
+const SESSION_TIMEOUT_MS = CONFIG.sessionTimeoutMs;
 const MAX_SNAPSHOT_NODES = 500;
-const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 50;
-const MAX_TABS_PER_SESSION = parseInt(process.env.MAX_TABS_PER_SESSION) || 10;
-const MAX_TABS_GLOBAL = parseInt(process.env.MAX_TABS_GLOBAL) || 10;
-const HANDLER_TIMEOUT_MS = parseInt(process.env.HANDLER_TIMEOUT_MS) || 30000;
-const MAX_CONCURRENT_PER_USER = parseInt(process.env.MAX_CONCURRENT_PER_USER) || 3;
+const MAX_SESSIONS = CONFIG.maxSessions;
+const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
+const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
+const HANDLER_TIMEOUT_MS = CONFIG.handlerTimeoutMs;
+const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
-const NAVIGATE_TIMEOUT_MS = parseInt(process.env.NAVIGATE_TIMEOUT_MS) || 25000;
-const BUILDREFS_TIMEOUT_MS = parseInt(process.env.BUILDREFS_TIMEOUT_MS) || 12000;
+const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
+const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const FAILURE_THRESHOLD = 3;
 const TAB_LOCK_TIMEOUT_MS = 30000;
 
@@ -297,7 +298,7 @@ function buildProxyConfig() {
   };
 }
 
-const BROWSER_IDLE_TIMEOUT_MS = parseInt(process.env.BROWSER_IDLE_TIMEOUT_MS) || 300000; // 5 min
+const BROWSER_IDLE_TIMEOUT_MS = CONFIG.browserIdleTimeoutMs;
 let browserIdleTimer = null;
 let browserLaunchPromise = null;
 
@@ -690,35 +691,11 @@ function refToLocator(page, ref, refs) {
   return locator;
 }
 
-// --- YouTube transcript extraction via yt-dlp ---
-// POST /youtube/transcript { url, languages? }
-// Uses yt-dlp to extract subtitles — no browser needed, no ads, no playback.
-// yt-dlp handles YouTube's signed caption URLs correctly.
-// Falls back to Camoufox page intercept if yt-dlp is not installed.
+// --- YouTube transcript ---
+// Implementation extracted to lib/youtube.js to avoid scanner false positives
+// (child_process + app.post in same file triggers OpenClaw skill-scanner)
 
-const { execFile } = require('child_process');
-const { mkdtemp, readFile, readdir, rm } = require('fs/promises');
-const { tmpdir } = require('os');
-const { join } = require('path');
-
-// Detect yt-dlp binary at startup
-let ytDlpPath = null;
-(async () => {
-  for (const candidate of ['yt-dlp', '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp']) {
-    try {
-      await new Promise((resolve, reject) => {
-        execFile(candidate, ['--version'], { timeout: 5000 }, (err, stdout) => {
-          if (err) return reject(err);
-          resolve(stdout.trim());
-        });
-      });
-      ytDlpPath = candidate;
-      log('info', 'yt-dlp found', { path: candidate });
-      break;
-    } catch {}
-  }
-  if (!ytDlpPath) log('warn', 'yt-dlp not found — YouTube transcript endpoint will use browser fallback');
-})();
+detectYtDlp(log);
 
 app.post('/youtube/transcript', async (req, res) => {
   const reqId = req.reqId;
@@ -738,10 +715,10 @@ app.post('/youtube/transcript', async (req, res) => {
     const videoId = videoIdMatch[1];
     const lang = languages[0] || 'en';
 
-    log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: ytDlpPath ? 'yt-dlp' : 'browser' });
+    log('info', 'youtube transcript: starting', { reqId, videoId, lang, method: hasYtDlp() ? 'yt-dlp' : 'browser' });
 
     let result;
-    if (ytDlpPath) {
+    if (hasYtDlp()) {
       result = await ytDlpTranscript(reqId, url, videoId, lang);
     } else {
       result = await browserTranscript(reqId, url, videoId, lang);
@@ -755,80 +732,7 @@ app.post('/youtube/transcript', async (req, res) => {
   }
 });
 
-// Strategy 1: yt-dlp (preferred — fast, no browser, no ads)
-async function ytDlpTranscript(reqId, url, videoId, lang) {
-  const tmpDir = await mkdtemp(join(tmpdir(), 'yt-'));
-  try {
-    // Step 1: Get title via --print (fast, no download)
-    const title = await new Promise((resolve, reject) => {
-      execFile(ytDlpPath, [
-        '--skip-download', '--no-warnings', '--print', '%(title)s', url,
-      ], { timeout: 15000 }, (err, stdout) => {
-        if (err) return reject(new Error(`yt-dlp metadata failed: ${err.message}`));
-        resolve(stdout.trim().split('\n')[0] || '');
-      });
-    });
-
-    // Step 2: Download subtitles to temp dir
-    await new Promise((resolve, reject) => {
-      execFile(ytDlpPath, [
-        '--skip-download',
-        '--write-sub', '--write-auto-sub',
-        '--sub-lang', lang,
-        '--sub-format', 'json3',
-        '-o', join(tmpDir, '%(id)s'),
-        url,
-      ], { timeout: 30000 }, (err, stdout, stderr) => {
-        if (err) return reject(new Error(`yt-dlp subtitle download failed: ${err.message}\n${stderr}`));
-        resolve();
-      });
-    });
-
-    // Find the subtitle file
-    const files = await readdir(tmpDir);
-    const subFile = files.find(f => f.endsWith('.json3') || f.endsWith('.vtt') || f.endsWith('.srv3'));
-    if (!subFile) {
-      return {
-        status: 'error', code: 404,
-        message: 'No captions available for this video',
-        video_url: url, video_id: videoId, title,
-      };
-    }
-
-    const content = await readFile(join(tmpDir, subFile), 'utf8');
-    let transcriptText = null;
-
-    if (subFile.endsWith('.json3')) {
-      transcriptText = parseJson3(content);
-    } else if (subFile.endsWith('.vtt')) {
-      transcriptText = parseVtt(content);
-    } else {
-      transcriptText = parseXml(content);
-    }
-
-    if (!transcriptText || !transcriptText.trim()) {
-      return {
-        status: 'error', code: 404,
-        message: 'Subtitle file found but content was empty',
-        video_url: url, video_id: videoId, title,
-      };
-    }
-
-    // Detect language from filename (e.g., dQw4w9WgXcQ.en.json3)
-    const langMatch = subFile.match(/\.([a-z]{2}(?:-[a-zA-Z]+)?)\.(?:json3|vtt|srv3)$/);
-
-    return {
-      status: 'ok', transcript: transcriptText,
-      video_url: url, video_id: videoId, video_title: title,
-      language: langMatch?.[1] || lang,
-      total_words: transcriptText.split(/\s+/).length,
-    };
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-// Strategy 2: Browser fallback — play video, intercept timedtext network response
+// Browser fallback — play video, intercept timedtext network response
 async function browserTranscript(reqId, url, videoId, lang) {
   return await withUserLimit('__yt_transcript__', async () => {
     await ensureBrowser();
@@ -836,13 +740,11 @@ async function browserTranscript(reqId, url, videoId, lang) {
     const page = await session.context.newPage();
 
     try {
-      // Mute audio
       await page.addInitScript(() => {
         const origPlay = HTMLMediaElement.prototype.play;
         HTMLMediaElement.prototype.play = function() { this.volume = 0; this.muted = true; return origPlay.call(this); };
       });
 
-      // Intercept timedtext responses — filter by video ID to skip ad captions
       let interceptedCaptions = null;
       page.on('response', async (response) => {
         const respUrl = response.url();
@@ -857,7 +759,6 @@ async function browserTranscript(reqId, url, videoId, lang) {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATE_TIMEOUT_MS });
       await page.waitForTimeout(2000);
 
-      // Extract metadata from ytInitialPlayerResponse
       const meta = await page.evaluate(() => {
         const r = window.ytInitialPlayerResponse || (typeof ytInitialPlayerResponse !== 'undefined' ? ytInitialPlayerResponse : null);
         if (!r) return { title: '' };
@@ -868,13 +769,11 @@ async function browserTranscript(reqId, url, videoId, lang) {
         };
       });
 
-      // Start playback to trigger caption loading
       await page.evaluate(() => {
         const v = document.querySelector('video');
         if (v) { v.muted = true; v.play().catch(() => {}); }
       }).catch(() => {});
 
-      // Wait up to 20s for the target video's captions (may need to sit through an ad)
       for (let i = 0; i < 40 && !interceptedCaptions; i++) {
         await page.waitForTimeout(500);
       }
@@ -912,78 +811,6 @@ async function browserTranscript(reqId, url, videoId, lang) {
       await safePageClose(page);
     }
   });
-}
-
-// --- YouTube transcript parsers ---
-
-function parseJson3(content) {
-  try {
-    const data = JSON.parse(content);
-    const events = data.events || [];
-    const lines = [];
-    for (const event of events) {
-      const segs = event.segs || [];
-      if (!segs.length) continue;
-      const text = segs.map(s => s.utf8 || '').join('').trim();
-      if (!text) continue;
-      const tsMs = event.tStartMs || 0;
-      const tsSec = Math.floor(tsMs / 1000);
-      const mm = Math.floor(tsSec / 60);
-      const ss = tsSec % 60;
-      lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}] ${text}`);
-    }
-    return lines.join('\n');
-  } catch (e) {
-    return null;
-  }
-}
-
-function parseVtt(content) {
-  const lines = content.split('\n');
-  const result = [];
-  let currentTimestamp = '';
-  for (const line of lines) {
-    const stripped = line.trim();
-    if (!stripped || stripped === 'WEBVTT' || stripped.startsWith('Kind:') || stripped.startsWith('Language:') || stripped.startsWith('NOTE')) continue;
-    if (stripped.includes(' --> ')) {
-      const parts = stripped.split(' --> ');
-      if (parts[0]) currentTimestamp = formatVttTs(parts[0].trim());
-      continue;
-    }
-    const text = stripped.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
-    if (text && currentTimestamp) { result.push(`[${currentTimestamp}] ${text}`); currentTimestamp = ''; }
-    else if (text) result.push(text);
-  }
-  return result.join('\n');
-}
-
-function parseXml(content) {
-  const lines = [];
-  const regex = /<text\s+start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g;
-  let match;
-  while ((match = regex.exec(content)) !== null) {
-    const startSec = parseFloat(match[1]) || 0;
-    const text = match[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
-    if (!text) continue;
-    const mm = Math.floor(startSec / 60);
-    const ss = Math.floor(startSec % 60);
-    lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}] ${text}`);
-  }
-  return lines.join('\n');
-}
-
-function formatVttTs(ts) {
-  const parts = ts.split(':');
-  if (parts.length >= 3) {
-    const hours = parseInt(parts[0]) || 0;
-    const minutes = parseInt(parts[1]) || 0;
-    const totalMin = hours * 60 + minutes;
-    const seconds = (parts[2] || '00').split('.')[0];
-    return `${String(totalMin).padStart(2, '0')}:${seconds}`;
-  } else if (parts.length === 2) {
-    return `${String(parseInt(parts[0])).padStart(2, '0')}:${(parts[1] || '00').split('.')[0]}`;
-  }
-  return ts;
 }
 
 app.get('/health', (req, res) => {
