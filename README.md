@@ -41,6 +41,8 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Search Macros** - `@google_search`, `@youtube_search`, `@amazon_search`, `@reddit_subreddit`, and 10 more
 - **Snapshot Screenshots** - include a base64 PNG screenshot alongside the accessibility snapshot
 - **Large Page Handling** - automatic snapshot truncation with offset-based pagination
+- **Download Capture** - capture browser downloads and fetch them via API (optional inline base64)
+- **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
 - **Deploy Anywhere** - Docker, Fly.io, Railway
 
 ## Optional Dependencies
@@ -271,6 +273,8 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `POST` | `/tabs/:id/navigate` | Navigate to URL or search macro |
 | `POST` | `/tabs/:id/wait` | Wait for selector or timeout |
 | `GET` | `/tabs/:id/links` | Extract all links on page |
+| `GET` | `/tabs/:id/images` | List `<img>` elements. Query params: `includeData=true` (return inline data URLs), `maxBytes=N`, `limit=N` |
+| `GET` | `/tabs/:id/downloads` | List captured downloads. Query params: `includeData=true` (base64 file data), `consume=true` (clear after read), `maxBytes=N` |
 | `GET` | `/tabs/:id/screenshot` | Take screenshot |
 | `POST` | `/tabs/:id/back` | Go back |
 | `POST` | `/tabs/:id/forward` | Go forward |
