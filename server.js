@@ -3,6 +3,8 @@ const { firefox } = require('playwright-core');
 const express = require('express');
 const crypto = require('crypto');
 const os = require('os');
+const path = require('path');
+const fs = require('node:fs/promises');
 const { expandMacro } = require('./lib/macros');
 const { loadConfig } = require('./lib/config');
 const { windowSnapshot } = require('./lib/snapshot');
@@ -92,26 +94,38 @@ function validateUrl(url) {
   }
 }
 
+function isLoopbackAddress(address) {
+  if (!address) return false;
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 // Import cookies into a user's browser context (Playwright cookies format)
 // POST /sessions/:userId/cookies { cookies: Cookie[] }
 //
 // SECURITY:
 // Cookie injection moves this from "anonymous browsing" to "authenticated browsing".
-// This endpoint is DISABLED unless CAMOFOX_API_KEY is set.
-// When enabled, caller must send: Authorization: Bearer <CAMOFOX_API_KEY>
+// By default, this endpoint is protected by CAMOFOX_API_KEY.
+// For local development convenience, when CAMOFOX_API_KEY is NOT set, we allow
+// unauthenticated cookie import ONLY from loopback (127.0.0.1 / ::1) and ONLY
+// when NODE_ENV != production.
 app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
-    if (!CONFIG.apiKey) {
-      return res.status(403).json({
-        error: 'Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint.',
-      });
-    }
-    const apiKey = CONFIG.apiKey;
-
-    const auth = String(req.headers['authorization'] || '');
-    const match = auth.match(/^Bearer\s+(.+)$/i);
-    if (!match || !timingSafeCompare(match[1], apiKey)) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (CONFIG.apiKey) {
+      const apiKey = CONFIG.apiKey;
+      const auth = String(req.headers['authorization'] || '');
+      const match = auth.match(/^Bearer\s+(.+)$/i);
+      if (!match || !timingSafeCompare(match[1], apiKey)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else {
+      const remoteAddress = req.socket?.remoteAddress || '';
+      const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
+      if (!allowUnauthedLocal) {
+        return res.status(403).json({
+          error:
+            'Cookie import is disabled without CAMOFOX_API_KEY except for loopback requests in non-production environments.',
+        });
+      }
     }
 
     const userId = req.params.userId;
@@ -169,7 +183,7 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
 
 let browser = null;
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
-// TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, toolCalls: number }
+// TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
 const sessions = new Map();
 
@@ -185,6 +199,8 @@ const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
 const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const FAILURE_THRESHOLD = 3;
 const TAB_LOCK_TIMEOUT_MS = 30000;
+const MAX_DOWNLOAD_RECORDS_PER_TAB = 20;
+const MAX_DOWNLOAD_INLINE_BYTES = 20 * 1024 * 1024;
 
 // Per-tab locks to serialize operations on the same tab
 // tabId -> Promise (the currently executing operation)
@@ -475,9 +491,119 @@ function createTabState(page) {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
+    downloads: [],
     toolCalls: 0,
     lastSnapshot: null,
   };
+}
+
+function sanitizeFilename(value) {
+  return String(value || 'download.bin')
+    .replace(/[\\/:*?"<>|\u0000-\u001F]/g, '_')
+    .trim()
+    .slice(0, 200) || 'download.bin';
+}
+
+function guessMimeTypeFromName(value) {
+  const normalized = String(value || '').toLowerCase();
+  if (normalized.endsWith('.png')) return 'image/png';
+  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
+  if (normalized.endsWith('.webp')) return 'image/webp';
+  if (normalized.endsWith('.gif')) return 'image/gif';
+  if (normalized.endsWith('.svg')) return 'image/svg+xml';
+  return 'application/octet-stream';
+}
+
+async function removeDownloadFileIfPresent(record) {
+  const filePath = record?.filePath;
+  if (!filePath) return;
+  await fs.unlink(filePath).catch(() => {});
+}
+
+async function trimTabDownloads(tabState) {
+  while (tabState.downloads.length > MAX_DOWNLOAD_RECORDS_PER_TAB) {
+    const stale = tabState.downloads.shift();
+    await removeDownloadFileIfPresent(stale);
+  }
+}
+
+async function clearTabDownloads(tabState) {
+  const entries = Array.isArray(tabState.downloads) ? [...tabState.downloads] : [];
+  tabState.downloads = [];
+  await Promise.all(entries.map(removeDownloadFileIfPresent));
+}
+
+async function clearSessionDownloads(session) {
+  if (!session || !session.tabGroups) {
+    return;
+  }
+
+  const tasks = [];
+  for (const group of session.tabGroups.values()) {
+    for (const tabState of group.values()) {
+      tasks.push(clearTabDownloads(tabState));
+    }
+  }
+  await Promise.all(tasks);
+}
+
+function attachDownloadListener(tabState, tabId) {
+  if (tabState.downloadListenerAttached) {
+    return;
+  }
+
+  tabState.downloadListenerAttached = true;
+  tabState.page.on('download', async (download) => {
+    const downloadId = crypto.randomUUID();
+    const suggestedFilename = sanitizeFilename(download.suggestedFilename?.() || `download-${downloadId}.bin`);
+    const filePath = path.join(os.tmpdir(), `camofox-download-${downloadId}-${suggestedFilename}`);
+
+    let failure = null;
+    let bytes = null;
+
+    try {
+      await download.saveAs(filePath);
+      const stat = await fs.stat(filePath);
+      bytes = stat.size;
+    } catch (err) {
+      failure = String(err?.message || err || 'download_save_failed');
+      await fs.unlink(filePath).catch(() => {});
+    }
+
+    const reportedFailure = await download.failure().catch(() => null);
+    if (reportedFailure) {
+      failure = reportedFailure;
+    }
+
+    const url = String(download.url?.() || '').trim();
+    if (url) {
+      tabState.visitedUrls.add(url);
+    }
+
+    const mimeType = guessMimeTypeFromName(suggestedFilename) || guessMimeTypeFromName(url);
+    tabState.downloads.push({
+      id: downloadId,
+      tabId,
+      url,
+      suggestedFilename,
+      mimeType,
+      bytes,
+      createdAt: new Date().toISOString(),
+      filePath: failure ? null : filePath,
+      failure,
+    });
+
+    await trimTabDownloads(tabState);
+    log('info', 'download captured', {
+      tabId,
+      downloadId,
+      suggestedFilename,
+      mimeType,
+      bytes,
+      hasUrl: Boolean(url),
+      failure,
+    });
+  });
 }
 
 async function waitForPageReady(page, options = {}) {
@@ -851,6 +977,7 @@ app.post('/tabs', async (req, res) => {
     const page = await session.context.newPage();
     const tabId = crypto.randomUUID();
     const tabState = createTabState(page);
+    attachDownloadListener(tabState, tabId);
     group.set(tabId, tabState);
     
     if (url) {
@@ -914,6 +1041,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         } else {
           const page = await session.context.newPage();
           tabState = createTabState(page);
+          attachDownloadListener(tabState, tabId);
           const group = getTabGroup(session, resolvedSessionKey);
           group.set(tabId, tabState);
           log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
@@ -1362,6 +1490,174 @@ app.get('/tabs/:tabId/links', async (req, res) => {
   }
 });
 
+// Get captured downloads
+app.get('/tabs/:tabId/downloads', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const includeData = req.query.includeData === 'true';
+    const consume = req.query.consume === 'true';
+    const maxBytesRaw = Number(req.query.maxBytes);
+    const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? maxBytesRaw : MAX_DOWNLOAD_INLINE_BYTES;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+    const snapshot = Array.isArray(tabState.downloads) ? [...tabState.downloads] : [];
+    const downloads = [];
+
+    for (const entry of snapshot) {
+      const responseItem = {
+        id: entry.id,
+        url: entry.url,
+        suggestedFilename: entry.suggestedFilename,
+        mimeType: entry.mimeType,
+        bytes: entry.bytes,
+        createdAt: entry.createdAt,
+        failure: entry.failure,
+      };
+
+      if (includeData && entry.filePath && !entry.failure) {
+        if (typeof entry.bytes === 'number' && entry.bytes > maxBytes) {
+          responseItem.dataSkipped = 'max_bytes_exceeded';
+        } else {
+          try {
+            const raw = await fs.readFile(entry.filePath);
+            responseItem.dataBase64 = raw.toString('base64');
+          } catch (err) {
+            responseItem.readError = String(err?.message || err || 'download_read_failed');
+          }
+        }
+      }
+
+      downloads.push(responseItem);
+    }
+
+    if (consume) {
+      await clearTabDownloads(tabState);
+    }
+
+    res.json({
+      tabId: req.params.tabId,
+      downloads,
+    });
+  } catch (err) {
+    log('error', 'downloads failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// Get image elements from current page
+app.get('/tabs/:tabId/images', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const includeData = req.query.includeData === 'true';
+    const maxBytesRaw = Number(req.query.maxBytes);
+    const limitRaw = Number(req.query.limit);
+    const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? maxBytesRaw : MAX_DOWNLOAD_INLINE_BYTES;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 20) : 8;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+
+    const images = await tabState.page.evaluate(
+      async ({ includeData, maxBytes, limit }) => {
+        const toDataUrl = (blob) =>
+          new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+            reader.onerror = () => reject(new Error('file_reader_failed'));
+            reader.readAsDataURL(blob);
+          });
+
+        const nodes = Array.from(document.querySelectorAll('img'));
+        const seen = new Set();
+        const candidates = [];
+
+        for (const node of nodes) {
+          const src = String(node.currentSrc || node.src || node.getAttribute('src') || '').trim();
+          if (!src || seen.has(src)) {
+            continue;
+          }
+          seen.add(src);
+
+          candidates.push({
+            src,
+            alt: String(node.alt || '').trim(),
+            width: Number(node.naturalWidth || node.width || 0) || undefined,
+            height: Number(node.naturalHeight || node.height || 0) || undefined,
+          });
+
+          if (candidates.length >= limit) {
+            break;
+          }
+        }
+
+        const results = [];
+        for (const image of candidates) {
+          const entry = {
+            src: image.src,
+            alt: image.alt,
+            width: image.width,
+            height: image.height,
+          };
+
+          if (includeData) {
+            try {
+              if (image.src.startsWith('data:')) {
+                const mimeMatch = image.src.match(/^data:([^;,]+)[;,]/i);
+                const isBase64 = /;base64,/i.test(image.src);
+                const payload = image.src.slice(image.src.indexOf(',') + 1);
+                const estimatedBytes = isBase64 ? Math.floor((payload.length * 3) / 4) : payload.length;
+                entry.mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+                entry.bytes = estimatedBytes;
+                if (estimatedBytes <= maxBytes) {
+                  entry.dataUrl = image.src;
+                } else {
+                  entry.dataSkipped = 'max_bytes_exceeded';
+                }
+              } else {
+                const response = await fetch(image.src, { credentials: 'include' });
+                if (response.ok) {
+                  const blob = await response.blob();
+                  entry.mimeType = blob.type || 'application/octet-stream';
+                  entry.bytes = blob.size;
+                  if (blob.size <= maxBytes) {
+                    entry.dataUrl = await toDataUrl(blob);
+                  } else {
+                    entry.dataSkipped = 'max_bytes_exceeded';
+                  }
+                } else {
+                  entry.fetchError = `http_${response.status}`;
+                }
+              }
+            } catch (err) {
+              entry.fetchError = String(err?.message || err || 'image_fetch_failed');
+            }
+          }
+
+          results.push(entry);
+        }
+
+        return results;
+      },
+      { includeData, maxBytes, limit },
+    );
+
+    res.json({
+      tabId: req.params.tabId,
+      images,
+    });
+  } catch (err) {
+    log('error', 'images failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
 // Screenshot
 app.get('/tabs/:tabId/screenshot', async (req, res) => {
   try {
@@ -1396,6 +1692,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
       listItemId, // Legacy compatibility
       url: tabState.page.url(),
       visitedUrls: Array.from(tabState.visitedUrls),
+      downloadsCount: Array.isArray(tabState.downloads) ? tabState.downloads.length : 0,
       toolCalls: tabState.toolCalls,
       refsCount: tabState.refs.size
     });
@@ -1412,6 +1709,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
+      await clearTabDownloads(found.tabState);
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
       tabLocks.delete(req.params.tabId);
@@ -1435,6 +1733,7 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
     const group = session?.tabGroups.get(req.params.listItemId);
     if (group) {
       for (const [tabId, tabState] of group) {
+        await clearTabDownloads(tabState);
         await safePageClose(tabState.page);
         tabLocks.delete(tabId);
       }
@@ -1454,6 +1753,7 @@ app.delete('/sessions/:userId', async (req, res) => {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
     if (session) {
+      await clearSessionDownloads(session);
       await session.context.close();
       sessions.delete(userId);
       log('info', 'session closed', { userId });
@@ -1471,6 +1771,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
       log('info', 'session expired', { userId });
@@ -1557,6 +1858,7 @@ app.post('/tabs/open', async (req, res) => {
     const page = await session.context.newPage();
     const tabId = crypto.randomUUID();
     const tabState = createTabState(page);
+    attachDownloadListener(tabState, tabId);
     group.set(tabId, tabState);
     
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -1597,6 +1899,11 @@ app.post('/stop', async (req, res) => {
       await browser.close().catch(() => {});
       browser = null;
     }
+    const cleanupTasks = [];
+    for (const session of sessions.values()) {
+      cleanupTasks.push(clearSessionDownloads(session));
+    }
+    await Promise.all(cleanupTasks);
     sessions.clear();
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
   } catch (err) {
