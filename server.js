@@ -175,6 +175,7 @@ const sessions = new Map();
 
 const SESSION_TIMEOUT_MS = CONFIG.sessionTimeoutMs;
 const MAX_SNAPSHOT_NODES = 500;
+const TAB_INACTIVITY_MS = CONFIG.tabInactivityMs;
 const MAX_SESSIONS = CONFIG.maxSessions;
 const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
 const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
@@ -425,6 +426,20 @@ function normalizeUserId(userId) {
 async function getSession(userId) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
+  
+  // Check if existing session's context is still alive
+  if (session) {
+    try {
+      // Lightweight probe: pages() is synchronous-ish and throws if context is dead
+      session.context.pages();
+    } catch (err) {
+      log('warn', 'session context dead, recreating', { userId: key, error: err.message });
+      session.context.close().catch(() => {});
+      sessions.delete(key);
+      session = null;
+    }
+  }
+  
   if (!session) {
     if (sessions.size >= MAX_SESSIONS) {
       throw new Error('Maximum concurrent sessions reached');
@@ -458,6 +473,23 @@ function getTabGroup(session, listItemId) {
     session.tabGroups.set(listItemId, group);
   }
   return group;
+}
+
+function isDeadContextError(err) {
+  const msg = err && err.message || '';
+  return msg.includes('Target page, context or browser has been closed') ||
+         msg.includes('browser has been closed') ||
+         msg.includes('Context closed') ||
+         msg.includes('Browser closed');
+}
+
+function destroySession(userId) {
+  const key = normalizeUserId(userId);
+  const session = sessions.get(key);
+  if (!session) return;
+  log('warn', 'destroying dead session', { userId: key });
+  session.context.close().catch(() => {});
+  sessions.delete(key);
 }
 
 function findTab(session, tabId) {
@@ -569,12 +601,169 @@ async function dismissConsentDialogs(page) {
   }
 }
 
+// --- Google SERP detection ---
+function isGoogleSerp(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.includes('google.') && parsed.pathname === '/search';
+  } catch {
+    return false;
+  }
+}
+
+// --- Google SERP: combined extraction (refs + snapshot in one DOM pass) ---
+// Returns { refs: Map, snapshot: string }
+async function extractGoogleSerp(page) {
+  const refs = new Map();
+  if (!page || page.isClosed()) return { refs, snapshot: '' };
+  
+  const start = Date.now();
+  
+  const alreadyRendered = await page.evaluate(() => !!document.querySelector('#rso h3, #search h3, #rso [data-snhf]')).catch(() => false);
+  if (!alreadyRendered) {
+    try {
+      await page.waitForSelector('#rso h3, #search h3, #rso [data-snhf]', { timeout: 5000 });
+    } catch {
+      try {
+        await page.waitForSelector('#rso a[href]:not([href^="/search"]), #search a[href]:not([href^="/search"])', { timeout: 2000 });
+      } catch {}
+    }
+  }
+  
+  const extracted = await page.evaluate(() => {
+    const snapshot = [];
+    const elements = [];
+    let refCounter = 1;
+    
+    function addRef(role, name) {
+      const id = 'e' + refCounter++;
+      elements.push({ id, role, name });
+      return id;
+    }
+    
+    snapshot.push('- heading "' + document.title.replace(/"/g, '\\"') + '"');
+    
+    const searchInput = document.querySelector('input[name="q"], textarea[name="q"]');
+    if (searchInput) {
+      const name = 'Search';
+      const refId = addRef('searchbox', name);
+      snapshot.push('- searchbox "' + name + '" [' + refId + ']: ' + (searchInput.value || ''));
+    }
+    
+    const navContainer = document.querySelector('div[role="navigation"], div[role="list"]');
+    if (navContainer) {
+      const navLinks = navContainer.querySelectorAll('a');
+      if (navLinks.length > 0) {
+        snapshot.push('- navigation:');
+        navLinks.forEach(a => {
+          const text = (a.textContent || '').trim();
+          if (!text || text.length < 1) return;
+          if (/^\d+$/.test(text) && parseInt(text) < 50) return;
+          const refId = addRef('link', text);
+          snapshot.push('  - link "' + text + '" [' + refId + ']');
+        });
+      }
+    }
+    
+    const resultContainer = document.querySelector('#rso') || document.querySelector('#search');
+    if (resultContainer) {
+      const resultBlocks = resultContainer.querySelectorAll(':scope > div');
+      for (const block of resultBlocks) {
+        const h3 = block.querySelector('h3');
+        const mainLink = h3 ? h3.closest('a') : null;
+        
+        if (h3 && mainLink) {
+          const title = h3.textContent.trim().replace(/"/g, '\\"');
+          const href = mainLink.href;
+          const cite = block.querySelector('cite');
+          const displayUrl = cite ? cite.textContent.trim() : '';
+          
+          let snippet = '';
+          for (const sel of ['[data-sncf]', '[data-content-feature="1"]', '.VwiC3b', 'div[style*="-webkit-line-clamp"]', 'span.aCOpRe']) {
+            const el = block.querySelector(sel);
+            if (el) { snippet = el.textContent.trim().slice(0, 300); break; }
+          }
+          if (!snippet) {
+            const allText = block.textContent.trim().replace(/\s+/g, ' ');
+            const titleLen = title.length + (displayUrl ? displayUrl.length : 0);
+            if (allText.length > titleLen + 20) {
+              snippet = allText.slice(titleLen).trim().slice(0, 300);
+            }
+          }
+          
+          const refId = addRef('link', title);
+          snapshot.push('- link "' + title + '" [' + refId + ']:');
+          snapshot.push('  - /url: ' + href);
+          if (displayUrl) snapshot.push('  - cite: ' + displayUrl);
+          if (snippet) snapshot.push('  - text: ' + snippet);
+        } else {
+          const blockLinks = block.querySelectorAll('a[href^="http"]:not([href*="google.com/search"])');
+          if (blockLinks.length > 0) {
+            const blockText = block.textContent.trim().replace(/\s+/g, ' ').slice(0, 200);
+            if (blockText.length > 10) {
+              snapshot.push('- group:');
+              snapshot.push('  - text: ' + blockText);
+              blockLinks.forEach(a => {
+                const linkText = (a.textContent || '').trim().replace(/"/g, '\\"').slice(0, 100);
+                if (linkText.length > 2) {
+                  const refId = addRef('link', linkText);
+                  snapshot.push('  - link "' + linkText + '" [' + refId + ']:');
+                  snapshot.push('    - /url: ' + a.href);
+                }
+              });
+            }
+          }
+        }
+      }
+    }
+    
+    const paaItems = document.querySelectorAll('[jsname="Cpkphb"], div.related-question-pair');
+    if (paaItems.length > 0) {
+      snapshot.push('- heading "People also ask"');
+      paaItems.forEach(q => {
+        const text = (q.textContent || '').trim().replace(/"/g, '\\"').slice(0, 150);
+        if (text) {
+          const refId = addRef('button', text);
+          snapshot.push('  - button "' + text + '" [' + refId + ']');
+        }
+      });
+    }
+    
+    const nextLink = document.querySelector('#botstuff a[aria-label="Next page"], td.d6cvqb a, a#pnnext');
+    if (nextLink) {
+      const refId = addRef('link', 'Next');
+      snapshot.push('- navigation "pagination":');
+      snapshot.push('  - link "Next" [' + refId + ']');
+    }
+    
+    return { snapshot: snapshot.join('\n'), elements };
+  });
+  
+  const seenCounts = new Map();
+  for (const el of extracted.elements) {
+    const key = `${el.role}:${el.name}`;
+    const nth = seenCounts.get(key) || 0;
+    seenCounts.set(key, nth + 1);
+    refs.set(el.id, { role: el.role, name: el.name, nth });
+  }
+  
+  log('info', 'extractGoogleSerp', { elapsed: Date.now() - start, refs: refs.size });
+  return { refs, snapshot: extracted.snapshot };
+}
+
 async function buildRefs(page) {
   const refs = new Map();
   
   if (!page || page.isClosed()) {
     log('warn', 'buildRefs: page closed or invalid');
     return refs;
+  }
+  
+  // Google SERP fast path — skip ariaSnapshot entirely
+  const url = page.url();
+  if (isGoogleSerp(url)) {
+    const { refs: googleRefs } = await extractGoogleSerp(page);
+    return googleRefs;
   }
   
   const start = Date.now();
@@ -719,7 +908,12 @@ app.post('/youtube/transcript', async (req, res) => {
 
     let result;
     if (hasYtDlp()) {
-      result = await ytDlpTranscript(reqId, url, videoId, lang);
+      try {
+        result = await ytDlpTranscript(reqId, url, videoId, lang);
+      } catch (ytErr) {
+        log('warn', 'yt-dlp failed, falling back to browser', { reqId, error: ytErr.message });
+        result = await browserTranscript(reqId, url, videoId, lang);
+      }
     } else {
       result = await browserTranscript(reqId, url, videoId, lang);
     }
@@ -759,16 +953,52 @@ async function browserTranscript(reqId, url, videoId, lang) {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATE_TIMEOUT_MS });
       await page.waitForTimeout(2000);
 
+      // Extract caption track URLs and metadata from ytInitialPlayerResponse
       const meta = await page.evaluate(() => {
         const r = window.ytInitialPlayerResponse || (typeof ytInitialPlayerResponse !== 'undefined' ? ytInitialPlayerResponse : null);
-        if (!r) return { title: '' };
+        if (!r) return { title: '', tracks: [] };
         const tracks = r?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
         return {
           title: r?.videoDetails?.title || '',
-          languages: tracks.map(t => ({ code: t.languageCode, name: t.name?.simpleText || t.languageCode, kind: t.kind || 'manual' })),
+          tracks: tracks.map(t => ({ code: t.languageCode, name: t.name?.simpleText || t.languageCode, kind: t.kind || 'manual', url: t.baseUrl })),
         };
       });
 
+      log('info', 'youtube transcript: extracted caption tracks', { reqId, title: meta.title, trackCount: meta.tracks.length, tracks: meta.tracks.map(t => t.code) });
+
+      // Strategy A: Fetch caption track URL directly from ytInitialPlayerResponse
+      // These URLs are freshly signed by YouTube and work immediately
+      if (meta.tracks && meta.tracks.length > 0) {
+        const track = meta.tracks.find(t => t.code === lang) || meta.tracks[0];
+        if (track && track.url) {
+          const captionUrl = track.url + (track.url.includes('?') ? '&' : '?') + 'fmt=json3';
+          log('info', 'youtube transcript: fetching caption track', { reqId, lang: track.code, url: captionUrl.substring(0, 100) });
+          try {
+            const captionResp = await page.evaluate(async (fetchUrl) => {
+              const resp = await fetch(fetchUrl);
+              return resp.ok ? await resp.text() : null;
+            }, captionUrl);
+            if (captionResp && captionResp.length > 0) {
+              let transcriptText = null;
+              if (captionResp.trimStart().startsWith('{')) transcriptText = parseJson3(captionResp);
+              else if (captionResp.includes('WEBVTT')) transcriptText = parseVtt(captionResp);
+              else if (captionResp.includes('<text')) transcriptText = parseXml(captionResp);
+              if (transcriptText && transcriptText.trim()) {
+                return {
+                  status: 'ok', transcript: transcriptText,
+                  video_url: url, video_id: videoId, video_title: meta.title,
+                  language: track.code, total_words: transcriptText.split(/\s+/).length,
+                  available_languages: meta.tracks.map(t => ({ code: t.code, name: t.name, kind: t.kind })),
+                };
+              }
+            }
+          } catch (fetchErr) {
+            log('warn', 'youtube transcript: caption track fetch failed', { reqId, error: fetchErr.message });
+          }
+        }
+      }
+
+      // Strategy B: Play video and intercept timedtext network response
       await page.evaluate(() => {
         const v = document.querySelector('video');
         if (v) { v.muted = true; v.play().catch(() => {}); }
@@ -781,7 +1011,7 @@ async function browserTranscript(reqId, url, videoId, lang) {
       if (!interceptedCaptions) {
         return {
           status: 'error', code: 404,
-          message: 'No captions loaded during playback (video may have no captions, or ad blocked it)',
+          message: 'No captions available for this video',
           video_url: url, video_id: videoId, title: meta.title,
         };
       }
@@ -838,33 +1068,44 @@ app.post('/tabs', async (req, res) => {
       return res.status(400).json({ error: 'userId and sessionKey required' });
     }
     
-    const session = await getSession(userId);
-    
-    let totalTabs = 0;
-    for (const group of session.tabGroups.values()) totalTabs += group.size;
-    if (totalTabs >= MAX_TABS_PER_SESSION) {
-      return res.status(429).json({ error: 'Maximum tabs per session reached' });
-    }
-    
-    const group = getTabGroup(session, resolvedSessionKey);
-    
-    const page = await session.context.newPage();
-    const tabId = crypto.randomUUID();
-    const tabState = createTabState(page);
-    group.set(tabId, tabState);
-    
-    if (url) {
-      const urlErr = validateUrl(url);
-      if (urlErr) return res.status(400).json({ error: urlErr });
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      tabState.visitedUrls.add(url);
-    }
-    
-    log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
-    res.json({ tabId, url: page.url() });
+    const result = await withTimeout((async () => {
+      const session = await getSession(userId);
+      
+      // Check global tab limit first
+      if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
+        throw Object.assign(new Error('Maximum global tabs reached'), { statusCode: 429 });
+      }
+      
+      let totalTabs = 0;
+      for (const group of session.tabGroups.values()) totalTabs += group.size;
+      if (totalTabs >= MAX_TABS_PER_SESSION) {
+        throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
+      }
+      
+      const group = getTabGroup(session, resolvedSessionKey);
+      
+      const page = await session.context.newPage();
+      const tabId = crypto.randomUUID();
+      const tabState = createTabState(page);
+      group.set(tabId, tabState);
+      
+      if (url) {
+        const urlErr = validateUrl(url);
+        if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        tabState.visitedUrls.add(url);
+      }
+      
+      log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
+      return { tabId, url: page.url() };
+    })(), HANDLER_TIMEOUT_MS, 'tab create');
+
+    res.json(result);
   } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
-    res.status(500).json({ error: safeError(err) });
+    if (isDeadContextError(err) && req.body && req.body.userId) destroySession(req.body.userId);
+    const status = err.statusCode || 500;
+    res.status(status).json({ error: safeError(err) });
   }
 });
 
@@ -937,6 +1178,15 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         await tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         tabState.visitedUrls.add(targetUrl);
         tabState.lastSnapshot = null;
+        
+        // For Google SERP: skip eager ref building during navigate.
+        // Results render asynchronously after DOMContentLoaded — the snapshot
+        // call will wait for and extract them.
+        if (isGoogleSerp(tabState.page.url())) {
+          tabState.refs = new Map();
+          return { ok: true, tabId, url: tabState.page.url(), refsAvailable: false, googleSerp: true };
+        }
+        
         tabState.refs = await buildRefs(tabState.page);
         return { ok: true, tabId, url: tabState.page.url(), refsAvailable: tabState.refs.size > 0 };
       });
@@ -946,6 +1196,10 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'navigate failed', { reqId: req.reqId, tabId, error: err.message });
+    if (isDeadContextError(err)) {
+      const userId = req.body && req.body.userId;
+      if (userId) destroySession(userId);
+    }
     const status = err.message && err.message.startsWith('Blocked URL scheme') ? 400 : 500;
     res.status(status).json({ error: safeError(err) });
   }
@@ -978,6 +1232,31 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     }
 
     const result = await withUserLimit(userId, () => withTimeout((async () => {
+      const pageUrl = tabState.page.url();
+      
+      // Google SERP fast path — DOM extraction instead of ariaSnapshot
+      if (isGoogleSerp(pageUrl)) {
+        const { refs: googleRefs, snapshot: googleSnapshot } = await extractGoogleSerp(tabState.page);
+        tabState.refs = googleRefs;
+        tabState.lastSnapshot = googleSnapshot;
+        const annotatedYaml = googleSnapshot;
+        const win = windowSnapshot(annotatedYaml, 0);
+        const response = {
+          url: pageUrl,
+          snapshot: win.text,
+          refsCount: tabState.refs.size,
+          truncated: win.truncated,
+          totalChars: win.totalChars,
+          hasMore: win.hasMore,
+          nextOffset: win.nextOffset,
+        };
+        if (req.query.includeScreenshot === 'true') {
+          const pngBuffer = await tabState.page.screenshot({ type: 'png' });
+          response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+        }
+        return response;
+      }
+      
       tabState.refs = await buildRefs(tabState.page);
       const ariaYaml = await getAriaSnapshot(tabState.page);
       
@@ -1102,8 +1381,22 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         log('info', 'mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0) });
       };
       
+      // On Google SERPs, skip the normal click attempt (always intercepted by overlays)
+      // and go directly to force click — saves 5s timeout per click
+      const onGoogleSerp = isGoogleSerp(tabState.page.url());
+      
       const doClick = async (locatorOrSelector, isLocator) => {
         const locator = isLocator ? locatorOrSelector : tabState.page.locator(locatorOrSelector);
+        
+        if (onGoogleSerp) {
+          try {
+            await locator.click({ timeout: 5000, force: true });
+          } catch (forceErr) {
+            log('warn', 'google force click failed, trying mouse sequence');
+            await dispatchMouseSequence(locator);
+          }
+          return;
+        }
         
         try {
           // First try normal click (respects visibility, enabled, not-obscured)
@@ -1146,7 +1439,22 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         await doClick(selector, false);
       }
       
-      await tabState.page.waitForTimeout(500);
+      // If clicking on a Google SERP, wait for potential navigation to complete
+      if (onGoogleSerp) {
+        try {
+          await tabState.page.waitForLoadState('domcontentloaded', { timeout: 3000 });
+        } catch {}
+        await tabState.page.waitForTimeout(200);
+        // Skip buildRefs here — SERP clicks typically navigate to a new page,
+        // and the caller always requests /snapshot next which rebuilds refs.
+        tabState.lastSnapshot = null;
+        tabState.refs = new Map();
+        const newUrl = tabState.page.url();
+        tabState.visitedUrls.add(newUrl);
+        return { ok: true, url: newUrl, refsAvailable: false };
+      } else {
+        await tabState.page.waitForTimeout(500);
+      }
       tabState.lastSnapshot = null;
       tabState.refs = await buildRefs(tabState.page);
       
@@ -1482,6 +1790,37 @@ setInterval(() => {
   }
 }, 60_000);
 
+// Per-tab inactivity reaper — close tabs idle for TAB_INACTIVITY_MS
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, session] of sessions) {
+    for (const [listItemId, group] of session.tabGroups) {
+      for (const [tabId, tabState] of group) {
+        if (!tabState._lastReaperCheck) {
+          tabState._lastReaperCheck = now;
+          tabState._lastReaperToolCalls = tabState.toolCalls;
+          continue;
+        }
+        if (tabState.toolCalls === tabState._lastReaperToolCalls) {
+          const idleMs = now - tabState._lastReaperCheck;
+          if (idleMs >= TAB_INACTIVITY_MS) {
+            log('info', 'tab reaped (inactive)', { userId, tabId, listItemId, idleMs, toolCalls: tabState.toolCalls });
+            safePageClose(tabState.page);
+            group.delete(tabId);
+            tabLocks.delete(tabId);
+          }
+        } else {
+          tabState._lastReaperCheck = now;
+          tabState._lastReaperToolCalls = tabState.toolCalls;
+        }
+      }
+      if (group.size === 0) {
+        session.tabGroups.delete(listItemId);
+      }
+    }
+  }
+}, 60_000);
+
 // =============================================================================
 // OpenClaw-compatible endpoint aliases
 // These allow camoufox to be used as a profile backend for OpenClaw's browser tool
@@ -1546,6 +1885,11 @@ app.post('/tabs/open', async (req, res) => {
     
     const session = await getSession(userId);
     
+    // Check global tab limit first
+    if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
+      return res.status(429).json({ error: 'Maximum global tabs reached' });
+    }
+    
     let totalTabs = 0;
     for (const g of session.tabGroups.values()) totalTabs += g.size;
     if (totalTabs >= MAX_TABS_PER_SESSION) {
@@ -1572,6 +1916,10 @@ app.post('/tabs/open', async (req, res) => {
     });
   } catch (err) {
     log('error', 'openclaw tab open failed', { reqId: req.reqId, error: err.message });
+    if (isDeadContextError(err)) {
+      const userId = req.body && req.body.userId;
+      if (userId) destroySession(userId);
+    }
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1630,6 +1978,14 @@ app.post('/navigate', async (req, res) => {
     const result = await withTimeout(withTabLock(targetId, async () => {
       await tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       tabState.visitedUrls.add(url);
+      tabState.lastSnapshot = null;
+      
+      // Google SERP: defer extraction to snapshot call
+      if (isGoogleSerp(tabState.page.url())) {
+        tabState.refs = new Map();
+        return { ok: true, targetId, url: tabState.page.url(), googleSerp: true };
+      }
+      
       tabState.refs = await buildRefs(tabState.page);
       return { ok: true, targetId, url: tabState.page.url() };
     }), HANDLER_TIMEOUT_MS, 'openclaw-navigate');
@@ -1670,6 +2026,28 @@ app.get('/snapshot', async (req, res) => {
       return res.json(response);
     }
 
+    const pageUrl = tabState.page.url();
+    
+    // Google SERP fast path
+    if (isGoogleSerp(pageUrl)) {
+      const { refs: googleRefs, snapshot: googleSnapshot } = await extractGoogleSerp(tabState.page);
+      tabState.refs = googleRefs;
+      tabState.lastSnapshot = googleSnapshot;
+      const annotatedYaml = googleSnapshot;
+      const win = windowSnapshot(annotatedYaml, 0);
+      const response = {
+        ok: true, format: 'aria', targetId, url: pageUrl,
+        snapshot: win.text, refsCount: tabState.refs.size,
+        truncated: win.truncated, totalChars: win.totalChars,
+        hasMore: win.hasMore, nextOffset: win.nextOffset,
+      };
+      if (req.query.includeScreenshot === 'true') {
+        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
+        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      }
+      return res.json(response);
+    }
+    
     tabState.refs = await buildRefs(tabState.page);
     
     const ariaYaml = await getAriaSnapshot(tabState.page);
@@ -1895,13 +2273,19 @@ setInterval(() => {
 // Active health probe — detect hung browser even when isConnected() lies
 setInterval(async () => {
   if (!browser || healthState.isRecovering) return;
-  // Skip probe if operations are in flight
-  if (healthState.activeOps > 0) {
+  const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
+  // Skip probe if operations are in flight AND last success was recent.
+  // If it's been >120s since any successful operation, probe anyway —
+  // active ops are likely stuck on a frozen browser and will time out eventually.
+  if (healthState.activeOps > 0 && timeSinceSuccess < 120000) {
     log('info', 'health probe skipped, operations active', { activeOps: healthState.activeOps });
     return;
   }
-  const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
   if (timeSinceSuccess < 120000) return;
+  
+  if (healthState.activeOps > 0) {
+    log('warn', 'health probe forced despite active ops', { activeOps: healthState.activeOps, timeSinceSuccessMs: timeSinceSuccess });
+  }
   
   let testContext;
   try {
