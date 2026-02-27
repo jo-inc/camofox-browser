@@ -6,6 +6,10 @@ let port = null;
 function createTestApp() {
   const app = express();
   app.use(express.urlencoded({ extended: true }));
+
+  // 1x1 transparent PNG
+  const samplePngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z4mQAAAAASUVORK5CYII=';
   
   // Simple pages for navigation tests
   app.get('/pageA', (req, res) => {
@@ -198,6 +202,37 @@ function createTestApp() {
         <div id="box"></div>
       </body></html>
     `);
+  });
+
+  // Page with a simple image for /images endpoint tests
+  app.get('/images-page', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Images Page</title></head>
+      <body>
+        <h1>Images</h1>
+        <img alt="Sample" src="data:image/png;base64,${samplePngBase64}" />
+      </body></html>
+    `);
+  });
+
+  // Page and endpoint for download capture tests
+  app.get('/download-page', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Download Page</title></head>
+      <body>
+        <h1>Download</h1>
+        <a id="downloadLink" href="/download-file">Download file</a>
+      </body></html>
+    `);
+  });
+
+  app.get('/download-file', (req, res) => {
+    const body = 'hello from camofox test download\n';
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment; filename="hello.txt"');
+    res.send(body);
   });
 
   // Large page for snapshot truncation tests — simulates a big product listing
