@@ -1424,9 +1424,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       
       if (ref) {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
-        if (!locator && tabState.refs.size === 0) {
-          // Auto-refresh refs on stale state before failing
-          log('info', 'auto-refreshing stale refs before click', { ref });
+        if (!locator) {
+          log('info', 'auto-refreshing refs before click', { ref, hadRefs: tabState.refs.size });
           tabState.refs = await buildRefs(tabState.page);
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
@@ -1467,6 +1466,24 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'click failed', { reqId: req.reqId, tabId, error: err.message });
+    if (err.message?.includes('timed out')) {
+      try {
+        const session = sessions.get(normalizeUserId(req.body.userId));
+        const found = session && findTab(session, tabId);
+        if (found?.tabState?.page && !found.tabState.page.isClosed()) {
+          found.tabState.refs = await buildRefs(found.tabState.page);
+          found.tabState.lastSnapshot = null;
+          return res.status(500).json({
+            error: safeError(err),
+            hint: 'The page may have changed. Call snapshot to see the current state and retry.',
+            url: found.tabState.page.url(),
+            refsCount: found.tabState.refs.size,
+          });
+        }
+      } catch (refreshErr) {
+        log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
+      }
+    }
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -1490,7 +1507,12 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     
     await withTabLock(tabId, async () => {
       if (ref) {
-        const locator = refToLocator(tabState.page, ref, tabState.refs);
+        let locator = refToLocator(tabState.page, ref, tabState.refs);
+        if (!locator) {
+          log('info', 'auto-refreshing refs before fill', { ref, hadRefs: tabState.refs.size });
+          tabState.refs = await buildRefs(tabState.page);
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+        }
         if (!locator) throw new Error(`Unknown ref: ${ref}`);
         await locator.fill(text, { timeout: 10000 });
       } else {
@@ -1501,6 +1523,24 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'type failed', { reqId: req.reqId, error: err.message });
+    if (err.message?.includes('timed out') || err.message?.includes('not an <input>')) {
+      try {
+        const session = sessions.get(normalizeUserId(req.body.userId));
+        const found = session && findTab(session, tabId);
+        if (found?.tabState?.page && !found.tabState.page.isClosed()) {
+          found.tabState.refs = await buildRefs(found.tabState.page);
+          found.tabState.lastSnapshot = null;
+          return res.status(500).json({
+            error: safeError(err),
+            hint: 'The page may have changed. Call snapshot to see the current state and retry.',
+            url: found.tabState.page.url(),
+            refsCount: found.tabState.refs.size,
+          });
+        }
+      } catch (refreshErr) {
+        log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
+      }
+    }
     res.status(500).json({ error: safeError(err) });
   }
 });
@@ -2151,7 +2191,12 @@ app.post('/act', async (req, res) => {
           };
           
           if (ref) {
-            const locator = refToLocator(tabState.page, ref, tabState.refs);
+            let locator = refToLocator(tabState.page, ref, tabState.refs);
+            if (!locator) {
+              log('info', 'auto-refreshing refs before click (openclaw)', { ref, hadRefs: tabState.refs.size });
+              tabState.refs = await buildRefs(tabState.page);
+              locator = refToLocator(tabState.page, ref, tabState.refs);
+            }
             if (!locator) throw new Error(`Unknown ref: ${ref}`);
             await doClick(locator, true);
           } else {
@@ -2173,7 +2218,12 @@ app.post('/act', async (req, res) => {
           }
           
           if (ref) {
-            const locator = refToLocator(tabState.page, ref, tabState.refs);
+            let locator = refToLocator(tabState.page, ref, tabState.refs);
+            if (!locator) {
+              log('info', 'auto-refreshing refs before type (openclaw)', { ref, hadRefs: tabState.refs.size });
+              tabState.refs = await buildRefs(tabState.page);
+              locator = refToLocator(tabState.page, ref, tabState.refs);
+            }
             if (!locator) throw new Error(`Unknown ref: ${ref}`);
             await locator.fill(text, { timeout: 10000 });
             if (submit) await tabState.page.keyboard.press('Enter');
@@ -2195,7 +2245,11 @@ app.post('/act', async (req, res) => {
         case 'scrollIntoView': {
           const { ref, direction = 'down', amount = 500 } = params;
           if (ref) {
-            const locator = refToLocator(tabState.page, ref, tabState.refs);
+            let locator = refToLocator(tabState.page, ref, tabState.refs);
+            if (!locator) {
+              tabState.refs = await buildRefs(tabState.page);
+              locator = refToLocator(tabState.page, ref, tabState.refs);
+            }
             if (!locator) throw new Error(`Unknown ref: ${ref}`);
             await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
           } else {
@@ -2211,7 +2265,11 @@ app.post('/act', async (req, res) => {
           if (!ref && !selector) throw new Error('ref or selector required');
           
           if (ref) {
-            const locator = refToLocator(tabState.page, ref, tabState.refs);
+            let locator = refToLocator(tabState.page, ref, tabState.refs);
+            if (!locator) {
+              tabState.refs = await buildRefs(tabState.page);
+              locator = refToLocator(tabState.page, ref, tabState.refs);
+            }
             if (!locator) throw new Error(`Unknown ref: ${ref}`);
             await locator.hover({ timeout: 5000 });
           } else {
