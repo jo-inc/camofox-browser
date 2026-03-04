@@ -433,6 +433,29 @@ export default function register(api: PluginApi) {
   }));
 
   api.registerTool((ctx: ToolContext) => ({
+    name: "camofox_evaluate",
+    description:
+      "Execute JavaScript in a Camoufox tab's page context. Returns the result of the expression. Use for injecting scripts, reading page state, or calling web app APIs.",
+    parameters: {
+      type: "object",
+      properties: {
+        tabId: { type: "string", description: "Tab identifier" },
+        expression: { type: "string", description: "JavaScript expression to evaluate in the page context" },
+      },
+      required: ["tabId", "expression"],
+    },
+    async execute(_id, params) {
+      const { tabId, expression } = params as { tabId: string; expression: string };
+      const userId = ctx.agentId || fallbackUserId;
+      const result = await fetchApi(baseUrl, `/tabs/${tabId}/evaluate`, {
+        method: "POST",
+        body: { userId, expression },
+      });
+      return toToolResult(result);
+    },
+  }));
+
+  api.registerTool((ctx: ToolContext) => ({
     name: "camofox_list_tabs",
     description: "List all open Camoufox tabs for a user.",
     parameters: {

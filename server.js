@@ -1405,6 +1405,30 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
   }
 });
 
+// Evaluate JavaScript in page context
+app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
+  try {
+    const { userId, expression } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    if (!expression) return res.status(400).json({ error: 'expression is required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++;
+
+    const result = await tabState.page.evaluate(expression);
+    log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
+    res.json({ ok: true, result });
+  } catch (err) {
+    log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
 // Close tab
 app.delete('/tabs/:tabId', async (req, res) => {
   try {
