@@ -2660,6 +2660,7 @@ const server = app.listen(PORT, async () => {
     const start = Date.now();
     await ensureBrowser();
     log('info', 'browser pre-warmed', { ms: Date.now() - start });
+    scheduleBrowserIdleShutdown();
   } catch (err) {
     log('error', 'browser pre-warm failed (will retry on first request)', { error: err.message });
   }
