@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:20-slim@sha256:a82f40540f5959e0003fb7b3c0f80490def2927be8bdbee7e3e0ac65cce3be92
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
