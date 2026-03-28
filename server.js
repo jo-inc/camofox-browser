@@ -272,7 +272,7 @@ const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op 
 const FLY_MACHINE_ID = CONFIG.flyMachineId;
 const FLY_APP_NAME = CONFIG.flyAppName;
 const FLY_API_TOKEN = CONFIG.flyApiToken;
-const IDLE_SHUTDOWN_MS = CONFIG.idleShutdownMs;
+// IDLE_SHUTDOWN_MS removed — idle self-shutdown disabled
 
 function makeTabId() {
   const uuid = crypto.randomUUID();
@@ -2821,55 +2821,10 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// --- Idle self-shutdown for scaled-out machines ---
-// When running on Fly with multiple machines, non-primary machines self-stop
-// after IDLE_SHUTDOWN_MS with zero active tabs to avoid paying for idle capacity.
-let idleShutdownSince = null; // timestamp when tabs first hit zero
-
-async function checkIdleShutdown() {
-  if (!FLY_MACHINE_ID || !FLY_API_TOKEN || !FLY_APP_NAME) return;
-
-  const tabCount = getTotalTabCount();
-  if (tabCount > 0) {
-    idleShutdownSince = null;
-    return;
-  }
-
-  if (!idleShutdownSince) {
-    idleShutdownSince = Date.now();
-    return;
-  }
-
-  if (Date.now() - idleShutdownSince < IDLE_SHUTDOWN_MS) return;
-
-  // Check if we're the only machine — don't shut down the last one
-  try {
-    const resp = await fetch(
-      `https://api.machines.dev/v1/apps/${FLY_APP_NAME}/machines`,
-      { headers: { Authorization: `Bearer ${FLY_API_TOKEN}` } }
-    );
-    if (!resp.ok) {
-      log('warn', 'idle shutdown: failed to list machines', { status: resp.status });
-      return;
-    }
-    const machines = await resp.json();
-    const running = machines.filter(m => m.state === 'started' || m.state === 'starting');
-    const MIN_RUNNING = 2; // match fly.toml min_machines_running
-    if (running.length <= MIN_RUNNING) {
-      log('info', 'idle shutdown: skipped (at minimum running machines)', { running: running.length, min: MIN_RUNNING });
-      idleShutdownSince = null; // reset so we don't check every tick
-      return;
-    }
-
-    log('info', 'idle shutdown: stopping self', { machineId: FLY_MACHINE_ID, runningPeers: running.length - 1 });
-    await fetch(
-      `https://api.machines.dev/v1/apps/${FLY_APP_NAME}/machines/${FLY_MACHINE_ID}/stop`,
-      { method: 'POST', headers: { Authorization: `Bearer ${FLY_API_TOKEN}` } }
-    );
-  } catch (err) {
-    log('warn', 'idle shutdown: error', { error: err.message });
-  }
-}
+// Idle self-shutdown REMOVED — it was racing with min_machines_running=2
+// and stopping machines that Fly couldn't auto-restart fast enough, leaving
+// only 1 machine to handle all browser traffic (causing timeouts for users).
+// Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
 
 const PORT = CONFIG.port;
 const server = app.listen(PORT, async () => {
@@ -2889,10 +2844,7 @@ const server = app.listen(PORT, async () => {
   } catch (err) {
     log('error', 'browser pre-warm failed (will retry on first request)', { error: err.message });
   }
-  // Start idle shutdown checker (every 60s)
-  if (FLY_MACHINE_ID && FLY_API_TOKEN) {
-    setInterval(checkIdleShutdown, 60000);
-  }
+  // Idle self-shutdown removed — Fly manages machine lifecycle via fly.toml.
 });
 
 server.on('error', (err) => {
