@@ -6,12 +6,12 @@ primary_region = "sjc"
 
 # Horizontal scaling: Fly auto-starts stopped machines when running ones hit soft_limit.
 # Max machines = pool size set via: fly scale count N --region sjc
-# Self-managed idle shutdown (server.js) stops machines when tabs=0 for 5min.
 # Pool size target: 3 machines (2 always running, 1 on-demand burst).
+# Browser idle shutdown (server.js) only kills the Camoufox process, not the machine.
 [http_service]
   internal_port = 9377
   force_https = false
-  auto_stop_machines = false       # we self-manage shutdown (tab-aware)
+  auto_stop_machines = false       # machines stay running — Fly manages lifecycle
   auto_start_machines = true       # Fly starts stopped machines on demand
   min_machines_running = 2         # 2 always up for zero-downtime rolling deploys
   [http_service.concurrency]

@@ -554,7 +554,7 @@ async function ensureBrowser() {
   if (browserLaunchPromise) return browserLaunchPromise;
   browserLaunchPromise = Promise.race([
     launchBrowserInstance(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('Browser launch timeout (30s)')), 30000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Browser launch timeout (60s)')), 60000)),
   ]).finally(() => { browserLaunchPromise = null; });
   return browserLaunchPromise;
 }
