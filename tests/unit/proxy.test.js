@@ -1,4 +1,8 @@
-import { normalizePlaywrightProxy, createProxyPool } from '../../lib/proxy.js';
+import {
+  normalizePlaywrightProxy,
+  createProxyPool,
+  buildDecodoBackconnectUsername,
+} from '../../lib/proxy.js';
 
 describe('normalizePlaywrightProxy', () => {
   test('decodes percent-encoded proxy credentials', () => {
@@ -42,51 +46,75 @@ describe('normalizePlaywrightProxy', () => {
   });
 });
 
-describe('createProxyPool', () => {
-  test('returns null when no host', () => {
-    expect(createProxyPool({ host: '', ports: [10001], username: 'u', password: 'p' })).toBeNull();
+describe('buildDecodoBackconnectUsername', () => {
+  test('builds sticky residential username with targeting', () => {
+    expect(buildDecodoBackconnectUsername('sp6incny2a', {
+      country: 'us',
+      state: 'us_california',
+      sessionId: 'browser-abc123',
+      sessionDurationMinutes: 10,
+    })).toBe('user-sp6incny2a-country-us-state-us_california-session-browser_abc123-sessionduration-10');
   });
 
-  test('returns null when no ports', () => {
-    expect(createProxyPool({ host: 'proxy.example.com', ports: [], username: 'u', password: 'p' })).toBeNull();
+  test('sanitizes spaces and punctuation', () => {
+    expect(buildDecodoBackconnectUsername('User Name', {
+      country: 'US',
+      city: 'New York',
+      sessionId: 'ctx:1',
+    })).toBe('user-user_name-country-us-city-new_york-session-ctx_1');
+  });
+});
+
+describe('createProxyPool', () => {
+  test('returns null when no host for round robin', () => {
+    expect(createProxyPool({ strategy: 'round_robin', host: '', ports: [10001], username: 'u', password: 'p' })).toBeNull();
+  });
+
+  test('returns null when no ports for round robin', () => {
+    expect(createProxyPool({ strategy: 'round_robin', host: 'proxy.example.com', ports: [], username: 'u', password: 'p' })).toBeNull();
   });
 
   test('single port pool', () => {
-    const pool = createProxyPool({ host: 'us.decodo.com', ports: [7000], username: 'u', password: 'p' });
+    const pool = createProxyPool({ strategy: 'round_robin', host: 'us.decodo.com', ports: [7000], username: 'u', password: 'p' });
     expect(pool).not.toBeNull();
+    expect(pool.mode).toBe('round_robin');
     expect(pool.size).toBe(1);
     expect(pool.getLaunchProxy()).toEqual({ server: 'http://us.decodo.com:7000', username: 'u', password: 'p' });
     expect(pool.getNext()).toEqual({ server: 'http://us.decodo.com:7000', username: 'u', password: 'p' });
-    // Round-robin wraps back to single port
     expect(pool.getNext()).toEqual({ server: 'http://us.decodo.com:7000', username: 'u', password: 'p' });
   });
 
   test('multi-port round-robin', () => {
-    const pool = createProxyPool({ host: 'us.decodo.com', ports: [10001, 10002, 10003], username: 'u', password: 'p' });
+    const pool = createProxyPool({ strategy: 'round_robin', host: 'us.decodo.com', ports: [10001, 10002, 10003], username: 'u', password: 'p' });
     expect(pool.size).toBe(3);
     expect(pool.getLaunchProxy().server).toBe('http://us.decodo.com:10001');
     expect(pool.getNext().server).toBe('http://us.decodo.com:10001');
     expect(pool.getNext().server).toBe('http://us.decodo.com:10002');
     expect(pool.getNext().server).toBe('http://us.decodo.com:10003');
-    // Wraps around
     expect(pool.getNext().server).toBe('http://us.decodo.com:10001');
     expect(pool.getNext().server).toBe('http://us.decodo.com:10002');
   });
 
-  test('10-port pool distributes evenly', () => {
-    const ports = Array.from({ length: 10 }, (_, i) => 10001 + i);
-    const pool = createProxyPool({ host: 'us.decodo.com', ports, username: 'u', password: 'p' });
-    expect(pool.size).toBe(10);
+  test('backconnect pool uses gate endpoint with sticky sessions', () => {
+    const pool = createProxyPool({
+      strategy: 'backconnect',
+      backconnectHost: 'gate.decodo.com',
+      backconnectPort: 7000,
+      username: 'sp6incny2a',
+      password: 'p',
+      country: 'us',
+      state: 'us_california',
+      sessionDurationMinutes: 10,
+    });
 
-    const counts = new Map();
-    for (let i = 0; i < 100; i++) {
-      const proxy = pool.getNext();
-      const port = proxy.server.split(':').pop();
-      counts.set(port, (counts.get(port) || 0) + 1);
-    }
-    // Each port should be hit exactly 10 times over 100 calls
-    for (const port of ports) {
-      expect(counts.get(String(port))).toBe(10);
-    }
+    expect(pool.mode).toBe('backconnect');
+    const launch = pool.getLaunchProxy('browser-1');
+    expect(launch.server).toBe('http://gate.decodo.com:7000');
+    expect(launch.username).toBe('user-sp6incny2a-country-us-state-us_california-session-browser_1-sessionduration-10');
+    expect(launch.password).toBe('p');
+
+    const next = pool.getNext('ctx-1');
+    expect(next.server).toBe('http://gate.decodo.com:7000');
+    expect(next.username).toBe('user-sp6incny2a-country-us-state-us_california-session-ctx_1-sessionduration-10');
   });
 });

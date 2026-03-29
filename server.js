@@ -428,11 +428,19 @@ function getHostOS() {
   return 'linux';
 }
 
-// Proxy pool for round-robin port rotation across sessions
+// Proxy strategy for outbound browsing.
 const proxyPool = createProxyPool(CONFIG.proxy);
 
 if (proxyPool) {
-  log('info', 'proxy pool created', { host: CONFIG.proxy.host, ports: CONFIG.proxy.ports, poolSize: proxyPool.size });
+  log('info', 'proxy pool created', {
+    mode: proxyPool.mode,
+    host: proxyPool.mode === 'backconnect' ? CONFIG.proxy.backconnectHost : CONFIG.proxy.host,
+    ports: proxyPool.mode === 'backconnect' ? [CONFIG.proxy.backconnectPort] : CONFIG.proxy.ports,
+    poolSize: proxyPool.size,
+    country: CONFIG.proxy.country || null,
+    state: CONFIG.proxy.state || null,
+    city: CONFIG.proxy.city || null,
+  });
 } else {
   log('info', 'no proxy configured');
 }
@@ -520,11 +528,16 @@ function getTotalTabCount() {
 // Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
 // via Mesa llvmpipe. Without this, WebGL returns "no context" — a massive bot signal.
 let virtualDisplay = null;
+let browserLaunchProxy = null;
 
 async function launchBrowserInstance() {
   const hostOS = getHostOS();
-  // Use first port for browser launch (geoip fingerprinting needs a valid proxy)
-  const launchProxy = proxyPool ? proxyPool.getLaunchProxy() : null;
+  // Backconnect mode uses a sticky proxy session at the browser process level so
+  // the Camoufox fingerprint (geoip/timezone/WebRTC) aligns with the actual exit IP.
+  const launchProxy = proxyPool
+    ? proxyPool.getLaunchProxy(proxyPool.mode === 'backconnect' ? `browser-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}` : undefined)
+    : null;
+  browserLaunchProxy = launchProxy;
   
   // Start Xvfb virtual display if on Linux (Fly.io) — enables WebGL via Mesa
   let vdDisplay = undefined;
@@ -543,7 +556,15 @@ async function launchBrowserInstance() {
   }
   
   const useVirtualDisplay = !!vdDisplay;
-  log('info', 'launching camoufox', { hostOS, geoip: !!launchProxy, proxyPoolSize: proxyPool?.size || 0, virtualDisplay: useVirtualDisplay });
+  log('info', 'launching camoufox', {
+    hostOS,
+    geoip: !!launchProxy,
+    proxyMode: proxyPool?.mode || null,
+    proxyServer: launchProxy?.server || null,
+    proxySession: launchProxy?.sessionId || null,
+    proxyPoolSize: proxyPool?.size || 0,
+    virtualDisplay: useVirtualDisplay,
+  });
   
   const options = await launchOptions({
     headless: useVirtualDisplay ? false : true,
@@ -563,6 +584,7 @@ async function launchBrowserInstance() {
     const origClose = browser.close.bind(browser);
     browser.close = async (...args) => {
       await origClose(...args);
+      browserLaunchProxy = null;
       if (virtualDisplay) {
         virtualDisplay.kill();
         virtualDisplay = null;
@@ -570,7 +592,12 @@ async function launchBrowserInstance() {
     };
   }
   
-  log('info', 'camoufox launched', { virtualDisplay: useVirtualDisplay });
+  log('info', 'camoufox launched', {
+    virtualDisplay: useVirtualDisplay,
+    proxyMode: proxyPool?.mode || null,
+    proxyServer: launchProxy?.server || null,
+    proxySession: launchProxy?.sessionId || null,
+  });
   return browser;
 }
 
@@ -590,6 +617,7 @@ async function ensureBrowser() {
       virtualDisplay.kill();
       virtualDisplay = null;
     }
+    browserLaunchProxy = null;
     browser = null;
   }
   if (browser) return browser;
@@ -639,8 +667,7 @@ async function getSession(userId) {
       contextOptions.timezoneId = 'America/Los_Angeles';
       contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
     }
-    // Rotate proxy port per session for load distribution
-    if (proxyPool) {
+    if (proxyPool?.mode === 'round_robin') {
       const sessionProxy = proxyPool.getNext();
       contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
       log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
@@ -649,7 +676,12 @@ async function getSession(userId) {
     
     session = { context, tabGroups: new Map(), lastAccess: Date.now() };
     sessions.set(key, session);
-    log('info', 'session created', { userId: key });
+    log('info', 'session created', {
+      userId: key,
+      proxyMode: proxyPool?.mode || null,
+      proxyServer: browserLaunchProxy?.server || null,
+      proxySession: browserLaunchProxy?.sessionId || null,
+    });
   }
   session.lastAccess = Date.now();
   return session;
@@ -901,6 +933,25 @@ function isGoogleSerp(url) {
   } catch {
     return false;
   }
+}
+
+function isGoogleSearchUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.includes('google.') && parsed.pathname === '/search';
+  } catch {
+    return false;
+  }
+}
+
+async function isGoogleSearchBlocked(page) {
+  if (!page || page.isClosed()) return false;
+
+  const url = page.url();
+  if (url.includes('google.com/sorry/')) return true;
+
+  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 600) || '').catch(() => '');
+  return /Our systems have detected unusual traffic|About this page|If you're having trouble accessing Google Search|SG_REL/.test(bodyText);
 }
 
 // --- Google SERP: combined extraction (refs + snapshot in one DOM pass) ---
@@ -1418,12 +1469,12 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
     const result = await withUserLimit(userId, () => withTimeout((async () => {
       await ensureBrowser();
+      const resolvedSessionKey = sessionKey || listItemId || 'default';
       let session = sessions.get(normalizeUserId(userId));
       let found = session && findTab(session, tabId);
       
       let tabState;
       if (!found) {
-        const resolvedSessionKey = sessionKey || listItemId || 'default';
         session = await getSession(userId);
         let sessionTabs = 0;
         for (const g of session.tabGroups.values()) sessionTabs += g.size;
@@ -1476,9 +1527,50 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       if (urlErr) throw new Error(urlErr);
       
       return await withTabLock(tabId, async () => {
-        await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
-        tabState.visitedUrls.add(targetUrl);
-        tabState.lastSnapshot = null;
+        const currentSessionKey = found?.listItemId || resolvedSessionKey;
+        const isGoogleSearch = isGoogleSearchUrl(targetUrl);
+
+        const navigateCurrentPage = async () => {
+          await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          tabState.visitedUrls.add(targetUrl);
+          tabState.lastSnapshot = null;
+        };
+
+        const prewarmGoogleHome = async () => {
+          if (!isGoogleSearch || tabState.visitedUrls.has('https://www.google.com/')) return;
+          await withPageLoadDuration('navigate', () => tabState.page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          tabState.visitedUrls.add('https://www.google.com/');
+          await tabState.page.waitForTimeout(1200);
+        };
+
+        const recreateTabOnFreshBrowser = async () => {
+          await restartBrowser('google_search_block');
+          session = await getSession(userId);
+          const group = getTabGroup(session, currentSessionKey);
+          const page = await session.context.newPage();
+          tabState = createTabState(page);
+          attachDownloadListener(tabState, tabId, log);
+          group.set(tabId, tabState);
+          refreshActiveTabsGauge();
+        };
+
+        if (isGoogleSearch && proxyPool?.mode === 'backconnect') {
+          await prewarmGoogleHome();
+        }
+
+        await navigateCurrentPage();
+
+        if (isGoogleSearch && proxyPool?.mode === 'backconnect' && await isGoogleSearchBlocked(tabState.page)) {
+          log('warn', 'google search blocked, rotating browser proxy session', {
+            reqId: req.reqId,
+            tabId,
+            url: tabState.page.url(),
+            proxySession: browserLaunchProxy?.sessionId || null,
+          });
+          await recreateTabOnFreshBrowser();
+          await prewarmGoogleHome();
+          await navigateCurrentPage();
+        }
         
         // For Google SERP: skip eager ref building during navigate.
         // Results render asynchronously after DOMContentLoaded — the snapshot
@@ -1486,6 +1578,10 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         if (isGoogleSerp(tabState.page.url())) {
           tabState.refs = new Map();
           return { ok: true, tabId, url: tabState.page.url(), refsAvailable: false, googleSerp: true };
+        }
+
+        if (isGoogleSearch && await isGoogleSearchBlocked(tabState.page)) {
+          return { ok: false, tabId, url: tabState.page.url(), refsAvailable: false, googleBlocked: true };
         }
         
         tabState.refs = await buildRefs(tabState.page);
