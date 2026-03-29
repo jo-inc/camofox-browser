@@ -448,6 +448,7 @@ if (proxyPool) {
 const BROWSER_IDLE_TIMEOUT_MS = CONFIG.browserIdleTimeoutMs;
 let browserIdleTimer = null;
 let browserLaunchPromise = null;
+let browserWarmRetryTimer = null;
 
 function scheduleBrowserIdleShutdown() {
   clearBrowserIdleTimer();
@@ -468,6 +469,21 @@ function clearBrowserIdleTimer() {
     clearTimeout(browserIdleTimer);
     browserIdleTimer = null;
   }
+}
+
+function scheduleBrowserWarmRetry(delayMs = 5000) {
+  if (browserWarmRetryTimer || browser || browserLaunchPromise) return;
+  browserWarmRetryTimer = setTimeout(async () => {
+    browserWarmRetryTimer = null;
+    try {
+      const start = Date.now();
+      await ensureBrowser();
+      log('info', 'background browser warm retry succeeded', { ms: Date.now() - start });
+    } catch (err) {
+      log('warn', 'background browser warm retry failed', { error: err.message, nextDelayMs: delayMs });
+      scheduleBrowserWarmRetry(Math.min(delayMs * 2, 30000));
+    }
+  }, delayMs);
 }
 
 // --- Browser health tracking ---
@@ -1455,6 +1471,17 @@ app.get('/health', (req, res) => {
     return res.status(503).json({ ok: false, engine: 'camoufox', recovering: true });
   }
   const running = browser !== null && (browser.isConnected?.() ?? false);
+  if (proxyPool?.mode === 'backconnect' && !running) {
+    scheduleBrowserWarmRetry();
+    return res.status(503).json({
+      ok: false,
+      engine: 'camoufox',
+      browserConnected: false,
+      browserRunning: false,
+      warming: true,
+      ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
+    });
+  }
   res.json({ 
     ok: true, 
     engine: 'camoufox',
@@ -3043,7 +3070,8 @@ const server = app.listen(PORT, async () => {
     await ensureBrowser();
     log('info', 'browser pre-warmed', { ms: Date.now() - start });
   } catch (err) {
-    log('error', 'browser pre-warm failed (will retry on first request)', { error: err.message });
+    log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });
+    scheduleBrowserWarmRetry();
   }
   // Idle self-shutdown removed — Fly manages machine lifecycle via fly.toml.
 });
