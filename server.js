@@ -25,6 +25,18 @@ import {
 
 const CONFIG = loadConfig();
 
+// --- Safe screenshot helper (prevents context window overflow in Claude) ---
+const MAX_SCREENSHOT_BYTES = 200000; // 200KB default cap
+async function safeScreenshot(page, maxBytes = MAX_SCREENSHOT_BYTES) {
+  // Use JPEG with moderate quality instead of raw PNG (5-10x smaller)
+  let buffer = await page.screenshot({ type: 'jpeg', quality: 55 });
+  // If still too large, reduce quality and viewport clip
+  if (buffer.length > maxBytes) {
+    buffer = await page.screenshot({ type: 'jpeg', quality: 30, clip: { x: 0, y: 0, width: 1024, height: 576 } });
+  }
+  return { data: buffer.toString('base64'), mimeType: 'image/jpeg' };
+}
+
 // --- Structured logging ---
 function log(level, msg, fields = {}) {
   const entry = {
@@ -339,16 +351,22 @@ async function withUserLimit(userId, operation) {
     userConcurrency.set(key, state);
   }
   if (state.active >= MAX_CONCURRENT_PER_USER) {
+    // Fix #9: Track queue entry for removal on timeout
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('User concurrency limit reached, try again')), 30000);
-      state.queue.push(() => { clearTimeout(timer); resolve(); });
+      const timer = setTimeout(() => {
+        const idx = state.queue.indexOf(entry);
+        if (idx !== -1) state.queue.splice(idx, 1);
+        reject(new Error('User concurrency limit reached, try again'));
+      }, 30000);
+      const entry = () => { clearTimeout(timer); resolve(); };
+      state.queue.push(entry);
     });
   }
   state.active++;
   healthState.activeOps++;
   try {
     const result = await operation();
-    healthState.lastSuccessfulNav = Date.now();
+    // Fix #8: Don't blindly update lastSuccessfulNav here - callers should do it
     return result;
   } finally {
     healthState.activeOps--;
@@ -966,17 +984,21 @@ async function buildRefs(page) {
   
   const start = Date.now();
   
-  // Hard total timeout on the entire buildRefs operation
-  const timeoutPromise = new Promise((_, reject) => 
-    setTimeout(() => reject(new Error('buildRefs_timeout')), BUILDREFS_TIMEOUT_MS)
-  );
-  
+  // Fix #3: Clear timer on resolve to prevent memory leak
+  let timerId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => reject(new Error('buildRefs_timeout')), BUILDREFS_TIMEOUT_MS);
+  });
+
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       _buildRefsInner(page, refs, start),
       timeoutPromise
     ]);
+    clearTimeout(timerId);
+    return result;
   } catch (err) {
+    clearTimeout(timerId);
     if (err.message === 'buildRefs_timeout') {
       log('warn', 'buildRefs: total timeout exceeded', { elapsed: Date.now() - start });
       return refs;
@@ -1237,6 +1259,16 @@ async function browserTranscript(reqId, url, videoId, lang) {
       };
     } finally {
       await safePageClose(page);
+      // Fix #15: Clean up phantom transcript session
+      const ytSession = sessions.get(normalizeUserId('__yt_transcript__'));
+      if (ytSession) {
+        let totalTabs = 0;
+        for (const g of ytSession.tabGroups.values()) totalTabs += g.size;
+        if (totalTabs === 0) {
+          ytSession.context.close().catch(() => {});
+          sessions.delete(normalizeUserId('__yt_transcript__'));
+        }
+      }
     }
   });
 }
@@ -1289,7 +1321,7 @@ app.post('/tabs', async (req, res) => {
       const page = await session.context.newPage();
       const tabId = crypto.randomUUID();
       const tabState = createTabState(page);
-      attachDownloadListener(tabState, tabId);
+      attachDownloadListener(tabState, tabId, log); // Fix #10: Pass log param
       group.set(tabId, tabState);
       refreshActiveTabsGauge();
       
@@ -1378,10 +1410,16 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       const urlErr = validateUrl(targetUrl);
       if (urlErr) throw new Error(urlErr);
       
+      // Fix #2: Move navigation inside tab lock to prevent race condition on auto-create
       return await withTabLock(tabId, async () => {
         await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
         tabState.visitedUrls.add(targetUrl);
+        if (tabState.visitedUrls.size > 100) { // Fix #18: Cap visitedUrls
+          const arr = [...tabState.visitedUrls];
+          tabState.visitedUrls = new Set(arr.slice(-100));
+        }
         tabState.lastSnapshot = null;
+        healthState.lastSuccessfulNav = Date.now(); // Fix #8: Only update on actual navigation
         
         // For Google SERP: skip eager ref building during navigate.
         // Results render asynchronously after DOMContentLoaded — the snapshot
@@ -1427,8 +1465,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       const win = windowSnapshot(tabState.lastSnapshot, offset);
       const response = { url: tabState.page.url(), snapshot: win.text, refsCount: tabState.refs.size, truncated: win.truncated, totalChars: win.totalChars, hasMore: win.hasMore, nextOffset: win.nextOffset };
       if (req.query.includeScreenshot === 'true') {
-        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
-        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+        response.screenshot = await safeScreenshot(tabState.page);
       }
       log('info', 'snapshot (cached offset)', { reqId: req.reqId, tabId: req.params.tabId, offset, totalChars: win.totalChars });
       return res.json(response);
@@ -1454,12 +1491,11 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
           nextOffset: win.nextOffset,
         };
         if (req.query.includeScreenshot === 'true') {
-          const pngBuffer = await tabState.page.screenshot({ type: 'png' });
-          response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+          response.screenshot = await safeScreenshot(tabState.page);
         }
         return response;
       }
-      
+
       tabState.refs = await buildRefs(tabState.page);
       const ariaYaml = await getAriaSnapshot(tabState.page);
       
@@ -1511,8 +1547,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
       };
 
       if (req.query.includeScreenshot === 'true') {
-        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
-        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+        response.screenshot = await safeScreenshot(tabState.page);
       }
 
       return response;
@@ -1529,7 +1564,8 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
 // Wait for page ready
 app.post('/tabs/:tabId/wait', async (req, res) => {
   try {
-    const { userId, timeout = 10000, waitForNetwork = true } = req.body;
+    const { userId, timeout: rawTimeout = 10000, waitForNetwork = true } = req.body;
+    const timeout = Math.min(rawTimeout, 60000); // Fix #11: Cap wait timeout to 60s
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
@@ -1811,8 +1847,10 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const delta = direction === 'up' ? -amount : amount;
-    await tabState.page.mouse.wheel(0, delta);
+    // Fix #22: Support all 4 scroll directions
+    const isVertical = direction === 'up' || direction === 'down';
+    const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
+    await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
     await tabState.page.waitForTimeout(300);
     
     res.json({ ok: true });
@@ -2014,8 +2052,14 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    const buffer = await tabState.page.screenshot({ type: 'png', fullPage });
-    res.set('Content-Type', 'image/png');
+    const maxBytes = parseInt(req.query.maxBytes) || MAX_SCREENSHOT_BYTES;
+    // Fix #17: Apply size cap to fullPage too (cap at 500KB for fullPage)
+    const effectiveMax = fullPage ? Math.max(maxBytes, 500000) : maxBytes;
+    let buffer = await tabState.page.screenshot({ type: 'jpeg', quality: 55, fullPage });
+    if (buffer.length > effectiveMax) {
+      buffer = await tabState.page.screenshot({ type: 'jpeg', quality: 30, clip: { x: 0, y: 0, width: 1024, height: 576 } });
+    }
+    res.set('Content-Type', 'image/jpeg');
     res.send(buffer);
   } catch (err) {
     log('error', 'screenshot failed', { reqId: req.reqId, error: err.message });
@@ -2063,9 +2107,15 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
 
-    const result = await tabState.page.evaluate(expression);
-    log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
-    res.json({ ok: true, result });
+    // Fix #13-14: Wrap in tab lock + cap result size
+    const result = await withTabLock(req.params.tabId, async () => {
+      return await tabState.page.evaluate(expression);
+    });
+    const resultStr = JSON.stringify(result);
+    const truncated = resultStr && resultStr.length > 100000;
+    const safeResult = truncated ? JSON.parse(resultStr.slice(0, 100000) + '..."') : result;
+    log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result, truncated });
+    res.json({ ok: true, result: safeResult, truncated });
   } catch (err) {
     log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
@@ -2075,7 +2125,9 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 // Close tab
 app.delete('/tabs/:tabId', async (req, res) => {
   try {
-    const { userId } = req.body;
+    // Fix #5: Accept userId from query OR body (DELETE body often stripped)
+    const userId = req.query.userId || req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required (query or body)' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
@@ -2099,7 +2151,9 @@ app.delete('/tabs/:tabId', async (req, res) => {
 // Close tab group
 app.delete('/tabs/group/:listItemId', async (req, res) => {
   try {
-    const { userId } = req.body;
+    // Fix #6: Accept userId from query OR body
+    const userId = req.query.userId || req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required (query or body)' });
     const session = sessions.get(normalizeUserId(userId));
     const group = session?.tabGroups.get(req.params.listItemId);
     if (group) {
@@ -2204,6 +2258,18 @@ setInterval(() => {
         session.tabGroups.delete(listItemId);
       }
     }
+    // Fix #1: Clean up sessions with zero tabs remaining (Issue #32)
+    if (session.tabGroups.size === 0) {
+      clearSessionDownloads(session).catch(() => {});
+      session.context.close().catch(() => {});
+      sessions.delete(userId);
+      refreshActiveTabsGauge();
+      log('info', 'session reaped (no tabs remaining)', { userId });
+    }
+  }
+  // When all sessions gone, start idle timer to kill browser
+  if (sessions.size === 0) {
+    scheduleBrowserIdleShutdown();
   }
 }, 60_000);
 
@@ -2322,19 +2388,21 @@ app.post('/start', async (req, res) => {
 app.post('/stop', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
+    // Fix #16: Reject /stop when adminKey is not configured
+    if (!CONFIG.adminKey) {
+      return res.status(403).json({ error: 'Forbidden: CAMOFOX_ADMIN_KEY not configured' });
+    }
     if (!adminKey || !timingSafeCompare(adminKey, CONFIG.adminKey)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    if (browser) {
-      await browser.close().catch(() => {});
-      browser = null;
-    }
+    // Fix #4: Close contexts before browser to allow proper cleanup
     const cleanupTasks = [];
     for (const session of sessions.values()) {
       cleanupTasks.push(clearSessionDownloads(session));
     }
     await Promise.all(cleanupTasks);
     for (const session of sessions.values()) {
+      session.context.close().catch(() => {});
       for (const [, group] of session.tabGroups) {
         for (const tabId of group.keys()) {
           const lock = tabLocks.get(tabId);
@@ -2347,6 +2415,10 @@ app.post('/stop', async (req, res) => {
     }
     tabLocks.clear();
     sessions.clear();
+    if (browser) {
+      await browser.close().catch(() => {});
+      browser = null;
+    }
     refreshActiveTabsGauge();
     refreshTabLockQueueDepth();
     res.json({ ok: true, stopped: true, profile: 'camoufox' });
@@ -2423,8 +2495,7 @@ app.get('/snapshot', async (req, res) => {
       const win = windowSnapshot(tabState.lastSnapshot, offset);
       const response = { ok: true, format: 'aria', targetId, url: tabState.page.url(), snapshot: win.text, refsCount: tabState.refs.size, truncated: win.truncated, totalChars: win.totalChars, hasMore: win.hasMore, nextOffset: win.nextOffset };
       if (req.query.includeScreenshot === 'true') {
-        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
-        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+        response.screenshot = await safeScreenshot(tabState.page);
       }
       return res.json(response);
     }
@@ -2445,8 +2516,7 @@ app.get('/snapshot', async (req, res) => {
         hasMore: win.hasMore, nextOffset: win.nextOffset,
       };
       if (req.query.includeScreenshot === 'true') {
-        const pngBuffer = await tabState.page.screenshot({ type: 'png' });
-        response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+        response.screenshot = await safeScreenshot(tabState.page);
       }
       return res.json(response);
     }
@@ -2457,19 +2527,24 @@ app.get('/snapshot', async (req, res) => {
     
     // Annotate YAML with ref IDs
     let annotatedYaml = ariaYaml || '';
+    // Fix #7: Add nth tracking for duplicate elements (matching primary snapshot logic)
     if (annotatedYaml && tabState.refs.size > 0) {
       const refsByKey = new Map();
       for (const [refId, el] of tabState.refs) {
-        const key = `${el.role}:${el.name || ''}`;
+        const key = `${el.role}:${el.name || ''}:${el.nth || 0}`;
         if (!refsByKey.has(key)) refsByKey.set(key, refId);
       }
-      
+
+      const annotationCounts = new Map();
       const lines = annotatedYaml.split('\n');
       annotatedYaml = lines.map(line => {
         const match = line.match(/^(\s*)-\s+(\w+)(?:\s+"([^"]*)")?/);
         if (match) {
           const [, indent, role, name] = match;
-          const key = `${role}:${name || ''}`;
+          const baseKey = `${role}:${name || ''}`;
+          const nth = annotationCounts.get(baseKey) || 0;
+          annotationCounts.set(baseKey, nth + 1);
+          const key = `${baseKey}:${nth}`;
           const refId = refsByKey.get(key);
           if (refId) {
             return line.replace(/^(\s*-\s+\w+)/, `$1 [${refId}]`);
@@ -2496,8 +2571,7 @@ app.get('/snapshot', async (req, res) => {
     };
 
     if (req.query.includeScreenshot === 'true') {
-      const pngBuffer = await tabState.page.screenshot({ type: 'png' });
-      response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      response.screenshot = await safeScreenshot(tabState.page);
     }
 
     res.json(response);
@@ -2642,8 +2716,9 @@ app.post('/act', async (req, res) => {
         }
         
         case 'wait': {
-          const { timeMs, text, loadState } = params;
-          if (timeMs) {
+          const { timeMs: rawTimeMs, text, loadState } = params;
+          if (rawTimeMs) {
+            const timeMs = Math.min(rawTimeMs, 30000); // Fix #12: Cap wait to 30s
             await tabState.page.waitForTimeout(timeMs);
           } else if (text) {
             await tabState.page.waitForSelector(`text=${text}`, { timeout: 30000 });

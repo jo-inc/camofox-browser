@@ -151,6 +151,8 @@ async function startServer(
       // Server not ready yet
     }
   }
+  // Fix #20: Kill orphan process on startup failure
+  proc.kill();
   throw new Error("Server failed to start within 15 seconds");
 }
 
@@ -197,6 +199,10 @@ export default function register(api: PluginApi) {
   const pluginDir = getPluginDir();
   const fallbackUserId = `camofox-${randomUUID()}`;
 
+  // Fix #21: Track server startup state for better error messages
+  let serverStartFailed = false;
+  let serverStartError = '';
+
   // Auto-start server if configured (default: true)
   if (autoStart) {
     (async () => {
@@ -207,7 +213,9 @@ export default function register(api: PluginApi) {
         try {
           serverProcess = await startServer(pluginDir, port, api.log, cfg);
         } catch (err) {
-          api.log?.error?.(`Failed to auto-start server: ${(err as Error).message}`);
+          serverStartFailed = true;
+          serverStartError = (err as Error).message;
+          api.log?.error?.(`Failed to auto-start server: ${serverStartError}`);
         }
       }
     })();
@@ -225,6 +233,10 @@ export default function register(api: PluginApi) {
       required: ["url"],
     },
     async execute(_id, params) {
+      // Fix #21: Clear error message if server failed to start
+      if (serverStartFailed) {
+        return { content: [{ type: "text", text: `Camofox server failed to start: ${serverStartError}. Try restarting Claude Code or run the server manually.` }] };
+      }
       const sessionKey = ctx.sessionKey || "default";
       const userId = ctx.agentId || fallbackUserId;
       const result = await fetchApi(baseUrl, "/tabs", {
@@ -253,13 +265,17 @@ export default function register(api: PluginApi) {
       const { tabId, offset } = params as { tabId: string; offset?: number };
       const userId = ctx.agentId || fallbackUserId;
       const qs = offset ? `&offset=${offset}` : '';
-      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}&includeScreenshot=true${qs}`) as Record<string, unknown>;
+      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}${qs}`) as Record<string, unknown>;
       const content: ToolResult["content"] = [
         { type: "text", text: JSON.stringify({ url: result.url, refsCount: result.refsCount, snapshot: result.snapshot, truncated: result.truncated, totalChars: result.totalChars, hasMore: result.hasMore, nextOffset: result.nextOffset }, null, 2) },
       ];
       const screenshot = result.screenshot as { data?: string; mimeType?: string } | undefined;
       if (screenshot?.data) {
-        content.push({ type: "image", data: screenshot.data, mimeType: screenshot.mimeType || "image/png" });
+        // Guard: only push as image if data looks like valid base64 image (not JSON)
+        const dataPrefix = screenshot.data.substring(0, 20);
+        if (!dataPrefix.startsWith('{') && !dataPrefix.startsWith('[') && !dataPrefix.startsWith('<')) {
+          content.push({ type: "image", data: screenshot.data, mimeType: screenshot.mimeType || "image/jpeg" });
+        }
       }
       return { content };
     },
@@ -398,14 +414,23 @@ export default function register(api: PluginApi) {
         const text = await res.text();
         throw new Error(`${res.status}: ${text}`);
       }
+      // Guard: verify response is actually an image, not JSON error
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json') || contentType.includes('text/')) {
+        const text = await res.text();
+        return { content: [{ type: "text", text: `Screenshot failed: ${text}` }] };
+      }
       const arrayBuffer = await res.arrayBuffer();
+      if (arrayBuffer.byteLength < 100) {
+        return { content: [{ type: "text", text: "Screenshot failed: response too small to be a valid image" }] };
+      }
       const base64 = Buffer.from(arrayBuffer).toString("base64");
       return {
         content: [
           {
             type: "image",
             data: base64,
-            mimeType: "image/png",
+            mimeType: "image/jpeg",
           },
         ],
       };
