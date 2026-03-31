@@ -401,16 +401,17 @@ function getHostOS() {
 }
 
 function buildProxyConfig() {
-  const { host, port, username, password } = CONFIG.proxy;
-  
+  const { host, port, username, password, protocol } = CONFIG.proxy;
+
   if (!host || !port) {
     log('info', 'no proxy configured');
     return null;
   }
-  
-  log('info', 'proxy configured', { host, port });
+
+  const scheme = protocol || 'http';
+  log('info', 'proxy configured', { host, port, protocol: scheme });
   return {
-    server: `http://${host}:${port}`,
+    server: `${scheme}://${host}:${port}`,
     username,
     password,
   };
