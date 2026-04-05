@@ -221,6 +221,27 @@ function validateUrl(url) {
 
 // isLoopbackAddress -- now imported from lib/auth.js (see top of file)
 
+// Middleware: require CAMOFOX_API_KEY via Bearer token.
+// When the key is not set, allow only loopback requests in non-production environments.
+function requireApiKey(req, res, next) {
+  if (CONFIG.apiKey) {
+    const auth = String(req.headers['authorization'] || '');
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (!match || !timingSafeCompare(match[1], CONFIG.apiKey)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  } else {
+    const remoteAddress = req.socket?.remoteAddress || '';
+    const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
+    if (!allowUnauthedLocal) {
+      return res.status(403).json({
+        error: 'This endpoint requires CAMOFOX_API_KEY except for loopback requests in non-production environments.',
+      });
+    }
+  }
+  next();
+}
+
 // Import cookies into a user's browser context (Playwright cookies format)
 // POST /sessions/:userId/cookies { cookies: Cookie[] }
 //
@@ -4337,7 +4358,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
+app.post('/tabs/:tabId/evaluate', requireApiKey, express.json({ limit: '1mb' }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
