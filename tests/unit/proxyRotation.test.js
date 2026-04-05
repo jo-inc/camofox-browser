@@ -19,14 +19,14 @@ function normalizeUserId(userId) {
 
 /**
  * Simulates getSession() proxy assignment behavior.
- * In backconnect mode, each context gets its own proxy session ID.
+ * Uses capability checks (canRotateSessions) instead of mode string checks.
  */
 function assignContextProxy(proxyPool, userId) {
-  if (proxyPool?.mode === 'round_robin') {
-    return proxyPool.getNext();
-  } else if (proxyPool?.mode === 'backconnect') {
+  if (proxyPool?.canRotateSessions) {
     const key = normalizeUserId(userId);
     return proxyPool.getNext(`ctx-${key}-test`);
+  } else if (proxyPool) {
+    return proxyPool.getNext();
   }
   return null;
 }
@@ -36,7 +36,7 @@ function assignContextProxy(proxyPool, userId) {
 describe('Per-context proxy assignment (backconnect)', () => {
   const backconnectPool = createProxyPool({
     strategy: 'backconnect',
-    backconnectHost: 'gate.decodo.com',
+    backconnectHost: 'gate.proxy.com',
     backconnectPort: 7000,
     username: 'testuser',
     password: 'testpass',
@@ -54,8 +54,8 @@ describe('Per-context proxy assignment (backconnect)', () => {
     expect(proxy1.sessionId).toBe('ctx-user-1-test');
     expect(proxy2.sessionId).toBe('ctx-user-2-test');
     // Both use the same server
-    expect(proxy1.server).toBe('http://gate.decodo.com:7000');
-    expect(proxy2.server).toBe('http://gate.decodo.com:7000');
+    expect(proxy1.server).toBe('http://gate.proxy.com:7000');
+    expect(proxy2.server).toBe('http://gate.proxy.com:7000');
   });
 
   test('backconnect proxy includes session in username', () => {

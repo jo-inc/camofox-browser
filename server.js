@@ -376,7 +376,7 @@ function withTimeout(promise, ms, label) {
 }
 
 function requestTimeoutMs(baseMs = HANDLER_TIMEOUT_MS) {
-  return proxyPool?.mode === 'backconnect' ? Math.max(baseMs, 180000) : baseMs;
+  return proxyPool?.canRotateSessions ? Math.max(baseMs, 180000) : baseMs;
 }
 
 const userConcurrency = new Map();
@@ -438,8 +438,8 @@ const proxyPool = createProxyPool(CONFIG.proxy);
 if (proxyPool) {
   log('info', 'proxy pool created', {
     mode: proxyPool.mode,
-    host: proxyPool.mode === 'backconnect' ? CONFIG.proxy.backconnectHost : CONFIG.proxy.host,
-    ports: proxyPool.mode === 'backconnect' ? [CONFIG.proxy.backconnectPort] : CONFIG.proxy.ports,
+    host: proxyPool.canRotateSessions ? CONFIG.proxy.backconnectHost : CONFIG.proxy.host,
+    ports: proxyPool.canRotateSessions ? [CONFIG.proxy.backconnectPort] : CONFIG.proxy.ports,
     poolSize: proxyPool.size,
     country: CONFIG.proxy.country || null,
     state: CONFIG.proxy.state || null,
@@ -588,12 +588,12 @@ function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
 
 async function launchBrowserInstance() {
   const hostOS = getHostOS();
-  const maxAttempts = proxyPool?.mode === 'backconnect' ? 10 : 1;
+  const maxAttempts = proxyPool?.launchRetries ?? 1;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const launchProxy = proxyPool
-      ? proxyPool.getLaunchProxy(proxyPool.mode === 'backconnect' ? `browser-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}` : undefined)
+      ? proxyPool.getLaunchProxy(proxyPool.canRotateSessions ? `browser-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}` : undefined)
       : null;
 
     let localVirtualDisplay = null;
@@ -638,7 +638,7 @@ async function launchBrowserInstance() {
 
       candidateBrowser = await firefox.launch(options);
 
-      if (proxyPool?.mode === 'backconnect') {
+      if (proxyPool?.canRotateSessions) {
         const probe = await probeGoogleSearch(candidateBrowser);
         if (!probe.ok) {
           log('warn', 'browser launch google probe failed', {
@@ -712,7 +712,7 @@ async function ensureBrowser() {
   }
   if (browser) return browser;
   if (browserLaunchPromise) return browserLaunchPromise;
-  const launchTimeoutMs = proxyPool?.mode === 'backconnect' ? 180000 : 60000;
+  const launchTimeoutMs = proxyPool?.launchTimeoutMs ?? 60000;
   browserLaunchPromise = Promise.race([
     launchBrowserInstance(),
     new Promise((_, reject) => setTimeout(() => reject(new Error(`Browser launch timeout (${Math.round(launchTimeoutMs / 1000)}s)`)), launchTimeoutMs)),
@@ -759,14 +759,14 @@ async function getSession(userId) {
       contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
     }
     let sessionProxy = null;
-    if (proxyPool?.mode === 'round_robin') {
+    if (proxyPool?.canRotateSessions) {
+      sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
+      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+      log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
+    } else if (proxyPool) {
       sessionProxy = proxyPool.getNext();
       contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
       log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
-    } else if (proxyPool?.mode === 'backconnect') {
-      sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
-      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
-      log('info', 'session proxy assigned (backconnect)', { userId: key, sessionId: sessionProxy.sessionId });
     }
     const context = await b.newContext(contextOptions);
     
@@ -831,9 +831,9 @@ function handleRouteError(err, req, res, extraFields = {}) {
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
   }
-  // Proxy errors mean the Decodo session is dead — rotate at context level.
+  // Proxy errors mean the session is dead — rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
-  if (isProxyError(err) && proxyPool?.mode === 'backconnect' && userId) {
+  if (isProxyError(err) && proxyPool?.canRotateSessions && userId) {
     log('warn', 'proxy error detected, destroying user session for fresh proxy on next request', {
       action, userId, error: err.message,
     });
@@ -1648,7 +1648,7 @@ app.get('/health', (req, res) => {
     return res.status(503).json({ ok: false, engine: 'camoufox', recovering: true });
   }
   const running = browser !== null && (browser.isConnected?.() ?? false);
-  if (proxyPool?.mode === 'backconnect' && !running) {
+  if (proxyPool?.canRotateSessions && !running) {
     scheduleBrowserWarmRetry();
     return res.status(503).json({
       ok: false,
@@ -1817,13 +1817,13 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           refreshActiveTabsGauge();
         };
 
-        if (isGoogleSearch && proxyPool?.mode === 'backconnect') {
+        if (isGoogleSearch && proxyPool?.canRotateSessions) {
           await prewarmGoogleHome();
         }
 
         await navigateCurrentPage();
 
-        if (isGoogleSearch && proxyPool?.mode === 'backconnect' && await isGoogleSearchBlocked(tabState.page)) {
+        if (isGoogleSearch && proxyPool?.canRotateSessions && await isGoogleSearchBlocked(tabState.page)) {
           log('warn', 'google search blocked, rotating browser proxy session', {
             reqId: req.reqId,
             tabId,
@@ -1891,7 +1891,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     }
 
     const result = await withUserLimit(userId, () => withTimeout((async () => {
-      if (proxyPool?.mode === 'backconnect' && isGoogleSearchUrl(tabState.lastRequestedUrl || '')) {
+      if (proxyPool?.canRotateSessions && isGoogleSearchUrl(tabState.lastRequestedUrl || '')) {
         const blocked = await isGoogleSearchBlocked(tabState.page);
         const unavailable = !blocked && await isGoogleUnavailable(tabState.page);
         if (blocked || unavailable) {
