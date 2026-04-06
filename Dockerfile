@@ -5,7 +5,6 @@ FROM node:20-slim
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
 ARG TARGETARCH
-ARG CAMOUFOX_URL=https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${TARGETARCH:-x86_64}.zip
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
@@ -43,7 +42,14 @@ RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o 
 # Pre-bake Camoufox browser binary into image
 # This avoids downloading at runtime and pins the version
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
-RUN mkdir -p /root/.cache/camoufox \
+# TARGETARCH is injected by Docker buildx as "amd64"/"arm64"; Camoufox uses "x86_64"/"aarch64"
+RUN case "${TARGETARCH}" in \
+      arm64) CAMOUFOX_ARCH=aarch64 ;; \
+      amd64|"") CAMOUFOX_ARCH=x86_64 ;; \
+      *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && CAMOUFOX_URL="https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
+    && mkdir -p /root/.cache/camoufox \
     && curl -L -o /tmp/camoufox.zip "${CAMOUFOX_URL}" \
     && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
     && rm /tmp/camoufox.zip \
