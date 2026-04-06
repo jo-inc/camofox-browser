@@ -77,8 +77,18 @@ Default port is `9377`. See [Environment Variables](#environment-variables) for 
 ### Docker
 
 ```bash
-docker build -t camofox-browser .
-docker run -p 9377:9377 camofox-browser
+# Build and start (auto-detects arch: aarch64 on M1/M2, x86_64 on Intel)
+make up
+
+# Stop and remove the container
+make down
+
+# Force a clean rebuild (e.g. after upgrading VERSION/RELEASE)
+make reset
+
+# Override arch or version explicitly
+make up ARCH=x86_64
+make up VERSION=135.0.1 RELEASE=beta.24
 ```
 
 ### Fly.io / Railway
