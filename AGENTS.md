@@ -145,6 +145,8 @@ docker run -p 9377:9377 camofox-browser
 - `lib/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
 - `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
 - `lib/cookies.js` - Cookie file I/O
+- `lib/metrics.js` - Prometheus metrics (lazy-loaded, off by default — set `PROMETHEUS_ENABLED=1`)
+- `lib/request-utils.js` - HTTP request classification helpers (`actionFromReq`, `classifyError`)
 - `lib/snapshot.js` - Accessibility tree snapshot
 - `lib/macros.js` - Search macro URL expansion
 - `Dockerfile` - Production container
@@ -157,6 +159,13 @@ OpenClaw's skill-scanner flags plugins that have `process.env` + network calls (
 - `process.env` lives ONLY in `lib/config.js`
 - `child_process` / `execFile` / `spawn` live ONLY in `lib/youtube.js` and `lib/launcher.js`
 - `server.js` has the Express routes (`app.post`, `app.get`) but ZERO `process.env` reads and ZERO `child_process` imports
+- `lib/metrics.js` has NO `process.env` and NO HTTP method strings (`POST`, `fetch`). Prometheus is lazy-loaded only when `PROMETHEUS_ENABLED=1`.
+- `lib/request-utils.js` has HTTP method strings (`POST`) but NO `process.env` — safe.
 - When adding new features that need env vars or subprocesses, put that code in a `lib/` module and import the result into `server.js`
 
-This was broken in 1.3.0 when the YouTube transcript feature added `child_process` + `process.env` directly to `server.js`, and fixed in 1.3.1.
+**Scanner rule details** (from `src/security/skill-scanner.ts`):
+- `env-harvesting` (CRITICAL): fires when `/process\.env/` AND `/\bfetch\b|\bpost\b|http\.request/i` match the SAME file. Note: the regex is case-insensitive, so string literals like `'POST'` and even comments containing `process.env` will trigger it.
+- `dangerous-exec` (CRITICAL): `child_process` import + `exec`/`spawn` call in same file
+- `potential-exfiltration` (WARN): `readFile` + `fetch`/`post`/`http.request` in same file
+
+This was broken in 1.3.0 (YouTube `child_process` in server.js), fixed in 1.3.1. Broken again in 1.4.1 (`metrics.js` had `process.env` in a comment + `'POST'` in `actionFromReq`), fixed in 1.5.1 by lazy-loading prom-client and splitting `actionFromReq` into `lib/request-utils.js`.

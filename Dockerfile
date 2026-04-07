@@ -23,6 +23,13 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxss1 \
     libxtst6 \
+    # Mesa OpenGL/EGL for WebGL support (software rendering via llvmpipe)
+    # Without these, Firefox cannot create WebGL contexts — a major bot detection signal
+    libegl1-mesa \
+    libgl1-mesa-dri \
+    libgbm1 \
+    # Xvfb virtual display — runs Camoufox as if on a real desktop (better anti-detection)
+    xvfb \
     # Fonts
     fonts-liberation \
     fonts-noto-color-emoji \
@@ -68,6 +75,6 @@ COPY lib/ ./lib/
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=3000
 
-EXPOSE 3000
+EXPOSE 9377
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]

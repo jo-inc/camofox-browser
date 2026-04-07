@@ -1,11 +1,17 @@
 import { Camoufox, launchOptions } from "camoufox-js";
+import { VirtualDisplay } from "camoufox-js/dist/virtdisplay.js";
 import { firefox } from "playwright-core";
 import express from "express";
 import crypto from "crypto";
 import os from "os";
 import { expandMacro } from "./lib/macros.js";
 import { loadConfig } from "./lib/config.js";
-import { normalizePlaywrightProxy } from "./lib/proxy.js";
+import {
+  normalizePlaywrightProxy,
+  createProxyPool,
+  buildProxyUrl,
+} from "./lib/proxy.js";
+import { createFlyHelpers } from "./lib/fly.js";
 import { windowSnapshot } from "./lib/snapshot.js";
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -13,29 +19,42 @@ import {
   clearSessionDownloads,
   attachDownloadListener,
   getDownloadsList,
-  extractPageImages,
 } from "./lib/downloads.js";
+import { extractPageImages } from "./lib/images.js";
 import {
   detectYtDlp,
   hasYtDlp,
+  ensureYtDlp,
   ytDlpTranscript,
   parseJson3,
   parseVtt,
   parseXml,
 } from "./lib/youtube.js";
 import {
-  register as metricsRegister,
+  initMetrics,
+  getRegister,
+  isMetricsEnabled,
+  startMemoryReporter,
+  stopMemoryReporter,
+} from "./lib/metrics.js";
+import { actionFromReq, classifyError } from "./lib/request-utils.js";
+
+const CONFIG = loadConfig();
+
+const {
   requestsTotal,
   requestDuration,
   pageLoadDuration,
   activeTabsGauge,
   tabLockQueueDepth,
   tabLockTimeoutsTotal,
-  startMemoryReporter,
-  actionFromReq,
-} from "./lib/metrics.js";
-
-const CONFIG = loadConfig();
+  failuresTotal,
+  browserRestartsTotal,
+  tabsDestroyedTotal,
+  sessionsExpiredTotal,
+  tabsReapedTotal,
+  tabsRecycledTotal,
+} = await initMetrics({ enabled: CONFIG.prometheusEnabled });
 
 // --- Structured logging ---
 function log(level, msg, fields = {}) {
@@ -86,6 +105,13 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// --- Horizontal scaling (Fly.io multi-machine) ---
+const fly = createFlyHelpers(CONFIG);
+const FLY_MACHINE_ID = fly.machineId;
+
+// Route tab requests to the owning machine via fly-replay header.
+app.use("/tabs/:tabId", fly.replayMiddleware(log));
 
 const ALLOWED_URL_SCHEMES = ["http:", "https:"];
 
@@ -275,6 +301,7 @@ app.post(
       });
       res.json(result);
     } catch (err) {
+      failuresTotal.labels(classifyError(err), "set_cookies").inc();
       log("error", "cookie import failed", {
         reqId: req.reqId,
         error: err.message,
@@ -387,6 +414,10 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+function requestTimeoutMs(baseMs = HANDLER_TIMEOUT_MS) {
+  return proxyPool?.canRotateSessions ? Math.max(baseMs, 180000) : baseMs;
+}
+
 const userConcurrency = new Map();
 
 async function withUserLimit(userId, operation) {
@@ -446,25 +477,31 @@ function getHostOS() {
   return "linux";
 }
 
-function buildProxyConfig() {
-  const { host, port, username, password } = CONFIG.proxy;
+// Proxy strategy for outbound browsing.
+const proxyPool = createProxyPool(CONFIG.proxy);
 
-  if (!host || !port) {
-    log("info", "no proxy configured");
-    return null;
-  }
-
-  log("info", "proxy configured", { host, port });
-  return {
-    server: `http://${host}:${port}`,
-    username,
-    password,
-  };
+if (proxyPool) {
+  log("info", "proxy pool created", {
+    mode: proxyPool.mode,
+    host: proxyPool.canRotateSessions
+      ? CONFIG.proxy.backconnectHost
+      : CONFIG.proxy.host,
+    ports: proxyPool.canRotateSessions
+      ? [CONFIG.proxy.backconnectPort]
+      : CONFIG.proxy.ports,
+    poolSize: proxyPool.size,
+    country: CONFIG.proxy.country || null,
+    state: CONFIG.proxy.state || null,
+    city: CONFIG.proxy.city || null,
+  });
+} else {
+  log("info", "no proxy configured");
 }
 
 const BROWSER_IDLE_TIMEOUT_MS = CONFIG.browserIdleTimeoutMs;
 let browserIdleTimer = null;
 let browserLaunchPromise = null;
+let browserWarmRetryTimer = null;
 
 function scheduleBrowserIdleShutdown() {
   clearBrowserIdleTimer();
@@ -485,6 +522,26 @@ function clearBrowserIdleTimer() {
     clearTimeout(browserIdleTimer);
     browserIdleTimer = null;
   }
+}
+
+function scheduleBrowserWarmRetry(delayMs = 5000) {
+  if (browserWarmRetryTimer || browser || browserLaunchPromise) return;
+  browserWarmRetryTimer = setTimeout(async () => {
+    browserWarmRetryTimer = null;
+    try {
+      const start = Date.now();
+      await ensureBrowser();
+      log("info", "background browser warm retry succeeded", {
+        ms: Date.now() - start,
+      });
+    } catch (err) {
+      log("warn", "background browser warm retry failed", {
+        error: err.message,
+        nextDelayMs: delayMs,
+      });
+      scheduleBrowserWarmRetry(Math.min(delayMs * 2, 30000));
+    }
+  }, delayMs);
 }
 
 // --- Browser health tracking ---
@@ -508,6 +565,7 @@ function recordNavFailure() {
 async function restartBrowser(reason) {
   if (healthState.isRecovering) return;
   healthState.isRecovering = true;
+  browserRestartsTotal.labels(reason).inc();
   log("error", "restarting browser", {
     reason,
     failures: healthState.consecutiveNavFailures,
@@ -543,30 +601,177 @@ function getTotalTabCount() {
   return total;
 }
 
+// Virtual display for WebGL support and anti-detection.
+// Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
+// via Mesa llvmpipe. Without this, WebGL returns "no context" — a massive bot signal.
+let virtualDisplay = null;
+let browserLaunchProxy = null;
+
+async function probeGoogleSearch(candidateBrowser) {
+  let context = null;
+  try {
+    context = await candidateBrowser.newContext({
+      viewport: { width: 1280, height: 720 },
+      permissions: ["geolocation"],
+    });
+    const page = await context.newPage();
+    await page.goto("https://www.google.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+    await page.waitForTimeout(1200);
+    await page.goto("https://www.google.com/search?q=weather%20today", {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+    await page.waitForTimeout(4000);
+
+    const blocked = await isGoogleSearchBlocked(page);
+    return {
+      ok: !blocked && isGoogleSerp(page.url()),
+      url: page.url(),
+      blocked,
+    };
+  } finally {
+    await context?.close().catch(() => {});
+  }
+}
+
+function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
+  const origClose = candidateBrowser.close.bind(candidateBrowser);
+  candidateBrowser.close = async (...args) => {
+    await origClose(...args);
+    browserLaunchProxy = null;
+    if (localVirtualDisplay) {
+      localVirtualDisplay.kill();
+      if (virtualDisplay === localVirtualDisplay) virtualDisplay = null;
+    }
+  };
+}
+
 async function launchBrowserInstance() {
   const hostOS = getHostOS();
-  const proxy = buildProxyConfig();
+  const maxAttempts = proxyPool?.launchRetries ?? 1;
+  let lastError = null;
 
-  log("info", "launching camoufox", { hostOS, geoip: !!proxy });
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const launchProxy = proxyPool
+      ? proxyPool.getLaunchProxy(
+          proxyPool.canRotateSessions
+            ? `browser-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`
+            : undefined,
+        )
+      : null;
 
-  const options = await launchOptions({
-    headless: true,
-    os: hostOS,
-    humanize: true,
-    enable_cache: true,
-    proxy: proxy,
-    geoip: !!proxy,
-  });
-  options.proxy = normalizePlaywrightProxy(options.proxy);
+    let localVirtualDisplay = null;
+    let vdDisplay = undefined;
+    let candidateBrowser = null;
 
-  browser = await firefox.launch(options);
-  log("info", "camoufox launched");
-  return browser;
+    try {
+      if (os.platform() === "linux") {
+        localVirtualDisplay = new VirtualDisplay();
+        vdDisplay = localVirtualDisplay.get();
+        log("info", "xvfb virtual display started", {
+          display: vdDisplay,
+          attempt,
+        });
+      }
+    } catch (err) {
+      log("warn", "xvfb not available, falling back to headless", {
+        error: err.message,
+        attempt,
+      });
+      localVirtualDisplay = null;
+    }
+
+    const useVirtualDisplay = !!vdDisplay;
+    log("info", "launching camoufox", {
+      hostOS,
+      attempt,
+      maxAttempts,
+      geoip: !!launchProxy,
+      proxyMode: proxyPool?.mode || null,
+      proxyServer: launchProxy?.server || null,
+      proxySession: launchProxy?.sessionId || null,
+      proxyPoolSize: proxyPool?.size || 0,
+      virtualDisplay: useVirtualDisplay,
+    });
+
+    try {
+      const options = await launchOptions({
+        headless: useVirtualDisplay ? false : true,
+        os: hostOS,
+        humanize: true,
+        enable_cache: true,
+        proxy: launchProxy,
+        geoip: !!launchProxy,
+        virtual_display: vdDisplay,
+      });
+      options.proxy = normalizePlaywrightProxy(options.proxy);
+
+      candidateBrowser = await firefox.launch(options);
+
+      if (proxyPool?.canRotateSessions) {
+        const probe = await probeGoogleSearch(candidateBrowser);
+        if (!probe.ok) {
+          log("warn", "browser launch google probe failed", {
+            attempt,
+            maxAttempts,
+            proxySession: launchProxy?.sessionId || null,
+            url: probe.url,
+          });
+          if (attempt < maxAttempts) {
+            await candidateBrowser.close().catch(() => {});
+            if (localVirtualDisplay) localVirtualDisplay.kill();
+            continue;
+          }
+          // Last attempt: accept browser in degraded mode rather than death-spiraling.
+          // Non-Google sites will still work; Google requests will get blocked responses.
+          log(
+            "error",
+            "all proxy sessions Google-blocked, accepting browser in degraded mode",
+            {
+              maxAttempts,
+              proxySession: launchProxy?.sessionId || null,
+            },
+          );
+        }
+      }
+
+      virtualDisplay = localVirtualDisplay;
+      browserLaunchProxy = launchProxy;
+      browser = candidateBrowser;
+      attachBrowserCleanup(browser, localVirtualDisplay);
+
+      log("info", "camoufox launched", {
+        attempt,
+        maxAttempts,
+        virtualDisplay: useVirtualDisplay,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: launchProxy?.server || null,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      return browser;
+    } catch (err) {
+      lastError = err;
+      log("warn", "camoufox launch attempt failed", {
+        attempt,
+        maxAttempts,
+        error: err.message,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      await candidateBrowser?.close().catch(() => {});
+      if (localVirtualDisplay) localVirtualDisplay.kill();
+    }
+  }
+
+  throw lastError || new Error("Failed to launch a usable browser");
 }
 
 async function ensureBrowser() {
   clearBrowserIdleTimer();
   if (browser && !browser.isConnected()) {
+    failuresTotal.labels("browser_disconnected", "internal").inc();
     log(
       "warn",
       "browser disconnected, clearing dead sessions and relaunching",
@@ -578,16 +783,28 @@ async function ensureBrowser() {
       await session.context.close().catch(() => {});
     }
     sessions.clear();
+    // Clean up virtual display from dead browser before relaunching
+    if (virtualDisplay) {
+      virtualDisplay.kill();
+      virtualDisplay = null;
+    }
+    browserLaunchProxy = null;
     browser = null;
   }
   if (browser) return browser;
   if (browserLaunchPromise) return browserLaunchPromise;
+  const launchTimeoutMs = proxyPool?.launchTimeoutMs ?? 60000;
   browserLaunchPromise = Promise.race([
     launchBrowserInstance(),
     new Promise((_, reject) =>
       setTimeout(
-        () => reject(new Error("Browser launch timeout (30s)")),
-        30000,
+        () =>
+          reject(
+            new Error(
+              `Browser launch timeout (${Math.round(launchTimeoutMs / 1000)}s)`,
+            ),
+          ),
+        launchTimeoutMs,
       ),
     ),
   ]).finally(() => {
@@ -637,11 +854,40 @@ async function getSession(userId) {
       contextOptions.timezoneId = "America/Los_Angeles";
       contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
     }
+    let sessionProxy = null;
+    if (proxyPool?.canRotateSessions) {
+      sessionProxy = proxyPool.getNext(
+        `ctx-${key}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`,
+      );
+      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+      log("info", "session proxy assigned", {
+        userId: key,
+        sessionId: sessionProxy.sessionId,
+      });
+    } else if (proxyPool) {
+      sessionProxy = proxyPool.getNext();
+      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+      log("info", "session proxy assigned", {
+        userId: key,
+        proxy: sessionProxy.server,
+      });
+    }
     const context = await b.newContext(contextOptions);
 
-    session = { context, tabGroups: new Map(), lastAccess: Date.now() };
+    session = {
+      context,
+      tabGroups: new Map(),
+      lastAccess: Date.now(),
+      proxySessionId: sessionProxy?.sessionId || null,
+    };
     sessions.set(key, session);
-    log("info", "session created", { userId: key });
+    log("info", "session created", {
+      userId: key,
+      proxyMode: proxyPool?.mode || null,
+      proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
+      proxySession:
+        sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
+    });
   }
   session.lastAccess = Date.now();
   return session;
@@ -684,9 +930,38 @@ function isTabDestroyedError(err) {
 
 // Centralized error handler for route catch blocks.
 // Auto-destroys dead browser sessions and returns appropriate status codes.
+function isProxyError(err) {
+  if (!err) return false;
+  const msg = err.message || "";
+  return (
+    msg.includes("NS_ERROR_PROXY") ||
+    msg.includes("proxy connection") ||
+    msg.includes("Proxy connection")
+  );
+}
+
 function handleRouteError(err, req, res, extraFields = {}) {
+  const failureType = classifyError(err);
+  const action = actionFromReq(req);
+  failuresTotal.labels(failureType, action).inc();
+
   const userId = req.body?.userId || req.query?.userId;
   if (userId && isDeadContextError(err)) {
+    destroySession(userId);
+  }
+  // Proxy errors mean the session is dead — rotate at context level.
+  // Destroy the user's session so the next request gets a fresh context with a new proxy.
+  if (isProxyError(err) && proxyPool?.canRotateSessions && userId) {
+    log(
+      "warn",
+      "proxy error detected, destroying user session for fresh proxy on next request",
+      {
+        action,
+        userId,
+        error: err.message,
+      },
+    );
+    browserRestartsTotal.labels("proxy_error").inc();
     destroySession(userId);
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
@@ -702,7 +977,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
             tabId,
             count: found.tabState.consecutiveTimeouts,
           });
-          destroyTab(session, tabId);
+          destroyTab(session, tabId, "consecutive_timeouts");
         }
       }
     }
@@ -712,7 +987,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     const session = sessions.get(normalizeUserId(userId));
     if (session && tabId) {
-      destroyTab(session, tabId);
+      destroyTab(session, tabId, "lock_queue");
     }
     return res
       .status(503)
@@ -730,7 +1005,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
   sendError(res, err, extraFields);
 }
 
-function destroyTab(session, tabId) {
+function destroyTab(session, tabId, reason) {
   const lock = tabLocks.get(tabId);
   if (lock) {
     lock.drain();
@@ -744,15 +1019,57 @@ function destroyTab(session, tabId) {
         tabId,
         listItemId,
         toolCalls: tabState.toolCalls,
+        reason: reason || "unknown",
       });
       safePageClose(tabState.page);
       group.delete(tabId);
       if (group.size === 0) session.tabGroups.delete(listItemId);
       refreshActiveTabsGauge();
+      if (reason) tabsDestroyedTotal.labels(reason).inc();
       return true;
     }
   }
   return false;
+}
+
+/**
+ * Recycle the oldest (least-used) tab in a session to free a slot.
+ * Closes the old tab's page and removes it from its group.
+ * Returns { recycledTabId, recycledFromGroup } or null if no tab to recycle.
+ */
+async function recycleOldestTab(session, reqId) {
+  let oldestTab = null;
+  let oldestGroup = null;
+  let oldestGroupKey = null;
+  let oldestTabId = null;
+  for (const [gKey, group] of session.tabGroups) {
+    for (const [tid, ts] of group) {
+      if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
+        oldestTab = ts;
+        oldestGroup = group;
+        oldestGroupKey = gKey;
+        oldestTabId = tid;
+      }
+    }
+  }
+  if (!oldestTab) return null;
+
+  await safePageClose(oldestTab.page);
+  oldestGroup.delete(oldestTabId);
+  if (oldestGroup.size === 0) session.tabGroups.delete(oldestGroupKey);
+  const lock = tabLocks.get(oldestTabId);
+  if (lock) {
+    lock.drain();
+    tabLocks.delete(oldestTabId);
+  }
+  refreshTabLockQueueDepth();
+  tabsRecycledTotal.inc();
+  log("info", "tab recycled (limit reached)", {
+    reqId,
+    recycledTabId: oldestTabId,
+    recycledFromGroup: oldestGroupKey,
+  });
+  return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
 }
 
 function destroySession(userId) {
@@ -783,7 +1100,84 @@ function createTabState(page) {
     toolCalls: 0,
     consecutiveTimeouts: 0,
     lastSnapshot: null,
+    lastRequestedUrl: null,
+    googleRetryCount: 0,
   };
+}
+
+async function isGoogleUnavailable(page) {
+  if (!page || page.isClosed()) return false;
+  const bodyText = await page
+    .evaluate(() => document.body?.innerText?.slice(0, 600) || "")
+    .catch(() => "");
+  return /Unable to connect|502 Bad Gateway or Proxy Error|Camoufox can’t establish a connection/.test(
+    bodyText,
+  );
+}
+
+async function rotateGoogleTab(
+  userId,
+  sessionKey,
+  tabId,
+  previousTabState,
+  reason,
+  reqId,
+) {
+  if (
+    !previousTabState?.lastRequestedUrl ||
+    !isGoogleSearchUrl(previousTabState.lastRequestedUrl)
+  )
+    return null;
+  if ((previousTabState.googleRetryCount || 0) >= 3) return null;
+
+  browserRestartsTotal.labels(reason).inc(); // track rotation events (not a full restart)
+
+  // Rotate at context level — create a fresh context with a new proxy session
+  // instead of restarting the entire browser (which kills ALL sessions/tabs).
+  const key = normalizeUserId(userId);
+  const oldSession = sessions.get(key);
+  if (oldSession) {
+    await oldSession.context.close().catch(() => {});
+    sessions.delete(key);
+  }
+  const session = await getSession(userId);
+  const group = getTabGroup(session, sessionKey);
+  const page = await session.context.newPage();
+  const tabState = createTabState(page);
+  tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
+  tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
+  attachDownloadListener(tabState, tabId, log);
+  group.set(tabId, tabState);
+  refreshActiveTabsGauge();
+
+  log(
+    "warn",
+    "replaying google search on fresh context (per-context proxy rotation)",
+    {
+      reqId,
+      tabId,
+      retryCount: tabState.googleRetryCount,
+      url: tabState.lastRequestedUrl,
+      proxySession: session.proxySessionId || null,
+    },
+  );
+
+  await withPageLoadDuration("navigate", () =>
+    page.goto("https://www.google.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    }),
+  );
+  tabState.visitedUrls.add("https://www.google.com/");
+  await page.waitForTimeout(1200);
+  await withPageLoadDuration("navigate", () =>
+    page.goto(tabState.lastRequestedUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    }),
+  );
+  tabState.visitedUrls.add(tabState.lastRequestedUrl);
+  return { session, tabState };
 }
 
 function refreshActiveTabsGauge() {
@@ -808,7 +1202,14 @@ async function withPageLoadDuration(action, fn) {
 }
 
 async function waitForPageReady(page, options = {}) {
-  const { timeout = 10000, waitForNetwork = true } = options;
+  const {
+    timeout = 10000,
+    waitForNetwork = true,
+    waitForHydration = true,
+    settleMs = 200,
+    hydrationPollMs = 250,
+    hydrationTimeoutMs = Math.min(timeout, 10000),
+  } = options;
 
   try {
     await page.waitForLoadState("domcontentloaded", { timeout });
@@ -821,33 +1222,40 @@ async function waitForPageReady(page, options = {}) {
         });
     }
 
-    // Framework hydration wait (React/Next.js/Vue) - mirrors Swift WebView.swift logic
-    // Wait for readyState === 'complete' + network quiet (40 iterations × 250ms max)
-    await page
-      .evaluate(async () => {
-        for (let i = 0; i < 40; i++) {
-          // Check if network is quiet (no recent resource loads)
-          const entries = performance.getEntriesByType("resource");
-          const recentEntries = entries.slice(-5);
-          const netQuiet = recentEntries.every(
-            (e) => performance.now() - e.responseEnd > 400,
-          );
+    if (waitForHydration) {
+      const maxIterations = Math.max(
+        1,
+        Math.floor(hydrationTimeoutMs / hydrationPollMs),
+      );
+      await page
+        .evaluate(
+          async ({ maxIterations, hydrationPollMs }) => {
+            for (let i = 0; i < maxIterations; i++) {
+              const entries = performance.getEntriesByType("resource");
+              const recentEntries = entries.slice(-5);
+              const netQuiet = recentEntries.every(
+                (e) => performance.now() - e.responseEnd > 400,
+              );
 
-          if (document.readyState === "complete" && netQuiet) {
-            // Double RAF to ensure paint is complete
-            await new Promise((r) =>
-              requestAnimationFrame(() => requestAnimationFrame(r)),
-            );
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 250));
-        }
-      })
-      .catch(() => {
-        log("warn", "hydration wait failed, continuing");
-      });
+              if (document.readyState === "complete" && netQuiet) {
+                await new Promise((r) =>
+                  requestAnimationFrame(() => requestAnimationFrame(r)),
+                );
+                break;
+              }
+              await new Promise((r) => setTimeout(r, hydrationPollMs));
+            }
+          },
+          { maxIterations, hydrationPollMs },
+        )
+        .catch(() => {
+          log("warn", "hydration wait failed, continuing");
+        });
+    }
 
-    await page.waitForTimeout(200);
+    if (settleMs > 0) {
+      await page.waitForTimeout(settleMs);
+    }
 
     // Auto-dismiss common consent/privacy dialogs
     await dismissConsentDialogs(page);
@@ -912,6 +1320,29 @@ function isGoogleSerp(url) {
   } catch {
     return false;
   }
+}
+
+function isGoogleSearchUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.includes("google.") && parsed.pathname === "/search";
+  } catch {
+    return false;
+  }
+}
+
+async function isGoogleSearchBlocked(page) {
+  if (!page || page.isClosed()) return false;
+
+  const url = page.url();
+  if (url.includes("google.com/sorry/")) return true;
+
+  const bodyText = await page
+    .evaluate(() => document.body?.innerText?.slice(0, 600) || "")
+    .catch(() => "");
+  return /Our systems have detected unusual traffic|About this page|If you're having trouble accessing Google Search|SG_REL/.test(
+    bodyText,
+  );
 }
 
 // --- Google SERP: combined extraction (refs + snapshot in one DOM pass) ---
@@ -1103,6 +1534,8 @@ async function extractGoogleSerp(page) {
   return { refs, snapshot: extracted.snapshot };
 }
 
+const REFRESH_READY_TIMEOUT_MS = 2500;
+
 async function buildRefs(page) {
   const refs = new Map();
 
@@ -1121,19 +1554,23 @@ async function buildRefs(page) {
   const start = Date.now();
 
   // Hard total timeout on the entire buildRefs operation
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(
+  let timerId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(
       () => reject(new Error("buildRefs_timeout")),
       BUILDREFS_TIMEOUT_MS,
-    ),
-  );
+    );
+  });
 
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       _buildRefsInner(page, refs, start),
       timeoutPromise,
     ]);
+    clearTimeout(timerId);
+    return result;
   } catch (err) {
+    clearTimeout(timerId);
     if (err.message === "buildRefs_timeout") {
       log("warn", "buildRefs: total timeout exceeded", {
         elapsed: Date.now() - start,
@@ -1145,7 +1582,12 @@ async function buildRefs(page) {
 }
 
 async function _buildRefsInner(page, refs, start) {
-  await waitForPageReady(page, { waitForNetwork: false });
+  await waitForPageReady(page, {
+    timeout: REFRESH_READY_TIMEOUT_MS,
+    waitForNetwork: false,
+    waitForHydration: false,
+    settleMs: 100,
+  });
 
   // Budget remaining time for ariaSnapshot
   const elapsed = Date.now() - start;
@@ -1220,7 +1662,12 @@ async function getAriaSnapshot(page) {
   if (!page || page.isClosed()) {
     return null;
   }
-  await waitForPageReady(page, { waitForNetwork: false });
+  await waitForPageReady(page, {
+    timeout: REFRESH_READY_TIMEOUT_MS,
+    waitForNetwork: false,
+    waitForHydration: false,
+    settleMs: 100,
+  });
   try {
     return await page.locator("body").ariaSnapshot({ timeout: 5000 });
   } catch (err) {
@@ -1243,11 +1690,53 @@ function refToLocator(page, ref, refs) {
   return locator;
 }
 
+async function refreshTabRefs(tabState, options = {}) {
+  const {
+    reason = "refresh",
+    timeoutMs = null,
+    preserveExistingOnEmpty = true,
+  } = options;
+
+  const beforeUrl = tabState.page?.url?.() || "";
+  const existingRefs = tabState.refs instanceof Map ? tabState.refs : new Map();
+  const refreshPromise = buildRefs(tabState.page);
+
+  let refreshedRefs;
+  if (timeoutMs) {
+    const timeoutLabel = `${reason}_refs_timeout`;
+    refreshedRefs = await Promise.race([
+      refreshPromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(timeoutLabel)), timeoutMs),
+      ),
+    ]);
+  } else {
+    refreshedRefs = await refreshPromise;
+  }
+
+  const afterUrl = tabState.page?.url?.() || beforeUrl;
+  if (
+    preserveExistingOnEmpty &&
+    refreshedRefs.size === 0 &&
+    existingRefs.size > 0 &&
+    beforeUrl === afterUrl
+  ) {
+    log("warn", "preserving previous refs after empty rebuild", {
+      reason,
+      url: afterUrl,
+      previousRefs: existingRefs.size,
+    });
+    return existingRefs;
+  }
+
+  return refreshedRefs;
+}
+
 // --- YouTube transcript ---
 // Implementation extracted to lib/youtube.js to avoid scanner false positives
 // (child_process + app.post in same file triggers OpenClaw skill-scanner)
 
-detectYtDlp(log);
+await detectYtDlp(log);
 
 app.post("/youtube/transcript", async (req, res) => {
   const reqId = req.reqId;
@@ -1269,22 +1758,43 @@ app.post("/youtube/transcript", async (req, res) => {
     const videoId = videoIdMatch[1];
     const lang = languages[0] || "en";
 
+    // Re-detect yt-dlp if startup detection failed (transient issue)
+    await ensureYtDlp(log);
+
+    const ytDlpProxyUrl = buildProxyUrl(proxyPool, CONFIG.proxy);
     log("info", "youtube transcript: starting", {
       reqId,
       videoId,
       lang,
       method: hasYtDlp() ? "yt-dlp" : "browser",
+      hasProxy: !!ytDlpProxyUrl,
     });
 
     let result;
     if (hasYtDlp()) {
       try {
-        result = await ytDlpTranscript(reqId, url, videoId, lang);
+        result = await ytDlpTranscript(
+          reqId,
+          url,
+          videoId,
+          lang,
+          ytDlpProxyUrl,
+        );
       } catch (ytErr) {
-        log("warn", "yt-dlp failed, falling back to browser", {
+        log("warn", "yt-dlp threw, falling back to browser", {
           reqId,
           error: ytErr.message,
         });
+        result = null;
+      }
+      // If yt-dlp returned an error result (e.g. no captions) or threw, try browser
+      if (!result || result.status !== "ok") {
+        if (result)
+          log("warn", "yt-dlp returned error, falling back to browser", {
+            reqId,
+            status: result.status,
+            code: result.code,
+          });
         result = await browserTranscript(reqId, url, videoId, lang);
       }
     } else {
@@ -1299,6 +1809,7 @@ app.post("/youtube/transcript", async (req, res) => {
     });
     res.json(result);
   } catch (err) {
+    failuresTotal.labels(classifyError(err), "youtube_transcript").inc();
     log("error", "youtube transcript failed", {
       reqId,
       error: err.message,
@@ -1488,6 +1999,16 @@ async function browserTranscript(reqId, url, videoId, lang) {
       };
     } finally {
       await safePageClose(page);
+      // Clean up phantom transcript session if no tabs remain
+      const ytSession = sessions.get(normalizeUserId("__yt_transcript__"));
+      if (ytSession) {
+        let totalTabs = 0;
+        for (const g of ytSession.tabGroups.values()) totalTabs += g.size;
+        if (totalTabs === 0) {
+          ytSession.context.close().catch(() => {});
+          sessions.delete(normalizeUserId("__yt_transcript__"));
+        }
+      }
     }
   });
 }
@@ -1499,19 +2020,42 @@ app.get("/health", (req, res) => {
       .json({ ok: false, engine: "camoufox", recovering: true });
   }
   const running = browser !== null && (browser.isConnected?.() ?? false);
+  if (proxyPool?.canRotateSessions && !running) {
+    scheduleBrowserWarmRetry();
+    return res.status(503).json({
+      ok: false,
+      engine: "camoufox",
+      browserConnected: false,
+      browserRunning: false,
+      warming: true,
+      ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
+    });
+  }
   res.json({
     ok: true,
     engine: "camoufox",
     browserConnected: running,
     browserRunning: running,
     activeTabs: getTotalTabCount(),
+    activeSessions: sessions.size,
     consecutiveFailures: healthState.consecutiveNavFailures,
+    ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
   });
 });
 
 app.get("/metrics", async (_req, res) => {
-  res.set("Content-Type", metricsRegister.contentType);
-  res.send(await metricsRegister.metrics());
+  const reg = getRegister();
+  if (!reg) {
+    res
+      .status(404)
+      .json({
+        error:
+          "Prometheus metrics disabled. Set PROMETHEUS_ENABLED=1 to enable.",
+      });
+    return;
+  }
+  res.set("Content-Type", reg.contentType);
+  res.send(await reg.metrics());
 });
 
 // Create new tab
@@ -1530,22 +2074,24 @@ app.post("/tabs", async (req, res) => {
 
         let totalTabs = 0;
         for (const group of session.tabGroups.values()) totalTabs += group.size;
-        if (totalTabs >= MAX_TABS_PER_SESSION) {
-          throw Object.assign(new Error("Maximum tabs per session reached"), {
-            statusCode: 429,
-          });
-        }
 
-        if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
-          throw Object.assign(new Error("Maximum global tabs reached"), {
-            statusCode: 429,
-          });
+        // Recycle oldest tab when limits are reached instead of rejecting
+        if (
+          totalTabs >= MAX_TABS_PER_SESSION ||
+          getTotalTabCount() >= MAX_TABS_GLOBAL
+        ) {
+          const recycled = await recycleOldestTab(session, req.reqId);
+          if (!recycled) {
+            throw Object.assign(new Error("Maximum tabs per session reached"), {
+              statusCode: 429,
+            });
+          }
         }
 
         const group = getTabGroup(session, resolvedSessionKey);
 
         const page = await session.context.newPage();
-        const tabId = crypto.randomUUID();
+        const tabId = fly.makeTabId();
         const tabState = createTabState(page);
         attachDownloadListener(tabState, tabId);
         group.set(tabId, tabState);
@@ -1555,6 +2101,7 @@ app.post("/tabs", async (req, res) => {
           const urlErr = validateUrl(url);
           if (urlErr)
             throw Object.assign(new Error(urlErr), { statusCode: 400 });
+          tabState.lastRequestedUrl = url;
           await withPageLoadDuration("open_url", () =>
             page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
           );
@@ -1570,7 +2117,7 @@ app.post("/tabs", async (req, res) => {
         });
         return { tabId, url: page.url() };
       })(),
-      HANDLER_TIMEOUT_MS,
+      requestTimeoutMs(),
       "tab create",
     );
 
@@ -1593,12 +2140,12 @@ app.post("/tabs/:tabId/navigate", async (req, res) => {
       withTimeout(
         (async () => {
           await ensureBrowser();
+          const resolvedSessionKey = sessionKey || listItemId || "default";
           let session = sessions.get(normalizeUserId(userId));
           let found = session && findTab(session, tabId);
 
           let tabState;
           if (!found) {
-            const resolvedSessionKey = sessionKey || listItemId || "default";
             session = await getSession(userId);
             let sessionTabs = 0;
             for (const g of session.tabGroups.values()) sessionTabs += g.size;
@@ -1606,39 +2153,13 @@ app.post("/tabs/:tabId/navigate", async (req, res) => {
               getTotalTabCount() >= MAX_TABS_GLOBAL ||
               sessionTabs >= MAX_TABS_PER_SESSION
             ) {
-              // Reuse oldest tab in session instead of rejecting
-              let oldestTab = null;
-              let oldestGroup = null;
-              let oldestTabId = null;
-              for (const [gKey, group] of session.tabGroups) {
-                for (const [tid, ts] of group) {
-                  if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
-                    oldestTab = ts;
-                    oldestGroup = group;
-                    oldestTabId = tid;
-                  }
-                }
-              }
-              if (oldestTab) {
-                tabState = oldestTab;
-                const group = getTabGroup(session, resolvedSessionKey);
-                if (oldestGroup) oldestGroup.delete(oldestTabId);
-                group.set(tabId, tabState);
-                {
-                  const _l = tabLocks.get(oldestTabId);
-                  if (_l) _l.drain();
-                  tabLocks.delete(oldestTabId);
-                }
-                log("info", "tab recycled (limit reached)", {
-                  reqId: req.reqId,
-                  tabId,
-                  recycledFrom: oldestTabId,
-                  userId,
-                });
-              } else {
+              // Recycle oldest tab to free a slot, then create new page
+              const recycled = await recycleOldestTab(session, req.reqId);
+              if (!recycled) {
                 throw new Error("Maximum tabs per session reached");
               }
-            } else {
+            }
+            {
               const page = await session.context.newPage();
               tabState = createTabState(page);
               attachDownloadListener(tabState, tabId, log);
@@ -1672,40 +2193,126 @@ app.post("/tabs/:tabId/navigate", async (req, res) => {
           const urlErr = validateUrl(targetUrl);
           if (urlErr) throw new Error(urlErr);
 
-          return await withTabLock(tabId, async () => {
-            await withPageLoadDuration("navigate", () =>
-              tabState.page.goto(targetUrl, {
-                waitUntil: "domcontentloaded",
-                timeout: 30000,
-              }),
-            );
-            tabState.visitedUrls.add(targetUrl);
-            tabState.lastSnapshot = null;
+          return await withTabLock(
+            tabId,
+            async () => {
+              const currentSessionKey = found?.listItemId || resolvedSessionKey;
+              const isGoogleSearch = isGoogleSearchUrl(targetUrl);
 
-            // For Google SERP: skip eager ref building during navigate.
-            // Results render asynchronously after DOMContentLoaded — the snapshot
-            // call will wait for and extract them.
-            if (isGoogleSerp(tabState.page.url())) {
-              tabState.refs = new Map();
+              const navigateCurrentPage = async () => {
+                tabState.lastRequestedUrl = targetUrl;
+                await withPageLoadDuration("navigate", () =>
+                  tabState.page.goto(targetUrl, {
+                    waitUntil: "domcontentloaded",
+                    timeout: 30000,
+                  }),
+                );
+                tabState.visitedUrls.add(targetUrl);
+                tabState.lastSnapshot = null;
+              };
+
+              const prewarmGoogleHome = async () => {
+                if (
+                  !isGoogleSearch ||
+                  tabState.visitedUrls.has("https://www.google.com/")
+                )
+                  return;
+                await withPageLoadDuration("navigate", () =>
+                  tabState.page.goto("https://www.google.com/", {
+                    waitUntil: "domcontentloaded",
+                    timeout: 30000,
+                  }),
+                );
+                tabState.visitedUrls.add("https://www.google.com/");
+                await tabState.page.waitForTimeout(1200);
+              };
+
+              const recreateTabOnFreshContext = async () => {
+                const previousRetryCount = tabState.googleRetryCount || 0;
+                browserRestartsTotal.labels("google_search_block").inc();
+                // Rotate at context level — destroy this user's session and create
+                // a fresh one with a new proxy session. Does NOT restart the browser.
+                const key = normalizeUserId(userId);
+                const oldSession = sessions.get(key);
+                if (oldSession) {
+                  await oldSession.context.close().catch(() => {});
+                  sessions.delete(key);
+                }
+                session = await getSession(userId);
+                const group = getTabGroup(session, currentSessionKey);
+                const page = await session.context.newPage();
+                tabState = createTabState(page);
+                tabState.googleRetryCount = previousRetryCount + 1;
+                attachDownloadListener(tabState, tabId, log);
+                group.set(tabId, tabState);
+                refreshActiveTabsGauge();
+              };
+
+              if (isGoogleSearch && proxyPool?.canRotateSessions) {
+                await prewarmGoogleHome();
+              }
+
+              await navigateCurrentPage();
+
+              if (
+                isGoogleSearch &&
+                proxyPool?.canRotateSessions &&
+                (await isGoogleSearchBlocked(tabState.page))
+              ) {
+                log(
+                  "warn",
+                  "google search blocked, rotating browser proxy session",
+                  {
+                    reqId: req.reqId,
+                    tabId,
+                    url: tabState.page.url(),
+                    proxySession: browserLaunchProxy?.sessionId || null,
+                  },
+                );
+                await recreateTabOnFreshContext();
+                await prewarmGoogleHome();
+                await navigateCurrentPage();
+              }
+
+              // For Google SERP: skip eager ref building during navigate.
+              // Results render asynchronously after DOMContentLoaded — the snapshot
+              // call will wait for and extract them.
+              if (isGoogleSerp(tabState.page.url())) {
+                tabState.refs = new Map();
+                return {
+                  ok: true,
+                  tabId,
+                  url: tabState.page.url(),
+                  refsAvailable: false,
+                  googleSerp: true,
+                };
+              }
+
+              if (
+                isGoogleSearch &&
+                (await isGoogleSearchBlocked(tabState.page))
+              ) {
+                return {
+                  ok: false,
+                  tabId,
+                  url: tabState.page.url(),
+                  refsAvailable: false,
+                  googleBlocked: true,
+                };
+              }
+
+              tabState.refs = await buildRefs(tabState.page);
               return {
                 ok: true,
                 tabId,
                 url: tabState.page.url(),
-                refsAvailable: false,
-                googleSerp: true,
+                refsAvailable: tabState.refs.size > 0,
               };
-            }
-
-            tabState.refs = await buildRefs(tabState.page);
-            return {
-              ok: true,
-              tabId,
-              url: tabState.page.url(),
-              refsAvailable: tabState.refs.size > 0,
-            };
-          });
+            },
+            requestTimeoutMs(),
+          );
         })(),
-        HANDLER_TIMEOUT_MS,
+        requestTimeoutMs(),
         "navigate",
       ),
     );
@@ -1775,6 +2382,39 @@ app.get("/tabs/:tabId/snapshot", async (req, res) => {
     const result = await withUserLimit(userId, () =>
       withTimeout(
         (async () => {
+          if (
+            proxyPool?.canRotateSessions &&
+            isGoogleSearchUrl(tabState.lastRequestedUrl || "")
+          ) {
+            const blocked = await isGoogleSearchBlocked(tabState.page);
+            const unavailable =
+              !blocked && (await isGoogleUnavailable(tabState.page));
+            if (blocked || unavailable) {
+              const rotated = await rotateGoogleTab(
+                userId,
+                found.listItemId,
+                req.params.tabId,
+                tabState,
+                blocked
+                  ? "google_search_block_snapshot"
+                  : "google_search_unavailable_snapshot",
+                req.reqId,
+              );
+              if (rotated) {
+                tabState.page = rotated.tabState.page;
+                tabState.refs = rotated.tabState.refs;
+                tabState.visitedUrls = rotated.tabState.visitedUrls;
+                tabState.downloads = rotated.tabState.downloads;
+                tabState.toolCalls = rotated.tabState.toolCalls;
+                tabState.consecutiveTimeouts =
+                  rotated.tabState.consecutiveTimeouts;
+                tabState.lastSnapshot = rotated.tabState.lastSnapshot;
+                tabState.lastRequestedUrl = rotated.tabState.lastRequestedUrl;
+                tabState.googleRetryCount = rotated.tabState.googleRetryCount;
+              }
+            }
+          }
+
           const pageUrl = tabState.page.url();
 
           // Google SERP fast path — DOM extraction instead of ariaSnapshot
@@ -1804,7 +2444,9 @@ app.get("/tabs/:tabId/snapshot", async (req, res) => {
             return response;
           }
 
-          tabState.refs = await buildRefs(tabState.page);
+          tabState.refs = await refreshTabRefs(tabState, {
+            reason: "snapshot",
+          });
           const ariaYaml = await getAriaSnapshot(tabState.page);
 
           let annotatedYaml = ariaYaml || "";
@@ -1867,7 +2509,7 @@ app.get("/tabs/:tabId/snapshot", async (req, res) => {
 
           return response;
         })(),
-        HANDLER_TIMEOUT_MS,
+        requestTimeoutMs(),
         "snapshot",
       ),
     );
@@ -2017,17 +2659,10 @@ app.post("/tabs/:tabId/click", async (req, res) => {
             });
             try {
               const preClickBudget = Math.min(4000, remainingBudget());
-              const refreshPromise = buildRefs(tabState.page);
-              const refreshBudget = new Promise((_, reject) =>
-                setTimeout(
-                  () => reject(new Error("pre_click_refs_timeout")),
-                  preClickBudget,
-                ),
-              );
-              tabState.refs = await Promise.race([
-                refreshPromise,
-                refreshBudget,
-              ]);
+              tabState.refs = await refreshTabRefs(tabState, {
+                reason: "pre_click",
+                timeoutMs: preClickBudget,
+              });
             } catch (e) {
               if (
                 e.message === "pre_click_refs_timeout" ||
@@ -2076,14 +2711,10 @@ app.post("/tabs/:tabId/click", async (req, res) => {
         // If it times out, return without refs (caller's next /snapshot will rebuild them).
         const postClickBudget = Math.max(2000, remainingBudget());
         try {
-          const refsPromise = buildRefs(tabState.page);
-          const refsBudget = new Promise((_, reject) =>
-            setTimeout(
-              () => reject(new Error("post_click_refs_timeout")),
-              postClickBudget,
-            ),
-          );
-          tabState.refs = await Promise.race([refsPromise, refsBudget]);
+          tabState.refs = await refreshTabRefs(tabState, {
+            reason: "post_click",
+            timeoutMs: postClickBudget,
+          });
         } catch (e) {
           if (
             e.message === "post_click_refs_timeout" ||
@@ -2119,7 +2750,9 @@ app.post("/tabs/:tabId/click", async (req, res) => {
         const session = sessions.get(normalizeUserId(req.body.userId));
         const found = session && findTab(session, tabId);
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
-          found.tabState.refs = await buildRefs(found.tabState.page);
+          found.tabState.refs = await refreshTabRefs(found.tabState, {
+            reason: "click_timeout",
+          });
           found.tabState.lastSnapshot = null;
           return res.status(500).json({
             error: safeError(err),
@@ -2164,7 +2797,7 @@ app.post("/tabs/:tabId/type", async (req, res) => {
             ref,
             hadRefs: tabState.refs.size,
           });
-          tabState.refs = await buildRefs(tabState.page);
+          tabState.refs = await refreshTabRefs(tabState, { reason: "type" });
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
         if (!locator) {
@@ -2189,7 +2822,9 @@ app.post("/tabs/:tabId/type", async (req, res) => {
         const session = sessions.get(normalizeUserId(req.body.userId));
         const found = session && findTab(session, tabId);
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
-          found.tabState.refs = await buildRefs(found.tabState.page);
+          found.tabState.refs = await refreshTabRefs(found.tabState, {
+            reason: "type_timeout",
+          });
           found.tabState.lastSnapshot = null;
           return res.status(500).json({
             error: safeError(err),
@@ -2245,8 +2880,12 @@ app.post("/tabs/:tabId/scroll", async (req, res) => {
     tabState.toolCalls++;
     tabState.consecutiveTimeouts = 0;
 
-    const delta = direction === "up" ? -amount : amount;
-    await tabState.page.mouse.wheel(0, delta);
+    const isVertical = direction === "up" || direction === "down";
+    const delta = direction === "up" || direction === "left" ? -amount : amount;
+    await tabState.page.mouse.wheel(
+      isVertical ? 0 : delta,
+      isVertical ? delta : 0,
+    );
     await tabState.page.waitForTimeout(300);
 
     res.json({ ok: true });
@@ -2426,6 +3065,7 @@ app.get("/tabs/:tabId/downloads", async (req, res) => {
 
     res.json({ tabId: req.params.tabId, downloads });
   } catch (err) {
+    failuresTotal.labels(classifyError(err), "downloads").inc();
     log("error", "downloads failed", { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
@@ -2461,6 +3101,7 @@ app.get("/tabs/:tabId/images", async (req, res) => {
 
     res.json({ tabId: req.params.tabId, images });
   } catch (err) {
+    failuresTotal.labels(classifyError(err), "images").inc();
     log("error", "images failed", { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
@@ -2541,6 +3182,7 @@ app.post(
       });
       res.json({ ok: true, result });
     } catch (err) {
+      failuresTotal.labels(classifyError(err), "evaluate").inc();
       log("error", "evaluate failed", { reqId: req.reqId, error: err.message });
       res.status(500).json({ error: safeError(err) });
     }
@@ -2550,7 +3192,9 @@ app.post(
 // Close tab
 app.delete("/tabs/:tabId", async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.query.userId || req.body?.userId;
+    if (!userId)
+      return res.status(400).json({ error: "userId required (query or body)" });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
@@ -2583,7 +3227,9 @@ app.delete("/tabs/:tabId", async (req, res) => {
 // Close tab group
 app.delete("/tabs/group/:listItemId", async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.query.userId || req.body?.userId;
+    if (!userId)
+      return res.status(400).json({ error: "userId required (query or body)" });
     const session = sessions.get(normalizeUserId(userId));
     const group = session?.tabGroups.get(req.params.listItemId);
     if (group) {
@@ -2651,6 +3297,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      sessionsExpiredTotal.inc();
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
       sessions.delete(userId);
@@ -2679,6 +3326,7 @@ setInterval(() => {
         if (tabState.toolCalls === tabState._lastReaperToolCalls) {
           const idleMs = now - tabState._lastReaperCheck;
           if (idleMs >= TAB_INACTIVITY_MS) {
+            tabsReapedTotal.inc();
             log("info", "tab reaped (inactive)", {
               userId,
               tabId,
@@ -2705,7 +3353,17 @@ setInterval(() => {
         session.tabGroups.delete(listItemId);
       }
     }
+    // Clean up sessions with zero tabs remaining — free browser context memory
+    if (session.tabGroups.size === 0) {
+      log("info", "session empty after tab reaper, closing", { userId });
+      clearSessionDownloads(session).catch(() => {});
+      session.context.close().catch(() => {});
+      sessions.delete(userId);
+      sessionsExpiredTotal.inc();
+      refreshActiveTabsGauge();
+    }
   }
+  if (sessions.size === 0) scheduleBrowserIdleShutdown();
 }, 60_000);
 
 // =============================================================================
@@ -2772,23 +3430,25 @@ app.post("/tabs/open", async (req, res) => {
 
     const session = await getSession(userId);
 
-    // Check global tab limit first
-    if (getTotalTabCount() >= MAX_TABS_GLOBAL) {
-      return res.status(429).json({ error: "Maximum global tabs reached" });
-    }
-
+    // Recycle oldest tab when limits are reached instead of rejecting
     let totalTabs = 0;
     for (const g of session.tabGroups.values()) totalTabs += g.size;
-    if (totalTabs >= MAX_TABS_PER_SESSION) {
-      return res
-        .status(429)
-        .json({ error: "Maximum tabs per session reached" });
+    if (
+      totalTabs >= MAX_TABS_PER_SESSION ||
+      getTotalTabCount() >= MAX_TABS_GLOBAL
+    ) {
+      const recycled = await recycleOldestTab(session, req.reqId);
+      if (!recycled) {
+        return res
+          .status(429)
+          .json({ error: "Maximum tabs per session reached" });
+      }
     }
 
     const group = getTabGroup(session, listItemId);
 
     const page = await session.context.newPage();
-    const tabId = crypto.randomUUID();
+    const tabId = fly.makeTabId();
     const tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log);
     group.set(tabId, tabState);
@@ -2826,6 +3486,7 @@ app.post("/start", async (req, res) => {
     await ensureBrowser();
     res.json({ ok: true, profile: "camoufox" });
   } catch (err) {
+    failuresTotal.labels("browser_launch", "start").inc();
     res.status(500).json({ ok: false, error: safeError(err) });
   }
 });
@@ -3196,8 +3857,13 @@ app.post("/act", async (req, res) => {
             }
             await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
           } else {
-            const delta = direction === "up" ? -amount : amount;
-            await tabState.page.mouse.wheel(0, delta);
+            const isVertical = direction === "up" || direction === "down";
+            const delta =
+              direction === "up" || direction === "left" ? -amount : amount;
+            await tabState.page.mouse.wheel(
+              isVertical ? 0 : delta,
+              isVertical ? delta : 0,
+            );
           }
           await tabState.page.waitForTimeout(300);
           return { ok: true, targetId };
@@ -3316,6 +3982,7 @@ setInterval(async () => {
     await testContext.close();
     healthState.lastSuccessfulNav = Date.now();
   } catch (err) {
+    failuresTotal.labels("health_probe", "internal").inc();
     log("warn", "health probe failed", {
       error: err.message,
       timeSinceSuccessMs: timeSinceSuccess,
@@ -3361,16 +4028,30 @@ async function gracefulShutdown(signal) {
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
+// Idle self-shutdown REMOVED — it was racing with min_machines_running=2
+// and stopping machines that Fly couldn't auto-restart fast enough, leaving
+// only 1 machine to handle all browser traffic (causing timeouts for users).
+// Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
+
 const PORT = CONFIG.port;
 const server = app.listen(PORT, "0.0.0.0", async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  log("info", "server started", {
-    port: PORT,
-    pid: process.pid,
-    nodeVersion: process.version,
-  });
+  if (FLY_MACHINE_ID) {
+    log("info", "server started (fly)", {
+      port: PORT,
+      pid: process.pid,
+      machineId: FLY_MACHINE_ID,
+      nodeVersion: process.version,
+    });
+  } else {
+    log("info", "server started", {
+      port: PORT,
+      pid: process.pid,
+      nodeVersion: process.version,
+    });
+  }
   // Pre-warm browser so first request doesn't eat a 6-7s cold start
   try {
     const start = Date.now();
@@ -3378,10 +4059,12 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
     log("info", "browser pre-warmed", { ms: Date.now() - start });
     scheduleBrowserIdleShutdown();
   } catch (err) {
-    log("error", "browser pre-warm failed (will retry on first request)", {
+    log("error", "browser pre-warm failed (will retry in background)", {
       error: err.message,
     });
+    scheduleBrowserWarmRetry();
   }
+  // Idle self-shutdown removed — Fly manages machine lifecycle via fly.toml.
 });
 
 server.on("error", (err) => {

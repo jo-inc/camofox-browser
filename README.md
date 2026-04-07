@@ -11,11 +11,17 @@
   <p>
     Standing on the mighty shoulders of <a href="https://camoufox.com">Camoufox</a> - a Firefox fork with fingerprint spoofing at the C++ level.
     <br/><br/>
-    The same engine behind <a href="https://askjo.ai">askjo.ai</a>'s web browsing.
+    The same engine behind <a href="https://askjo.ai?ref=camofox">Jo</a> — an AI assistant that doesn't need you to babysit it. Runs half on your Mac, half on a dedicated cloud machine that only you use. Available on macOS, Telegram, and WhatsApp. <a href="https://askjo.ai?ref=camofox">Try the beta free →</a>
   </p>
 </div>
 
 <br/>
+
+```bash
+git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
+npm install && npm start
+# → http://localhost:9377
+```
 
 ---
 
@@ -76,10 +82,27 @@ Default port is `9377`. See [Environment Variables](#environment-variables) for 
 
 ### Docker
 
+The included `Makefile` auto-detects your CPU architecture and pre-downloads Camoufox + yt-dlp binaries outside the Docker build, so rebuilds are fast (~30s vs ~3min).
+
 ```bash
-docker build -t camofox-browser .
-docker run -p 9377:9377 camofox-browser
+# Build and start (auto-detects arch: aarch64 on M1/M2, x86_64 on Intel)
+make up
+
+# Stop and remove the container
+make down
+
+# Force a clean rebuild (e.g. after upgrading VERSION/RELEASE)
+make reset
+
+# Just download binaries (without building)
+make fetch
+
+# Override arch or version explicitly
+make up ARCH=x86_64
+make up VERSION=135.0.1 RELEASE=beta.24
 ```
+
+Note: `make fetch` (or `make build`) must be run first — the Dockerfile expects pre-downloaded binaries in `dist/`.
 
 ### Fly.io / Railway
 
@@ -182,7 +205,7 @@ fly secrets set CAMOFOX_API_KEY="your-generated-key"
 
 Route all browser traffic through a proxy with automatic locale, timezone, and geolocation derived from the proxy's IP address via Camoufox's built-in GeoIP.
 
-Set these environment variables before starting the server:
+**Simple proxy (single endpoint):**
 
 ```bash
 export PROXY_HOST=166.88.179.132
@@ -191,6 +214,21 @@ export PROXY_USERNAME=myuser
 export PROXY_PASSWORD=mypass
 npm start
 ```
+
+**Backconnect proxy (rotating sticky sessions):**
+
+For providers like Decodo, Bright Data, or Oxylabs that offer a single gateway endpoint with session-based sticky IPs:
+
+```bash
+export PROXY_STRATEGY=backconnect
+export PROXY_BACKCONNECT_HOST=gate.provider.com
+export PROXY_BACKCONNECT_PORT=7000
+export PROXY_USERNAME=myuser
+export PROXY_PASSWORD=mypass
+npm start
+```
+
+Each browser context gets a unique sticky session, so different users get different IP addresses. Sessions rotate automatically on proxy errors or Google blocks.
 
 Or in Docker:
 
@@ -322,6 +360,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CAMOFOX_PORT` | Server port | `9377` |
+| `PORT` | Server port (fallback, for platforms like Fly.io) | `9377` |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
@@ -332,10 +371,17 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
 | `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
-| `PROXY_HOST` | Proxy hostname or IP | - |
-| `PROXY_PORT` | Proxy port | - |
+| `PROXY_STRATEGY` | Proxy mode: `backconnect` (rotating sticky sessions) or blank (single endpoint) | - |
+| `PROXY_PROVIDER` | Provider name for session format (e.g. `decodo`) | `decodo` |
+| `PROXY_HOST` | Proxy hostname or IP (simple mode) | - |
+| `PROXY_PORT` | Proxy port (simple mode) | - |
 | `PROXY_USERNAME` | Proxy auth username | - |
 | `PROXY_PASSWORD` | Proxy auth password | - |
+| `PROXY_BACKCONNECT_HOST` | Backconnect gateway hostname | - |
+| `PROXY_BACKCONNECT_PORT` | Backconnect gateway port | `7000` |
+| `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
+| `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
+| `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
 
 ## Architecture
 
@@ -350,6 +396,8 @@ Browser Instance (Camoufox)
 ```
 
 Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.
+
+When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error — so long-running agent sessions don't hit dead ends.
 
 ## Testing
 

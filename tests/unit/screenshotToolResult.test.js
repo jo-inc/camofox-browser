@@ -24,7 +24,11 @@ let mockPort;
 beforeAll(async () => {
   await new Promise((resolve) => {
     mockServer = http.createServer((req, res) => {
-      if (req.url.includes('/screenshot') && !req.url.includes('missing')) {
+      if (req.url.includes('/screenshot') && req.url.includes('json-error')) {
+        // Simulate server returning JSON error with 200 status
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Tab not found' }));
+      } else if (req.url.includes('/screenshot') && !req.url.includes('missing')) {
         // Simulate the real server: return raw PNG binary
         res.writeHead(200, { 'Content-Type': 'image/png' });
         res.end(TINY_PNG);
@@ -94,7 +98,7 @@ describe('OLD plugin screenshot logic (broken)', () => {
 });
 
 describe('NEW plugin screenshot logic (fixed)', () => {
-  // Reproduces the fixed code path from plugin.ts
+  // Reproduces the fixed code path from plugin.ts (with Content-Type guard)
 
   async function screenshotExecute(baseUrl, tabId, userId) {
     const url = `${baseUrl}/tabs/${tabId}/screenshot?userId=${userId}`;
@@ -103,6 +107,11 @@ describe('NEW plugin screenshot logic (fixed)', () => {
       const text = await res.text();
       throw new Error(`${res.status}: ${text}`);
     }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/')) {
+      const text = await res.text();
+      return { content: [{ type: 'text', text: `Screenshot failed: ${text}` }] };
+    }
     const arrayBuffer = await res.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString('base64');
     return {
@@ -110,7 +119,7 @@ describe('NEW plugin screenshot logic (fixed)', () => {
         {
           type: 'image',
           data: base64,
-          mimeType: 'image/png',
+          mimeType: contentType || 'image/png',
         },
       ],
     };
@@ -165,4 +174,17 @@ describe('NEW plugin screenshot logic (fixed)', () => {
       screenshotExecute(baseUrl, 'missing-tab', 'testuser')
     ).rejects.toThrow('404');
   });
+
+  test('returns text error when server responds with JSON instead of image', async () => {
+    const baseUrl = `http://localhost:${mockPort}`;
+    const result = await screenshotExecute(baseUrl, 'json-error-tab', 'testuser');
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).toContain('Screenshot failed');
+    expect(result.content[0].text).toContain('Tab not found');
+    // Must NOT have an image block
+    expect(result.content.find(c => c.type === 'image')).toBeUndefined();
+  });
+
 });
