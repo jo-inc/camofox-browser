@@ -4,6 +4,22 @@ import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
 import os from 'os';
+import fs from 'fs';
+import https from 'https';
+
+// Trust custom CA cert for all Node.js HTTPS requests (e.g. proxy geoip lookups through Caido)
+const EXTRA_CA_CERT = process.env.NODE_EXTRA_CA_CERTS;
+if (EXTRA_CA_CERT) {
+  try {
+    const ca = fs.readFileSync(EXTRA_CA_CERT);
+    https.globalAgent.options.ca = ca;
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'custom CA cert loaded', path: EXTRA_CA_CERT, bytes: ca.length }) + '\n');
+  } catch (e) {
+    process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'failed to load NODE_EXTRA_CA_CERTS', path: EXTRA_CA_CERT, error: e.message }) + '\n');
+  }
+} else {
+  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level: 'warn', msg: 'NODE_EXTRA_CA_CERTS not set — custom CA cert not loaded' }) + '\n');
+}
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
@@ -529,6 +545,7 @@ async function probeGoogleSearch(candidateBrowser) {
     context = await candidateBrowser.newContext({
       viewport: { width: 1280, height: 720 },
       permissions: ['geolocation'],
+      ignoreHTTPSErrors: true,
     });
     const page = await context.newPage();
     await page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -606,6 +623,9 @@ async function launchBrowserInstance() {
         proxy: launchProxy,
         geoip: !!launchProxy,
         virtual_display: vdDisplay,
+        firefox_user_prefs: {
+          'security.enterprise_roots.enabled': true,
+        },
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
 
@@ -723,6 +743,7 @@ async function getSession(userId) {
     const contextOptions = {
       viewport: { width: 1280, height: 720 },
       permissions: ['geolocation'],
+      ignoreHTTPSErrors: true,
     };
     // When geoip is active (proxy configured), camoufox auto-configures
     // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
@@ -1776,9 +1797,14 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const navigateCurrentPage = async () => {
           tabState.lastRequestedUrl = targetUrl;
-          await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          const navResponse = await withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
           tabState.visitedUrls.add(targetUrl);
           tabState.lastSnapshot = null;
+          if (navResponse) {
+            tabState.lastNavStatus = navResponse.status();
+            tabState.lastNavStatusText = navResponse.statusText();
+            tabState.lastNavHeaders = navResponse.headers();
+          }
         };
 
         const prewarmGoogleHome = async () => {
@@ -1832,15 +1858,15 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         // call will wait for and extract them.
         if (isGoogleSerp(tabState.page.url())) {
           tabState.refs = new Map();
-          return { ok: true, tabId, url: tabState.page.url(), refsAvailable: false, googleSerp: true };
+          return { ok: true, tabId, url: tabState.page.url(), refsAvailable: false, googleSerp: true, responseStatus: tabState.lastNavStatus, responseStatusText: tabState.lastNavStatusText, responseHeaders: tabState.lastNavHeaders };
         }
 
         if (isGoogleSearch && await isGoogleSearchBlocked(tabState.page)) {
-          return { ok: false, tabId, url: tabState.page.url(), refsAvailable: false, googleBlocked: true };
+          return { ok: false, tabId, url: tabState.page.url(), refsAvailable: false, googleBlocked: true, responseStatus: tabState.lastNavStatus, responseStatusText: tabState.lastNavStatusText, responseHeaders: tabState.lastNavHeaders };
         }
-        
+
         tabState.refs = await buildRefs(tabState.page);
-        return { ok: true, tabId, url: tabState.page.url(), refsAvailable: tabState.refs.size > 0 };
+        return { ok: true, tabId, url: tabState.page.url(), refsAvailable: tabState.refs.size > 0, responseStatus: tabState.lastNavStatus, responseStatusText: tabState.lastNavStatusText, responseHeaders: tabState.lastNavHeaders };
       }, requestTimeoutMs());
     })(), requestTimeoutMs(), 'navigate'));
     
@@ -1863,6 +1889,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const format = req.query.format || 'text';
     const offset = parseInt(req.query.offset) || 0;
+    const includeCookies = req.query.includeCookies !== 'false';
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
@@ -1874,9 +1901,13 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     if (offset > 0 && tabState.lastSnapshot) {
       const win = windowSnapshot(tabState.lastSnapshot, offset);
       const response = { url: tabState.page.url(), snapshot: win.text, refsCount: tabState.refs.size, truncated: win.truncated, totalChars: win.totalChars, hasMore: win.hasMore, nextOffset: win.nextOffset };
+      if (tabState.lastNavStatus != null) { response.responseStatus = tabState.lastNavStatus; response.responseStatusText = tabState.lastNavStatusText; response.responseHeaders = tabState.lastNavHeaders; }
       if (req.query.includeScreenshot === 'true') {
         const pngBuffer = await tabState.page.screenshot({ type: 'png' });
         response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      }
+      if (includeCookies) {
+        response.cookies = await session.context.cookies();
       }
       log('info', 'snapshot (cached offset)', { reqId: req.reqId, tabId: req.params.tabId, offset, totalChars: win.totalChars });
       return res.json(response);
@@ -1920,13 +1951,17 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
           hasMore: win.hasMore,
           nextOffset: win.nextOffset,
         };
+        if (tabState.lastNavStatus != null) { response.responseStatus = tabState.lastNavStatus; response.responseStatusText = tabState.lastNavStatusText; response.responseHeaders = tabState.lastNavHeaders; }
         if (req.query.includeScreenshot === 'true') {
           const pngBuffer = await tabState.page.screenshot({ type: 'png' });
           response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
         }
+        if (includeCookies) {
+          response.cookies = await session.context.cookies();
+        }
         return response;
       }
-      
+
       tabState.refs = await refreshTabRefs(tabState, { reason: 'snapshot' });
       const ariaYaml = await getAriaSnapshot(tabState.page);
       
@@ -1977,9 +2012,13 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         nextOffset: win.nextOffset,
       };
 
+      if (tabState.lastNavStatus != null) { response.responseStatus = tabState.lastNavStatus; response.responseStatusText = tabState.lastNavStatusText; response.responseHeaders = tabState.lastNavHeaders; }
       if (req.query.includeScreenshot === 'true') {
         const pngBuffer = await tabState.page.screenshot({ type: 'png' });
         response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+      }
+      if (includeCookies) {
+        response.cookies = await session.context.cookies();
       }
 
       return response;

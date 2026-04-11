@@ -42,3 +42,13 @@ railway.toml
 # Test artifacts
 test-results/
 playwright-report/
+
+# Local test scripts and notes
+DUAL-PROXIES.md
+SSL-FIXES.md
+ca.crt
+manage-direct.sh
+manage.sh
+mv_cert.sh
+mzer0-test.sh
+.claude/

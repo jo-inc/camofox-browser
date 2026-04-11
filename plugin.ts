@@ -241,22 +241,27 @@ export default function register(api: PluginApi) {
     description:
       "Get accessibility snapshot of a Camoufox page with element refs (e1, e2, etc.) for interaction, plus a visual screenshot. " +
       "Large pages are truncated with pagination links preserved at the bottom. " +
-      "If the response includes hasMore=true and nextOffset, call again with that offset to see more content.",
+      "If the response includes hasMore=true and nextOffset, call again with that offset to see more content. " +
+      "Pass includeCookies: true to include browser session cookies and response headers (useful for importing into Caido or other proxies).",
     parameters: {
       type: "object",
       properties: {
         tabId: { type: "string", description: "Tab identifier" },
         offset: { type: "number", description: "Character offset for paginated snapshots. Use nextOffset from a previous truncated response." },
+        includeCookies: { type: "boolean", description: "Include browser session cookies in the response (for Caido or proxy import). Defaults to true — pass false to omit." },
       },
       required: ["tabId"],
     },
     async execute(_id, params) {
-      const { tabId, offset } = params as { tabId: string; offset?: number };
+      const { tabId, offset, includeCookies } = params as { tabId: string; offset?: number; includeCookies?: boolean };
       const userId = ctx.agentId || fallbackUserId;
-      const qs = offset ? `&offset=${offset}` : '';
-      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}&includeScreenshot=true${qs}`) as Record<string, unknown>;
+      const qs = [
+        offset ? `offset=${offset}` : '',
+        includeCookies === false ? 'includeCookies=false' : '',
+      ].filter(Boolean).join('&');
+      const result = await fetchApi(baseUrl, `/tabs/${tabId}/snapshot?userId=${userId}&includeScreenshot=true${qs ? `&${qs}` : ''}`) as Record<string, unknown>;
       const content: ToolResult["content"] = [
-        { type: "text", text: JSON.stringify({ url: result.url, refsCount: result.refsCount, snapshot: result.snapshot, truncated: result.truncated, totalChars: result.totalChars, hasMore: result.hasMore, nextOffset: result.nextOffset }, null, 2) },
+        { type: "text", text: JSON.stringify({ url: result.url, refsCount: result.refsCount, snapshot: result.snapshot, truncated: result.truncated, totalChars: result.totalChars, hasMore: result.hasMore, nextOffset: result.nextOffset, responseStatus: result.responseStatus, responseStatusText: result.responseStatusText, responseHeaders: result.responseHeaders, cookies: result.cookies }, null, 2) },
       ];
       const screenshot = result.screenshot as { data?: string; mimeType?: string } | undefined;
       if (screenshot?.data) {
@@ -317,7 +322,8 @@ export default function register(api: PluginApi) {
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_navigate",
     description:
-      "Navigate a Camoufox tab to a URL or use a search macro (@google_search, @youtube_search, etc.). Preferred over Chrome for sites with bot detection.",
+      "Navigate a Camoufox tab to a URL or use a search macro (@google_search, @youtube_search, etc.). Preferred over Chrome for sites with bot detection. " +
+      "Response includes responseStatus, responseStatusText, and responseHeaders from the navigation (useful for Caido/proxy import).",
     parameters: {
       type: "object",
       properties: {
