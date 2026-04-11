@@ -61,10 +61,14 @@ RUN npm install --production
 
 COPY server.js ./
 COPY lib/ ./lib/
+COPY scripts/docker-entrypoint.sh ./scripts/
+RUN chmod +x ./scripts/docker-entrypoint.sh
 
 ENV NODE_ENV=production
-ENV CAMOFOX_PORT=3000
+ENV CAMOFOX_PORT=9377
+# Set CAMOFOX_API_KEY to enable cookie import endpoint (required for auto-import)
 
 EXPOSE 9377
 
-CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+ENTRYPOINT ["./scripts/docker-entrypoint.sh"]
+CMD ["server"]

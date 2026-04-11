@@ -63,7 +63,12 @@ up:
 	@if ! docker image inspect $(IMAGE) > /dev/null 2>&1; then \
 	  $(MAKE) build; \
 	fi
-	docker run -d --restart unless-stopped --name camofox-browser -p 9377:9377 $(IMAGE)
+	docker run -d --restart unless-stopped --name camofox-browser \
+	  -v $(HOME)/.camofox/cookies:/root/.camofox/cookies:ro \
+	  -e CAMOFOX_COOKIES_DIR=/root/.camofox/cookies \
+	  -e CAMOFOX_API_KEY=$(CAMOFOX_API_KEY) \
+	  -p 9377:9377 \
+	  $(IMAGE)
 
 down:
 	docker stop camofox-browser && docker rm camofox-browser
