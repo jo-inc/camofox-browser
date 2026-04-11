@@ -47,8 +47,6 @@ playwright-report/
 DUAL-PROXIES.md
 SSL-FIXES.md
 ca.crt
-manage-direct.sh
-manage.sh
 mv_cert.sh
 mzer0-test.sh
 .claude/

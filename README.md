@@ -50,6 +50,9 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Download Capture** - capture browser downloads and fetch them via API (optional inline base64)
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
 - **Deploy Anywhere** - Docker, Fly.io, Railway
+- **Custom CA / Proxy Interception** - trust custom CA certs via `NODE_EXTRA_CA_CERTS` for MITM proxies (Caido, Burp Suite, mitmproxy)
+- **Cookie & Header Export** - extract session cookies and HTTP response headers from snapshots for import into external tools
+- **PM2 Management Scripts** - `manage.sh` and `manage-direct.sh` for easy start/stop/restart via PM2
 
 ## Optional Dependencies
 
@@ -303,12 +306,12 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots) |
+| `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots), `includeCookies=false` (omit session cookies, included by default) |
 | `POST` | `/tabs/:id/click` | Click element by ref or CSS selector |
 | `POST` | `/tabs/:id/type` | Type text into element |
 | `POST` | `/tabs/:id/press` | Press a keyboard key |
 | `POST` | `/tabs/:id/scroll` | Scroll page (up/down/left/right) |
-| `POST` | `/tabs/:id/navigate` | Navigate to URL or search macro |
+| `POST` | `/tabs/:id/navigate` | Navigate to URL or search macro. Response includes `responseStatus`, `responseStatusText`, and `responseHeaders` |
 | `POST` | `/tabs/:id/wait` | Wait for selector or timeout |
 | `GET` | `/tabs/:id/links` | Extract all links on page |
 | `GET` | `/tabs/:id/images` | List `<img>` elements. Query params: `includeData=true` (return inline data URLs), `maxBytes=N`, `limit=N` |
@@ -382,6 +385,55 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
+| `NODE_EXTRA_CA_CERTS` | Path to a PEM CA certificate to trust (for intercepting proxies) | - |
+
+## Running with an Intercepting Proxy
+
+Route browser traffic through Caido, Burp Suite, or mitmproxy for request inspection and modification.
+
+**1. Set environment variables:**
+
+```bash
+export PROXY_HOST=127.0.0.1       # Your proxy listen address
+export PROXY_PORT=8080             # Your proxy listen port
+export NODE_EXTRA_CA_CERTS=/path/to/proxy-ca.crt  # Proxy CA certificate (PEM)
+```
+
+**2. Start the server.** All browser traffic will route through the proxy. The custom CA cert is trusted at both the Node.js level (for server-side HTTPS requests) and the Firefox level (via `security.enterprise_roots.enabled`), so HTTPS interception works without certificate errors.
+
+**3. Extract cookies and headers** from any snapshot for replay in your proxy:
+
+```bash
+# Cookies and response headers are included by default
+curl "http://localhost:9377/tabs/TAB_ID/snapshot?userId=agent1"
+# → { ..., "cookies": [...], "responseStatus": 200, "responseHeaders": {...} }
+
+# Omit cookies if not needed
+curl "http://localhost:9377/tabs/TAB_ID/snapshot?userId=agent1&includeCookies=false"
+```
+
+Navigate responses also include `responseStatus`, `responseStatusText`, and `responseHeaders`.
+
+## PM2 Management
+
+Two convenience scripts for running CamoFox under PM2:
+
+| Script | Purpose | Default Port |
+|--------|---------|-------------|
+| `manage.sh` | Run with proxy (Caido/Burp) | `8177` |
+| `manage-direct.sh` | Run without proxy (direct) | `8178` |
+
+```bash
+./manage.sh start     # Start with proxy config
+./manage.sh stop      # Stop and remove from PM2
+./manage.sh restart   # Restart
+./manage.sh status    # Show PM2 process info
+./manage.sh logs      # Tail logs
+
+./manage-direct.sh start   # Start direct (no proxy) instance
+```
+
+Edit the configuration block at the top of each script to set your ports, API keys, and proxy settings.
 
 ## Architecture
 
