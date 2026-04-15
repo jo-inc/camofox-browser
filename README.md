@@ -100,6 +100,9 @@ make fetch
 # Override arch or version explicitly
 make up ARCH=x86_64
 make up VERSION=135.0.1 RELEASE=beta.24
+
+# Enable optional per-user storage state persistence
+make up PERSISTENCE=1
 ```
 
 Note: `make fetch` (or `make build`) must be run first — the Dockerfile expects pre-downloaded binaries in `dist/`.
@@ -363,7 +366,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PORT` | Server port (fallback, for platforms like Fly.io) | `9377` |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
-| `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+| `CAMOFOX_PERSISTENCE` | Enable per-user storage state persistence (requires `CAMOFOX_PROFILE_DIR`). `1`/`true` to opt in | - |
+| `CAMOFOX_PROFILE_DIR` | Root directory for per-user persisted browser storage state (cookies + localStorage). Only used when `CAMOFOX_PERSISTENCE=1` | - |
+| `CAMOFOX_COOKIES_DIR` | Directory for Netscape cookie files | `~/.camofox/cookies` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
@@ -396,6 +401,8 @@ Browser Instance (Camoufox)
 ```
 
 Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.
+
+**Optional per-user persistence** — when `CAMOFOX_PERSISTENCE=1` is set and `CAMOFOX_PROFILE_DIR` points at a writable directory, each `userId` gets a deterministic storage directory under that root. On session creation the server restores any saved Playwright `storageState`; on cookie import and session teardown it checkpoints cookies/localStorage back to disk. Persistence is disabled by default; both the flag and the profile dir must be set to enable it.
 
 When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error — so long-running agent sessions don't hit dead ends.
 

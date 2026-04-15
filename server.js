@@ -23,6 +23,9 @@ import {
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
+import { loadPersistedStorageState, persistStorageState } from './lib/persistence.js';
+import { importBootstrapCookies } from './lib/cookies.js';
+import { coalesceInflight } from './lib/inflight.js';
 
 const CONFIG = loadConfig();
 
@@ -236,6 +239,7 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
 
     const session = await getSession(userId);
     await session.context.addCookies(sanitized);
+    await checkpointSessionState(userId, session, 'cookie_import');
     const result = { ok: true, userId: String(userId), count: sanitized.length };
     log('info', 'cookies imported', { reqId: req.reqId, userId: String(userId), count: sanitized.length });
     res.json(result);
@@ -251,6 +255,7 @@ let browser = null;
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
 const sessions = new Map();
+const sessionCreations = new Map();
 
 const SESSION_TIMEOUT_MS = CONFIG.sessionTimeoutMs;
 const MAX_SNAPSHOT_NODES = 500;
@@ -487,10 +492,7 @@ async function restartBrowser(reason) {
   browserRestartsTotal.labels(reason).inc();
   log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
   try {
-    for (const [, session] of sessions) {
-      await session.context.close().catch(() => {});
-    }
-    sessions.clear();
+    await closeAllSessions(`browser_restart:${reason}`, { persist: true, clearDownloads: true, clearLocks: true });
     if (browser) {
       await browser.close().catch(() => {});
       browser = null;
@@ -671,10 +673,7 @@ async function ensureBrowser() {
     log('warn', 'browser disconnected, clearing dead sessions and relaunching', {
       deadSessions: sessions.size,
     });
-    for (const [userId, session] of sessions) {
-      await session.context.close().catch(() => {});
-    }
-    sessions.clear();
+    await closeAllSessions('browser_disconnected', { persist: false, clearDownloads: true, clearLocks: true });
     // Clean up virtual display from dead browser before relaunching
     if (virtualDisplay) {
       virtualDisplay.kill();
@@ -698,6 +697,78 @@ function normalizeUserId(userId) {
   return String(userId);
 }
 
+async function checkpointSessionState(userId, session, reason) {
+  if (!CONFIG.persistenceEnabled || !session?.context) return { persisted: false, reason: 'disabled' };
+
+  const result = await persistStorageState({
+    profileDir: CONFIG.profileDir,
+    userId,
+    context: session.context,
+    logger: {
+      warn: (msg, fields = {}) => log('warn', msg, fields),
+    },
+  });
+
+  if (result.persisted) {
+    log('info', 'session state persisted', {
+      userId,
+      reason,
+      storageStatePath: result.storageStatePath,
+    });
+  }
+
+  return result;
+}
+
+function clearSessionLocks(session) {
+  if (!session?.tabGroups) return;
+  for (const [, group] of session.tabGroups) {
+    for (const tabId of group.keys()) {
+      const lock = tabLocks.get(tabId);
+      if (lock) {
+        lock.drain();
+        tabLocks.delete(tabId);
+      }
+    }
+  }
+  refreshTabLockQueueDepth();
+}
+
+async function closeSession(userId, session, {
+  reason = 'session_closed',
+  persist = true,
+  clearDownloads = true,
+  clearLocks = true,
+} = {}) {
+  if (!session) return;
+
+  const key = normalizeUserId(userId);
+
+  if (clearDownloads) {
+    await clearSessionDownloads(session).catch(() => {});
+  }
+
+  if (persist) {
+    await checkpointSessionState(key, session, reason);
+  }
+
+  await session.context.close().catch(() => {});
+  sessions.delete(key);
+
+  if (clearLocks) {
+    clearSessionLocks(session);
+  }
+
+  refreshActiveTabsGauge();
+}
+
+async function closeAllSessions(reason, { persist = true, clearDownloads = true, clearLocks = true } = {}) {
+  const openSessions = Array.from(sessions.entries());
+  for (const [userId, session] of openSessions) {
+    await closeSession(userId, session, { reason, persist, clearDownloads, clearLocks });
+  }
+}
+
 async function getSession(userId) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
@@ -709,47 +780,73 @@ async function getSession(userId) {
       session.context.pages();
     } catch (err) {
       log('warn', 'session context dead, recreating', { userId: key, error: err.message });
-      session.context.close().catch(() => {});
-      sessions.delete(key);
+      await closeSession(key, session, { reason: 'dead_context', persist: false, clearDownloads: true, clearLocks: true });
       session = null;
     }
   }
   
   if (!session) {
-    if (sessions.size >= MAX_SESSIONS) {
-      throw new Error('Maximum concurrent sessions reached');
-    }
-    const b = await ensureBrowser();
-    const contextOptions = {
-      viewport: { width: 1280, height: 720 },
-      permissions: ['geolocation'],
-    };
-    // When geoip is active (proxy configured), camoufox auto-configures
-    // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
-    if (!CONFIG.proxy.host) {
-      contextOptions.locale = 'en-US';
-      contextOptions.timezoneId = 'America/Los_Angeles';
-      contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
-    }
-    let sessionProxy = null;
-    if (proxyPool?.canRotateSessions) {
-      sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
-      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
-      log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
-    } else if (proxyPool) {
-      sessionProxy = proxyPool.getNext();
-      contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
-      log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
-    }
-    const context = await b.newContext(contextOptions);
-    
-    session = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
-    sessions.set(key, session);
-    log('info', 'session created', {
-      userId: key,
-      proxyMode: proxyPool?.mode || null,
-      proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
-      proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
+    session = await coalesceInflight(sessionCreations, key, async () => {
+      if (sessions.size >= MAX_SESSIONS) {
+        throw new Error('Maximum concurrent sessions reached');
+      }
+      const b = await ensureBrowser();
+      const contextOptions = {
+        viewport: { width: 1280, height: 720 },
+        permissions: ['geolocation'],
+      };
+      const storageStatePath = CONFIG.persistenceEnabled
+        ? await loadPersistedStorageState(CONFIG.profileDir, key, {
+            warn: (msg, fields = {}) => log('warn', msg, fields),
+          })
+        : undefined;
+      if (storageStatePath) {
+        contextOptions.storageState = storageStatePath;
+      }
+      // When geoip is active (proxy configured), camoufox auto-configures
+      // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
+      if (!CONFIG.proxy.host) {
+        contextOptions.locale = 'en-US';
+        contextOptions.timezoneId = 'America/Los_Angeles';
+        contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+      }
+      let sessionProxy = null;
+      if (proxyPool?.canRotateSessions) {
+        sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
+        contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+        log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
+      } else if (proxyPool) {
+        sessionProxy = proxyPool.getNext();
+        contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
+        log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
+      }
+      const context = await b.newContext(contextOptions);
+      const bootstrapImport = await importBootstrapCookies({
+        cookiesDir: CONFIG.cookiesDir,
+        context,
+        logger: { warn: (msg, fields = {}) => log('warn', msg, fields) },
+      });
+      const bootstrapCookiesImported = bootstrapImport.imported;
+      const bootstrapCookieSource = bootstrapImport.source;
+
+      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null };
+      sessions.set(key, created);
+
+      if (bootstrapCookiesImported > 0) {
+        await checkpointSessionState(key, created, 'bootstrap_cookies_import');
+      }
+
+      log('info', 'session created', {
+        userId: key,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
+        proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
+        restoredStorageState: !!storageStatePath,
+        storageStatePath: storageStatePath || null,
+        bootstrapCookiesImported,
+        bootstrapCookieSource,
+      });
+      return created;
     });
   }
   session.lastAccess = Date.now();
@@ -904,8 +1001,8 @@ function destroySession(userId) {
   const session = sessions.get(key);
   if (!session) return;
   log('warn', 'destroying dead session', { userId: key });
-  session.context.close().catch(() => {});
   sessions.delete(key);
+  closeSession(key, session, { reason: 'destroy_session', persist: true, clearDownloads: true, clearLocks: true }).catch(() => {});
 }
 
 function findTab(session, tabId) {
@@ -949,8 +1046,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   const key = normalizeUserId(userId);
   const oldSession = sessions.get(key);
   if (oldSession) {
-    await oldSession.context.close().catch(() => {});
-    sessions.delete(key);
+    await closeSession(key, oldSession, { reason: 'google_rotate_context', persist: true, clearDownloads: true, clearLocks: true });
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
@@ -1622,8 +1718,7 @@ async function browserTranscript(reqId, url, videoId, lang) {
         let totalTabs = 0;
         for (const g of ytSession.tabGroups.values()) totalTabs += g.size;
         if (totalTabs === 0) {
-          ytSession.context.close().catch(() => {});
-          sessions.delete(normalizeUserId('__yt_transcript__'));
+          await closeSession('__yt_transcript__', ytSession, { reason: 'yt_transcript_empty', persist: false, clearDownloads: true, clearLocks: true });
         }
       }
     }
@@ -1646,14 +1741,15 @@ app.get('/health', (req, res) => {
       ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
     });
   }
-  res.json({ 
-    ok: true, 
+  res.json({
+    ok: true,
     engine: 'camoufox',
     browserConnected: running,
     browserRunning: running,
     activeTabs: getTotalTabCount(),
     activeSessions: sessions.size,
     consecutiveFailures: healthState.consecutiveNavFailures,
+    persistenceEnabled: CONFIG.persistenceEnabled,
     ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
   });
 });
@@ -1796,8 +1892,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           const key = normalizeUserId(userId);
           const oldSession = sessions.get(key);
           if (oldSession) {
-            await oldSession.context.close().catch(() => {});
-            sessions.delete(key);
+            await closeSession(key, oldSession, { reason: 'google_blocked_context_rotate', persist: true, clearDownloads: true, clearLocks: true });
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
@@ -2599,21 +2694,7 @@ app.delete('/sessions/:userId', async (req, res) => {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
     if (session) {
-      await clearSessionDownloads(session);
-      await session.context.close();
-      sessions.delete(userId);
-      // Remove any lingering tab locks for the session
-      for (const [listItemId, group] of session.tabGroups) {
-        for (const tabId of group.keys()) {
-          const lock = tabLocks.get(tabId);
-          if (lock) {
-            lock.drain();
-            tabLocks.delete(tabId);
-          }
-        }
-      }
-      refreshTabLockQueueDepth();
-      refreshActiveTabsGauge();
+      await closeSession(userId, session, { reason: 'api_delete_session', persist: true, clearDownloads: true, clearLocks: true });
       log('info', 'session closed', { userId });
     }
     if (sessions.size === 0) scheduleBrowserIdleShutdown();
@@ -2627,13 +2708,10 @@ app.delete('/sessions/:userId', async (req, res) => {
 // Cleanup stale sessions
 setInterval(() => {
   const now = Date.now();
-  for (const [userId, session] of sessions) {
+  for (const [userId, session] of Array.from(sessions.entries())) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
       sessionsExpiredTotal.inc();
-      clearSessionDownloads(session).catch(() => {});
-      session.context.close().catch(() => {});
-      sessions.delete(userId);
-      refreshActiveTabsGauge();
+      closeSession(userId, session, { reason: 'session_timeout', persist: true, clearDownloads: true, clearLocks: true }).catch(() => {});
       log('info', 'session expired', { userId });
     }
   }
@@ -2678,11 +2756,8 @@ setInterval(() => {
     // Clean up sessions with zero tabs remaining — free browser context memory
     if (session.tabGroups.size === 0) {
       log('info', 'session empty after tab reaper, closing', { userId });
-      clearSessionDownloads(session).catch(() => {});
-      session.context.close().catch(() => {});
-      sessions.delete(userId);
+      closeSession(userId, session, { reason: 'tab_reaper_empty_session', persist: true, clearDownloads: true, clearLocks: true }).catch(() => {});
       sessionsExpiredTotal.inc();
-      refreshActiveTabsGauge();
     }
   }
   if (sessions.size === 0) scheduleBrowserIdleShutdown();
@@ -2696,13 +2771,14 @@ setInterval(() => {
 // GET / - Status (passive — does not launch browser)
 app.get('/', (req, res) => {
   const running = browser !== null && (browser.isConnected?.() ?? false);
-  res.json({ 
+  res.json({
     ok: true,
     enabled: true,
     running,
     engine: 'camoufox',
     browserConnected: running,
     browserRunning: running,
+    persistenceEnabled: CONFIG.persistenceEnabled,
   });
 });
 
@@ -3232,9 +3308,12 @@ async function gracefulShutdown(signal) {
   server.close();
   stopMemoryReporter();
 
-  for (const [userId, session] of sessions) {
-    await session.context.close().catch(() => {});
-  }
+  await closeAllSessions(`shutdown:${signal}`, {
+    persist: true,
+    clearDownloads: false,
+    clearLocks: false,
+  });
+
   if (browser) await browser.close().catch(() => {});
   process.exit(0);
 }

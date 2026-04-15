@@ -21,6 +21,17 @@ endif
 IMAGE        := camofox-browser:$(VERSION)-$(ARCH)
 CAMOUFOX_ZIP := dist/camoufox-$(ARCH).zip
 YTDLP_BIN    := dist/yt-dlp-$(ARCH)
+COOKIES_DIR  ?= $(HOME)/.camofox/cookies
+PROFILE_DIR  ?= $(HOME)/.camofox/profiles
+
+PERSISTENCE  ?=
+ifeq ($(filter 1 true yes on,$(PERSISTENCE)),)
+  PERSISTENCE_ENV   :=
+  PERSISTENCE_MOUNT :=
+else
+  PERSISTENCE_ENV   := -e CAMOFOX_PERSISTENCE=1 -e CAMOFOX_PROFILE_DIR="$(PROFILE_DIR)"
+  PERSISTENCE_MOUNT := -v "$(PROFILE_DIR):$(PROFILE_DIR)"
+endif
 
 CAMOUFOX_URL := https://github.com/daijro/camoufox/releases/download/v$(VERSION)-$(RELEASE)/camoufox-$(VERSION)-$(RELEASE)-lin.$(CAMOUFOX_ARCH).zip
 YTDLP_URL    := https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux$(YTDLP_ARCH)
@@ -63,7 +74,22 @@ up:
 	@if ! docker image inspect $(IMAGE) > /dev/null 2>&1; then \
 	  $(MAKE) build; \
 	fi
-	docker run -d --restart unless-stopped --name camofox-browser -p 9377:9377 $(IMAGE)
+ifeq ($(filter 1 true yes on,$(PERSISTENCE)),)
+	docker run -d --restart unless-stopped --name camofox-browser \
+	  -p 9377:9377 \
+	  $(IMAGE)
+else
+	@test -n "$$CAMOFOX_API_KEY" || (echo "ERROR: CAMOFOX_API_KEY must be set for PERSISTENCE mode" && exit 1)
+	@mkdir -p "$(COOKIES_DIR)" "$(PROFILE_DIR)"
+	docker run -d --restart unless-stopped --name camofox-browser \
+	  -p 9377:9377 \
+	  -e CAMOFOX_API_KEY="$$CAMOFOX_API_KEY" \
+	  -e CAMOFOX_COOKIES_DIR="$(COOKIES_DIR)" \
+	  $(PERSISTENCE_ENV) \
+	  -v "$(COOKIES_DIR):$(COOKIES_DIR):ro" \
+	  $(PERSISTENCE_MOUNT) \
+	  $(IMAGE)
+endif
 
 down:
 	docker stop camofox-browser && docker rm camofox-browser
