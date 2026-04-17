@@ -37,8 +37,16 @@ RUN apt-get update && apt-get install -y \
     # Utils
     ca-certificates \
     unzip \
+    curl \
     # yt-dlp runtime dependency
     python3-minimal \
+    # VNC stack (only used at runtime when ENABLE_VNC=1; small footprint)
+    # x11vnc attaches to the existing Xvfb; novnc + websockify expose it over http
+    x11vnc \
+    novnc \
+    python3-websockify \
+    net-tools \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-bake Camoufox browser binary into image via bind mount (downloaded by Makefile)
@@ -61,10 +69,20 @@ RUN npm install --production
 
 COPY server.js ./
 COPY lib/ ./lib/
+COPY scripts/ ./scripts/
+
+# Patch Camoufox's built-in Xvfb launcher to use a usable resolution
+# (default is 1x1 which is useless for VNC; anti-detection doesn't depend on resolution)
+RUN sed -i 's/"1x1x24"/"1920x1080x24"/g' \
+    /app/node_modules/camoufox-js/dist/virtdisplay.js \
+    && grep -q '1920x1080x24' /app/node_modules/camoufox-js/dist/virtdisplay.js \
+    && echo "Xvfb resolution patched to 1920x1080"
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=3000
 
-EXPOSE 9377
+# 9377: Camofox HTTP API
+# 6080: noVNC web interface (only active when ENABLE_VNC=1)
+EXPOSE 9377 6080
 
-CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+CMD ["sh", "/app/scripts/start.sh"]

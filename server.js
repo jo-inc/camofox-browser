@@ -246,6 +246,54 @@ app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (r
   }
 });
 
+// GET /sessions/:userId/storage_state
+// Export the full Playwright storageState (cookies + localStorage) for the user's
+// browser context. Intended use: after a human logs into a site via VNC, call
+// this endpoint to capture the resulting auth state, save it to disk, and re-inject
+// on future runs. This survives fingerprint-based session invalidation because
+// the cookies were minted by the same Camoufox fingerprint that will re-use them.
+//
+// Auth: same policy as POST /sessions/:userId/cookies (CAMOFOX_API_KEY or loopback).
+app.get('/sessions/:userId/storage_state', async (req, res) => {
+  try {
+    if (CONFIG.apiKey) {
+      const apiKey = CONFIG.apiKey;
+      const auth = String(req.headers['authorization'] || '');
+      const match = auth.match(/^Bearer\s+(.+)$/i);
+      if (!match || !timingSafeCompare(match[1], apiKey)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else {
+      const remoteAddress = req.socket?.remoteAddress || '';
+      const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
+      if (!allowUnauthedLocal) {
+        return res.status(403).json({
+          error:
+            'storage_state export is disabled without CAMOFOX_API_KEY except for loopback requests in non-production environments.',
+        });
+      }
+    }
+
+    const userId = req.params.userId;
+    const session = sessions.get(String(userId));
+    if (!session) {
+      return res.status(404).json({ error: `No active session for userId="${userId}"` });
+    }
+
+    const state = await session.context.storageState();
+    log('info', 'storage_state exported', {
+      reqId: req.reqId,
+      userId: String(userId),
+      cookies: state.cookies?.length || 0,
+      origins: state.origins?.length || 0,
+    });
+    res.json(state);
+  } catch (err) {
+    log('error', 'storage_state export failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
 let browser = null;
 // userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
