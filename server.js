@@ -15,19 +15,24 @@ import {
   clearSessionDownloads,
   attachDownloadListener,
   getDownloadsList,
-  extractPageImages,
 } from './lib/downloads.js';
+import { extractPageImages } from './lib/images.js';
 import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseVtt, parseXml } from './lib/youtube.js';
 import {
-  register as metricsRegister,
-  requestsTotal, requestDuration, pageLoadDuration, snapshotBytes,
-  activeTabsGauge, tabLockQueueDepth,
-  tabLockTimeoutsTotal, startMemoryReporter, stopMemoryReporter, actionFromReq,
-  failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
-  sessionsExpiredTotal, tabsReapedTotal, tabsRecycledTotal, classifyError,
+  initMetrics, getRegister, isMetricsEnabled,
+  startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
+import { actionFromReq, classifyError } from './lib/request-utils.js';
 
 const CONFIG = loadConfig();
+
+const {
+  requestsTotal, requestDuration, pageLoadDuration, snapshotBytes,
+  activeTabsGauge, tabLockQueueDepth,
+  tabLockTimeoutsTotal,
+  failuresTotal, browserRestartsTotal, tabsDestroyedTotal,
+  sessionsExpiredTotal, tabsReapedTotal, tabsRecycledTotal,
+} = await initMetrics({ enabled: CONFIG.prometheusEnabled });
 
 // --- Structured logging ---
 function log(level, msg, fields = {}) {
@@ -1283,16 +1288,20 @@ async function buildRefs(page) {
   const start = Date.now();
   
   // Hard total timeout on the entire buildRefs operation
-  const timeoutPromise = new Promise((_, reject) => 
-    setTimeout(() => reject(new Error('buildRefs_timeout')), BUILDREFS_TIMEOUT_MS)
-  );
+  let timerId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => reject(new Error('buildRefs_timeout')), BUILDREFS_TIMEOUT_MS);
+  });
   
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       _buildRefsInner(page, refs, start),
       timeoutPromise
     ]);
+    clearTimeout(timerId);
+    return result;
   } catch (err) {
+    clearTimeout(timerId);
     if (err.message === 'buildRefs_timeout') {
       log('warn', 'buildRefs: total timeout exceeded', { elapsed: Date.now() - start });
       return refs;
@@ -1608,6 +1617,16 @@ async function browserTranscript(reqId, url, videoId, lang) {
       };
     } finally {
       await safePageClose(page);
+      // Clean up phantom transcript session if no tabs remain
+      const ytSession = sessions.get(normalizeUserId('__yt_transcript__'));
+      if (ytSession) {
+        let totalTabs = 0;
+        for (const g of ytSession.tabGroups.values()) totalTabs += g.size;
+        if (totalTabs === 0) {
+          ytSession.context.close().catch(() => {});
+          sessions.delete(normalizeUserId('__yt_transcript__'));
+        }
+      }
     }
   });
 }
@@ -1641,8 +1660,13 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/metrics', async (_req, res) => {
-  res.set('Content-Type', metricsRegister.contentType);
-  res.send(await metricsRegister.metrics());
+  const reg = getRegister();
+  if (!reg) {
+    res.status(404).json({ error: 'Prometheus metrics disabled. Set PROMETHEUS_ENABLED=1 to enable.' });
+    return;
+  }
+  res.set('Content-Type', reg.contentType);
+  res.send(await reg.metrics());
 });
 
 // Create new tab
@@ -2265,8 +2289,9 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    const delta = direction === 'up' ? -amount : amount;
-    await tabState.page.mouse.wheel(0, delta);
+    const isVertical = direction === 'up' || direction === 'down';
+    const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
+    await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
     await tabState.page.waitForTimeout(300);
     
     res.json({ ok: true });
@@ -2532,7 +2557,8 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 // Close tab
 app.delete('/tabs/:tabId', async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.query.userId || req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required (query or body)' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (found) {
@@ -2557,7 +2583,8 @@ app.delete('/tabs/:tabId', async (req, res) => {
 // Close tab group
 app.delete('/tabs/group/:listItemId', async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.query.userId || req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required (query or body)' });
     const session = sessions.get(normalizeUserId(userId));
     const group = session?.tabGroups.get(req.params.listItemId);
     if (group) {
@@ -2664,7 +2691,17 @@ setInterval(() => {
         session.tabGroups.delete(listItemId);
       }
     }
+    // Clean up sessions with zero tabs remaining — free browser context memory
+    if (session.tabGroups.size === 0) {
+      log('info', 'session empty after tab reaper, closing', { userId });
+      clearSessionDownloads(session).catch(() => {});
+      session.context.close().catch(() => {});
+      sessions.delete(userId);
+      sessionsExpiredTotal.inc();
+      refreshActiveTabsGauge();
+    }
   }
+  if (sessions.size === 0) scheduleBrowserIdleShutdown();
 }, 60_000);
 
 // =============================================================================
@@ -3078,8 +3115,9 @@ app.post('/act', async (req, res) => {
             if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
             await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
           } else {
-            const delta = direction === 'up' ? -amount : amount;
-            await tabState.page.mouse.wheel(0, delta);
+            const isVertical = direction === 'up' || direction === 'down';
+            const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
+            await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
           }
           await tabState.page.waitForTimeout(300);
           return { ok: true, targetId };

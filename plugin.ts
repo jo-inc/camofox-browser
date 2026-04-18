@@ -151,6 +151,7 @@ async function startServer(
       // Server not ready yet
     }
   }
+  proc.kill();
   throw new Error("Server failed to start within 15 seconds");
 }
 
@@ -398,6 +399,13 @@ export default function register(api: PluginApi) {
         const text = await res.text();
         throw new Error(`${res.status}: ${text}`);
       }
+      // Guard: if server returns JSON/text instead of image (e.g. error with 200),
+      // return as text to avoid crashing the client with base64-encoded JSON.
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.startsWith('image/')) {
+        const text = await res.text();
+        return { content: [{ type: "text", text: `Screenshot failed: ${text}` }] };
+      }
       const arrayBuffer = await res.arrayBuffer();
       const base64 = Buffer.from(arrayBuffer).toString("base64");
       return {
@@ -405,7 +413,7 @@ export default function register(api: PluginApi) {
           {
             type: "image",
             data: base64,
-            mimeType: "image/png",
+            mimeType: contentType || "image/png",
           },
         ],
       };
