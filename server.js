@@ -2216,7 +2216,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
   const tabId = req.params.tabId;
   
   try {
-    const { userId, ref, selector, text } = req.body;
+    const { userId, ref, selector, text, mode = 'fill', delay = 30, submit = false, pressEnter = false } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
@@ -2224,23 +2224,47 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
     
-    if (!ref && !selector) {
-      return res.status(400).json({ error: 'ref or selector required' });
+    if (mode !== 'fill' && mode !== 'keyboard') {
+      return res.status(400).json({ error: "mode must be 'fill' or 'keyboard'" });
     }
+    if (typeof text !== 'string') {
+      return res.status(400).json({ error: 'text is required' });
+    }
+    // keyboard mode: ref/selector are optional (types into current focus)
+    if (mode === 'fill' && !ref && !selector) {
+      return res.status(400).json({ error: 'ref or selector required for mode=fill' });
+    }
+    const shouldSubmit = submit || pressEnter;
     
     await withTabLock(tabId, async () => {
+      // Resolve and focus the target if ref/selector provided
+      let locator = null;
       if (ref) {
-        let locator = refToLocator(tabState.page, ref, tabState.refs);
+        locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
-          log('info', 'auto-refreshing refs before fill', { ref, hadRefs: tabState.refs.size });
+          log('info', 'auto-refreshing refs before type', { ref, hadRefs: tabState.refs.size, mode });
           tabState.refs = await refreshTabRefs(tabState, { reason: 'type' });
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
         if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
-        await locator.fill(text, { timeout: 10000 });
-      } else {
-        await tabState.page.fill(selector, text, { timeout: 10000 });
       }
+      
+      if (mode === 'fill') {
+        if (locator) {
+          await locator.fill(text, { timeout: 10000 });
+        } else {
+          await tabState.page.fill(selector, text, { timeout: 10000 });
+        }
+      } else {
+        // keyboard mode — char-by-char real key events (required for Ember/contenteditable)
+        if (locator) {
+          await locator.focus({ timeout: 10000 });
+        } else if (selector) {
+          await tabState.page.focus(selector, { timeout: 10000 });
+        }
+        await tabState.page.keyboard.type(text, { delay });
+      }
+      if (shouldSubmit) await tabState.page.keyboard.press('Enter');
     });
     
     res.json({ ok: true });
@@ -3087,28 +3111,43 @@ app.post('/act', async (req, res) => {
         }
         
         case 'type': {
-          const { ref, selector, text, submit } = params;
-          if (!ref && !selector) {
-            throw new Error('ref or selector required');
+          const { ref, selector, text, submit, mode = 'fill', delay = 30 } = params;
+          if (mode === 'fill' && !ref && !selector) {
+            throw new Error('ref or selector required for mode=fill');
           }
           if (typeof text !== 'string') {
             throw new Error('text is required');
           }
+          if (mode !== 'fill' && mode !== 'keyboard') {
+            throw new Error("mode must be 'fill' or 'keyboard'");
+          }
           
+          let locator = null;
           if (ref) {
-            let locator = refToLocator(tabState.page, ref, tabState.refs);
+            locator = refToLocator(tabState.page, ref, tabState.refs);
             if (!locator) {
-              log('info', 'auto-refreshing refs before type (openclaw)', { ref, hadRefs: tabState.refs.size });
+              log('info', 'auto-refreshing refs before type (openclaw)', { ref, hadRefs: tabState.refs.size, mode });
               tabState.refs = await buildRefs(tabState.page);
               locator = refToLocator(tabState.page, ref, tabState.refs);
             }
             if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
-            await locator.fill(text, { timeout: 10000 });
-            if (submit) await tabState.page.keyboard.press('Enter');
-          } else {
-            await tabState.page.fill(selector, text, { timeout: 10000 });
-            if (submit) await tabState.page.keyboard.press('Enter');
           }
+          
+          if (mode === 'fill') {
+            if (locator) {
+              await locator.fill(text, { timeout: 10000 });
+            } else {
+              await tabState.page.fill(selector, text, { timeout: 10000 });
+            }
+          } else {
+            if (locator) {
+              await locator.focus({ timeout: 10000 });
+            } else if (selector) {
+              await tabState.page.focus(selector, { timeout: 10000 });
+            }
+            await tabState.page.keyboard.type(text, { delay });
+          }
+          if (submit) await tabState.page.keyboard.press('Enter');
           return { ok: true, targetId };
         }
         
