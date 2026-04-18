@@ -69,6 +69,10 @@ COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 
+# Install default plugin dependencies (apt packages + post-install hooks)
+# Default plugins are shipped in plugins/ and listed in openclaw.plugin.json
+RUN scripts/install-plugin-deps.sh
+
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
 
@@ -76,12 +80,8 @@ EXPOSE 9377
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
 
-# Optional: build with plugin system dependencies (apt packages from plugins/*/apt.txt)
+# Optional: rebuild plugin deps after adding third-party plugins
 # Usage: docker build --target with-plugins -t camofox-browser .
 FROM camofox-browser AS with-plugins
 COPY scripts/install-plugin-deps.sh /tmp/install-plugin-deps.sh
 RUN /tmp/install-plugin-deps.sh && rm /tmp/install-plugin-deps.sh
-
-# Install yt-dlp for YouTube transcript plugin
-RUN curl -fL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp

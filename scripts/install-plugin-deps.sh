@@ -23,3 +23,11 @@ fi
 
 echo "[install-plugin-deps] Installing:$PKGS"
 apt-get update && apt-get install -y $PKGS && rm -rf /var/lib/apt/lists/*
+
+# Run post-install hooks (e.g. binary downloads not available via apt)
+for hook in /app/plugins/*/post-install.sh; do
+  [ -x "$hook" ] || continue
+  plugin_name=$(basename "$(dirname "$hook")")
+  echo "[install-plugin-deps] Running post-install for $plugin_name"
+  "$hook"
+done

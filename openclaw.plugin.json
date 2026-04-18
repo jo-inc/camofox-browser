@@ -48,6 +48,7 @@
     },
     "additionalProperties": false
   },
+  "defaultPlugins": ["youtube"],
   "uiHints": {
     "url": {
       "label": "Server URL",
