@@ -704,14 +704,19 @@ async function getSession(userId) {
   
   // Check if existing session's context is still alive
   if (session) {
-    try {
-      // Lightweight probe: pages() is synchronous-ish and throws if context is dead
-      session.context.pages();
-    } catch (err) {
-      log('warn', 'session context dead, recreating', { userId: key, error: err.message });
-      session.context.close().catch(() => {});
-      sessions.delete(key);
+    if (session._closing) {
+      // Session is being torn down by reaper/expiry — treat as dead
       session = null;
+    } else {
+      try {
+        // Lightweight probe: pages() is synchronous-ish and throws if context is dead
+        session.context.pages();
+      } catch (err) {
+        log('warn', 'session context dead, recreating', { userId: key, error: err.message });
+        session.context.close().catch(() => {});
+        sessions.delete(key);
+        session = null;
+      }
     }
   }
   
@@ -1617,14 +1622,22 @@ async function browserTranscript(reqId, url, videoId, lang) {
       };
     } finally {
       await safePageClose(page);
-      // Clean up phantom transcript session if no tabs remain
-      const ytSession = sessions.get(normalizeUserId('__yt_transcript__'));
-      if (ytSession) {
-        let totalTabs = 0;
-        for (const g of ytSession.tabGroups.values()) totalTabs += g.size;
-        if (totalTabs === 0) {
-          ytSession.context.close().catch(() => {});
-          sessions.delete(normalizeUserId('__yt_transcript__'));
+      // Clean up transcript session if no live pages remain.
+      // YT transcript pages aren't tracked in tabGroups, so we must check
+      // actual context pages to avoid closing while concurrent requests are active.
+      const ytKey = normalizeUserId('__yt_transcript__');
+      const ytSession = sessions.get(ytKey);
+      if (ytSession && !ytSession._closing) {
+        try {
+          const remainingPages = ytSession.context.pages();
+          if (remainingPages.length === 0) {
+            ytSession._closing = true;
+            ytSession.context.close().catch(() => {});
+            sessions.delete(ytKey);
+          }
+        } catch {
+          // Context already dead — just clean up the map entry
+          sessions.delete(ytKey);
         }
       }
     }
@@ -2645,6 +2658,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of sessions) {
     if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      session._closing = true;
       sessionsExpiredTotal.inc();
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
@@ -2693,6 +2707,7 @@ setInterval(() => {
     }
     // Clean up sessions with zero tabs remaining — free browser context memory
     if (session.tabGroups.size === 0) {
+      session._closing = true;
       log('info', 'session empty after tab reaper, closing', { userId });
       clearSessionDownloads(session).catch(() => {});
       session.context.close().catch(() => {});
