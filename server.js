@@ -19,6 +19,7 @@ import {
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
+import { openApiSpec } from './lib/openapi-spec.js';
 
 import {
   initMetrics, getRegister, isMetricsEnabled, createMetric,
@@ -2603,6 +2604,30 @@ setInterval(() => {
 // OpenClaw-compatible endpoint aliases
 // These allow camoufox to be used as a profile backend for OpenClaw's browser tool
 // =============================================================================
+
+// GET /openapi.json - Machine-readable API description
+app.get('/openapi.json', (_req, res) => {
+  res.json(openApiSpec);
+});
+
+// GET /docs - HTML viewer for the OpenAPI spec (Redoc via CDN)
+const REDOC_HTML = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>camofox-browser API</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+  <style>body { margin: 0; padding: 0; }</style>
+</head>
+<body>
+  <redoc spec-url="/openapi.json"></redoc>
+  <script src="https://cdn.redocly.com/redoc/latest/bundles/redoc.standalone.js"></script>
+</body>
+</html>`;
+app.get('/docs', (_req, res) => {
+  res.type('html').send(REDOC_HTML);
+});
 
 // GET / - Status (passive — does not launch browser)
 app.get('/', (req, res) => {

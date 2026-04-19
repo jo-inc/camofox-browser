@@ -51,6 +51,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
 - **Deploy Anywhere** - Docker, Fly.io, Railway
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
+- **OpenAPI Spec** - machine-readable API description at `/openapi.json`, rendered HTML viewer at `/docs`
 
 ## Optional Dependencies
 
@@ -80,6 +81,8 @@ npm start  # downloads Camoufox on first run (~300MB)
 ```
 
 Default port is `9377`. See [Environment Variables](#environment-variables) for all options.
+
+Once running, open `http://localhost:9377/docs` for interactive API docs, or fetch the raw spec at `http://localhost:9377/openapi.json`.
 
 ### Docker
 
