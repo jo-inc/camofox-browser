@@ -52,6 +52,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Deploy Anywhere** - Docker, Fly.io, Railway
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
+- **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
 
 ## Optional Dependencies
 

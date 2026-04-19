@@ -19,6 +19,7 @@ import {
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
+import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
 
 import {
   initMetrics, getRegister, isMetricsEnabled, createMetric,
@@ -3439,6 +3440,46 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
   } catch (err) {
     failuresTotal.labels(classifyError(err), 'evaluate').inc();
     log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// Structured extraction using JSON Schema with x-ref hints
+app.post('/tabs/:tabId/extract', express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const { userId, schema } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    if (!schema) return res.status(400).json({ error: 'schema is required' });
+
+    const check = validateExtractSchema(schema);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+
+    if (!tabState.refs || tabState.refs.size === 0) {
+      return res.status(409).json({
+        error: 'no refs available — call GET /tabs/:tabId/snapshot first to build the ref table',
+        snapshot: tabState.lastSnapshot || null,
+      });
+    }
+
+    try {
+      const data = extractDeterministic({ schema, refs: tabState.refs });
+      log('info', 'extract', { reqId: req.reqId, tabId: req.params.tabId, userId, keys: Object.keys(data) });
+      res.json({ ok: true, data });
+    } catch (extractErr) {
+      log('warn', 'extract failed', { reqId: req.reqId, error: extractErr.message });
+      res.status(422).json({ ok: false, error: extractErr.message, snapshot: tabState.lastSnapshot || null });
+    }
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'extract').inc();
+    log('error', 'extract error', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });
