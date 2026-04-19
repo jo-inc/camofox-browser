@@ -53,6 +53,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 - **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
+- **Session Tracing** - opt-in per-session Playwright trace capture (screenshots + DOM snapshots + network) with API endpoints to list, fetch, and delete trace zips
 
 ## Optional Dependencies
 
@@ -194,6 +195,48 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 ```
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
+
+### Session Tracing
+
+Capture a Playwright trace of every action in a session: page screenshots, DOM snapshots, network requests, and console output. Output is a single `.zip` file you can open in Playwright's built-in Trace Viewer.
+
+Opt-in per session by passing `trace: true` when opening the first tab:
+
+```bash
+curl -X POST http://localhost:9377/tabs \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"agent1","sessionKey":"task1","url":"https://example.com","trace":true}'
+```
+
+The trace is written when the session closes. Close the session to flush it, then list, fetch, and view:
+
+```bash
+# Close the session to flush the trace
+curl -X DELETE http://localhost:9377/sessions/agent1
+
+# List trace files
+curl http://localhost:9377/sessions/agent1/traces
+# {"traces":[{"filename":"trace-2026-04-18T04-05-00-...zip","sizeBytes":42810,"createdAt":...}]}
+
+# Download (Content-Type: application/zip)
+curl http://localhost:9377/sessions/agent1/traces/trace-2026-04-18T04-05-00-abc.zip > session.zip
+
+# View it in Playwright's Trace Viewer
+npx playwright show-trace session.zip
+
+# Delete
+curl -X DELETE http://localhost:9377/sessions/agent1/traces/trace-2026-04-18T04-05-00-abc.zip
+```
+
+Why traces instead of video: Camoufox is Firefox-based, and Playwright's `recordVideo` is Chromium-only. Traces work on Firefox and give you more than video (network + DOM + console + screenshots).
+
+Tracing cannot be toggled on an existing session. `DELETE /sessions/:userId` first if you need to change the flag.
+
+Storage defaults to `~/.camofox/traces/<hashed-userId>/` and is swept on server startup:
+
+- `CAMOFOX_TRACES_DIR` - base directory (default: `~/.camofox/traces`)
+- `CAMOFOX_TRACES_MAX_BYTES` - max size per trace, removed at next startup if exceeded (default: 50MB)
+- `CAMOFOX_TRACES_TTL_HOURS` - traces older than this are removed at next startup (default: 24)
 
 #### Standalone server usage
 
@@ -383,6 +426,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
+| `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
+| `CAMOFOX_TRACES_MAX_BYTES` | Max size per trace, removed on next startup if exceeded | `52428800` (50MB) |
+| `CAMOFOX_TRACES_TTL_HOURS` | Traces older than this are swept on startup | `24` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
