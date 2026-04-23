@@ -32,7 +32,7 @@ build/
 .DS_Store
 Thumbs.db
 
-.github/
+# .github/ — removed to allow CI workflow tracking
 fly.toml
 railway.toml
 
