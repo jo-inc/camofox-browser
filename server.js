@@ -726,6 +726,7 @@ async function closeSession(userId, session, {
     await clearSessionDownloads(session).catch(() => {});
   }
 
+  await pluginEvents.emitAsync('session:destroying', { userId: key, reason });
   await session.context.close().catch(() => {});
   sessions.delete(key);
   await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });

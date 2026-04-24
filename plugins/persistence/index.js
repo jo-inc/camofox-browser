@@ -100,14 +100,18 @@ export async function register(app, ctx, pluginConfig = {}) {
     }
   });
 
-  // On session destroy: checkpoint then remove from tracking
-  events.on('session:destroyed', async ({ userId, reason }) => {
+  // On session destroying (pre-close): checkpoint while context is still alive
+  events.on('session:destroying', async ({ userId, reason }) => {
     const context = activeSessions.get(userId);
     if (context) {
-      // Context may already be closed — checkpoint will fail gracefully
       await checkpoint(userId, context, reason).catch(() => {});
       activeSessions.delete(userId);
     }
+  });
+
+  // On session destroyed (post-close): cleanup tracking if not already done
+  events.on('session:destroyed', async ({ userId }) => {
+    activeSessions.delete(userId);
   });
 
   // On shutdown: checkpoint all remaining sessions

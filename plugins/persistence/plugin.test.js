@@ -68,7 +68,7 @@ describe('persistence plugin', () => {
     expect(saved.cookies[0].name).toBe('x');
   });
 
-  test('checkpoints on session:destroyed', async () => {
+  test('checkpoints on session:destroying', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
 
     const mockContext = {
@@ -78,7 +78,7 @@ describe('persistence plugin', () => {
     };
 
     await events.emitAsync('session:created', { userId: 'user-3', context: mockContext });
-    await events.emitAsync('session:destroyed', { userId: 'user-3', reason: 'test' });
+    await events.emitAsync('session:destroying', { userId: 'user-3', reason: 'test' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
   });
