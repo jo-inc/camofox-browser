@@ -39,6 +39,7 @@ When running with Docker, mount the profile directory as a volume:
 ```bash
 docker run -d \
   -p 9377:9377 \
+  -e CAMOFOX_PROFILE_DIR=/data/profiles \
   -v /host/profiles:/data/profiles \
   camofox-browser
 ```

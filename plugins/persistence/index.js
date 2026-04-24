@@ -104,7 +104,7 @@ export async function register(app, ctx, pluginConfig = {}) {
   events.on('session:destroyed', async ({ userId, reason }) => {
     const context = activeSessions.get(userId);
     if (context) {
-      // Context may already be closed — checkpoint will fail gracefully
+      // Core emits before closing the context so final storage can be read.
       await checkpoint(userId, context, reason).catch(() => {});
       activeSessions.delete(userId);
     }

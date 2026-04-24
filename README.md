@@ -207,9 +207,13 @@ curl -X POST http://localhost:9377/sessions/agent1/cookies \
 ```bash
 docker run -p 9377:9377 \
   -e CAMOFOX_API_KEY="your-generated-key" \
+  -e CAMOFOX_PROFILE_DIR=/data/profiles \
   -v ~/.camofox/cookies:/home/node/.camofox/cookies:ro \
+  -v ~/.camofox/profiles:/data/profiles \
   camofox-browser
 ```
+
+Mount `CAMOFOX_PROFILE_DIR` to a host volume in Docker; otherwise the default profile directory lives inside the container and is lost when the container is removed.
 
 For Fly.io:
 ```bash

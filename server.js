@@ -721,14 +721,18 @@ async function closeSession(userId, session, {
   if (!session) return;
 
   const key = normalizeUserId(userId);
+  session._closing = true;
+  sessions.delete(key);
 
   if (clearDownloads) {
     await clearSessionDownloads(session).catch(() => {});
   }
 
-  await session.context.close().catch(() => {});
-  sessions.delete(key);
-  await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
+  try {
+    await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
+  } finally {
+    await session.context.close().catch(() => {});
+  }
 
   if (clearLocks) {
     clearSessionLocks(session);
