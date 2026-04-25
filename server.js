@@ -3445,6 +3445,117 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 });
 
 // Structured extraction using JSON Schema with x-ref hints
+/**
+ * @openapi
+ * /tabs/{tabId}/extract:
+ *   post:
+ *     tags: [Content]
+ *     summary: Structured data extraction via JSON Schema
+ *     description: |
+ *       Extracts structured data from the current page using a JSON Schema whose properties
+ *       carry `x-ref` hints pointing at snapshot element refs (e.g. `e1`, `e2`).  
+ *       Call `GET /tabs/{tabId}/snapshot` first to populate the ref table.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, schema]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               schema:
+ *                 type: object
+ *                 description: |
+ *                   JSON Schema with `type: "object"` and a `properties` map.  
+ *                   Each property may include `x-ref` (a snapshot element ref) and an optional
+ *                   `type` (`string`, `number`, `integer`, `boolean`).
+ *                 required: [type, properties]
+ *                 properties:
+ *                   type:
+ *                     type: string
+ *                     enum: [object]
+ *                   properties:
+ *                     type: object
+ *                     additionalProperties:
+ *                       type: object
+ *                       properties:
+ *                         type:
+ *                           type: string
+ *                           enum: [string, number, integer, boolean, object, "null"]
+ *                         x-ref:
+ *                           type: string
+ *                           description: Snapshot element ref (e.g. `e1`).
+ *                   required:
+ *                     type: array
+ *                     items:
+ *                       type: string
+ *                     description: Property names that must resolve to a non-null value.
+ *     responses:
+ *       200:
+ *         description: Extraction succeeded.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   description: Extracted key-value pairs matching the input schema.
+ *       400:
+ *         description: Missing userId, missing schema, or invalid schema.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: No refs available — call snapshot first.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                 snapshot:
+ *                   type: string
+ *                   nullable: true
+ *       422:
+ *         description: Extraction failed (e.g. required ref not found).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 error:
+ *                   type: string
+ *                 snapshot:
+ *                   type: string
+ *                   nullable: true
+ *       500:
+ *         description: Internal server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/extract', express.json({ limit: '256kb' }), async (req, res) => {
   try {
     const { userId, schema } = req.body;

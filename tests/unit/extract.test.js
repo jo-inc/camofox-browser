@@ -4,6 +4,78 @@ function makeRefs(entries) {
   return new Map(entries);
 }
 
+// ---------------------------------------------------------------------------
+// Simulate the POST /tabs/:tabId/extract handler logic without a real server.
+// This mirrors the exact decision tree in server.js so we can unit-test every
+// HTTP-level status code path.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal replica of the extract route handler.
+ * Accepts the same {userId, schema} body plus a sessions Map and tabId.
+ * Returns { status, body } matching what the endpoint would send.
+ */
+function simulateExtractHandler({ tabId, body, sessions }) {
+  const { userId, schema } = body || {};
+  if (!userId) return { status: 400, body: { error: 'userId is required' } };
+  if (!schema) return { status: 400, body: { error: 'schema is required' } };
+
+  const check = validateSchema(schema);
+  if (!check.ok) return { status: 400, body: { error: check.error } };
+
+  const normalizedId = String(userId);
+  const session = sessions.get(normalizedId);
+  // findTab replica: search tabGroups for matching tabId
+  let tabState = null;
+  if (session) {
+    for (const [, group] of session.tabGroups) {
+      const ts = group.get(tabId);
+      if (ts) { tabState = ts; break; }
+    }
+  }
+  if (!tabState) return { status: 404, body: { error: 'Tab not found' } };
+
+  session.lastAccess = Date.now();
+  tabState.toolCalls++;
+  tabState.consecutiveTimeouts = 0;
+
+  if (!tabState.refs || tabState.refs.size === 0) {
+    return {
+      status: 409,
+      body: {
+        error: 'no refs available — call GET /tabs/:tabId/snapshot first to build the ref table',
+        snapshot: tabState.lastSnapshot || null,
+      },
+    };
+  }
+
+  try {
+    const data = extractDeterministic({ schema, refs: tabState.refs });
+    return { status: 200, body: { ok: true, data } };
+  } catch (extractErr) {
+    return {
+      status: 422,
+      body: { ok: false, error: extractErr.message, snapshot: tabState.lastSnapshot || null },
+    };
+  }
+}
+
+/** Build a sessions Map containing one user + one tab for testing. */
+function buildSessions({ userId = 'u1', tabId = 't1', refs = null, lastSnapshot = null } = {}) {
+  const tabState = {
+    refs,
+    lastSnapshot,
+    toolCalls: 0,
+    consecutiveTimeouts: 0,
+  };
+  const tabGroup = new Map([[tabId, tabState]]);
+  const session = {
+    tabGroups: new Map([['default', tabGroup]]),
+    lastAccess: 0,
+  };
+  return { sessions: new Map([[userId, session]]), tabState };
+}
+
 describe('validateSchema', () => {
   test('rejects missing schema', () => {
     expect(validateSchema(null).ok).toBe(false);
@@ -161,5 +233,291 @@ describe('extractDeterministic', () => {
       linkText: 'Learn more',
       buttonLabel: 'Submit',
     });
+  });
+});
+
+// ===========================================================================
+// Endpoint handler simulation tests
+// These exercise the same logic as POST /tabs/:tabId/extract without a server.
+// ===========================================================================
+
+describe('POST /tabs/:tabId/extract (handler logic)', () => {
+  const PAGE_REFS = makeRefs([
+    ['e1', { role: 'heading', name: 'Example Domain', nth: 0 }],
+    ['e2', { role: 'link', name: 'Learn more', nth: 0 }],
+    ['e3', { role: 'button', name: 'Submit', nth: 0 }],
+    ['e4', { role: 'text', name: '  42  ', nth: 0 }],
+    ['e5', { role: 'text', name: '$19.99', nth: 0 }],
+    ['e6', { role: 'text', name: 'true', nth: 0 }],
+  ]);
+
+  // --- 200: successful extraction -------------------------------------------
+
+  test('200: extracts multiple properties with mixed types', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: {
+          type: 'object',
+          properties: {
+            title:  { type: 'string',  'x-ref': 'e1' },
+            link:   { type: 'string',  'x-ref': 'e2' },
+            count:  { type: 'integer', 'x-ref': 'e4' },
+            price:  { type: 'number',  'x-ref': 'e5' },
+            flag:   { type: 'boolean', 'x-ref': 'e6' },
+          },
+          required: ['title'],
+        },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual({
+      title: 'Example Domain',
+      link:  'Learn more',
+      count: 42,
+      price: 19.99,
+      flag:  true,
+    });
+  });
+
+  test('200: optional missing ref resolves to null', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: {
+          type: 'object',
+          properties: {
+            present: { type: 'string', 'x-ref': 'e1' },
+            absent:  { type: 'string', 'x-ref': 'e9999' },
+          },
+        },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(200);
+    expect(body.data.present).toBe('Example Domain');
+    expect(body.data.absent).toBeNull();
+  });
+
+  test('200: increments toolCalls on success', () => {
+    const { sessions, tabState } = buildSessions({ refs: PAGE_REFS });
+    expect(tabState.toolCalls).toBe(0);
+
+    simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: {
+          type: 'object',
+          properties: { x: { type: 'string', 'x-ref': 'e1' } },
+        },
+      },
+      sessions,
+    });
+
+    expect(tabState.toolCalls).toBe(1);
+  });
+
+  // --- 400: bad requests ----------------------------------------------------
+
+  test('400: missing userId', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: { schema: { type: 'object', properties: {} } },
+      sessions,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/userId/i);
+  });
+
+  test('400: missing schema', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: { userId: 'u1' },
+      sessions,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/schema/i);
+  });
+
+  test('400: schema with unsupported type', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: { type: 'object', properties: { x: { type: 'foobar' } } },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/foobar/);
+  });
+
+  test('400: schema root type is not object', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: { type: 'array', items: { type: 'string' } },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/object/i);
+  });
+
+  test('400: schema missing properties key', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: { type: 'object' },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/properties/i);
+  });
+
+  test('400: empty body', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {},
+      sessions,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/userId/i);
+  });
+
+  // --- 404: tab not found ---------------------------------------------------
+
+  test('404: nonexistent tab', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 'does-not-exist',
+      body: {
+        userId: 'u1',
+        schema: { type: 'object', properties: { x: { type: 'string', 'x-ref': 'e1' } } },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(404);
+    expect(body.error).toMatch(/not found/i);
+  });
+
+  test('404: valid tab but wrong userId', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'wrong-user',
+        schema: { type: 'object', properties: { x: { type: 'string', 'x-ref': 'e1' } } },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(404);
+    expect(body.error).toMatch(/not found/i);
+  });
+
+  // --- 409: no refs (snapshot not called) ------------------------------------
+
+  test('409: refs is null (snapshot never called)', () => {
+    const { sessions } = buildSessions({ refs: null, lastSnapshot: null });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: { type: 'object', properties: { x: { type: 'string', 'x-ref': 'e1' } } },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(409);
+    expect(body.error).toMatch(/refs/i);
+    expect(body.snapshot).toBeNull();
+  });
+
+  test('409: refs is empty Map', () => {
+    const { sessions } = buildSessions({ refs: new Map(), lastSnapshot: 'some old snapshot' });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: { type: 'object', properties: { x: { type: 'string', 'x-ref': 'e1' } } },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(409);
+    expect(body.error).toMatch(/refs/i);
+    expect(body.snapshot).toBe('some old snapshot');
+  });
+
+  // --- 422: extraction failure (required ref missing) -----------------------
+
+  test('422: required property ref not in ref table', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS, lastSnapshot: '[heading e1] Example' });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: {
+          type: 'object',
+          properties: { missing: { type: 'string', 'x-ref': 'e9999' } },
+          required: ['missing'],
+        },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(422);
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/required/);
+    expect(body.snapshot).toBe('[heading e1] Example');
+  });
+
+  test('422: multiple required, second one missing', () => {
+    const { sessions } = buildSessions({ refs: PAGE_REFS });
+    const { status, body } = simulateExtractHandler({
+      tabId: 't1',
+      body: {
+        userId: 'u1',
+        schema: {
+          type: 'object',
+          properties: {
+            title:   { type: 'string', 'x-ref': 'e1' },
+            phantom: { type: 'string', 'x-ref': 'e8888' },
+          },
+          required: ['title', 'phantom'],
+        },
+      },
+      sessions,
+    });
+
+    expect(status).toBe(422);
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/phantom/);
   });
 });
