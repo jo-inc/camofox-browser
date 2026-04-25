@@ -346,6 +346,22 @@ export CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo
 export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
 ```
 
+#### Reporting to your own repo
+
+By default, reports go to `jo-inc/camofox-browser`. To file issues in your own repo instead, create a GitHub App:
+
+1. Go to **Settings → Developer settings → GitHub Apps → New GitHub App**
+2. Set permissions: **Repository → Issues → Read & Write**. Uncheck **Webhook → Active**.
+3. Click **Generate a private key** — downloads a `.pem` file
+4. Install the app on your target repo (Install App → select repo)
+5. Note your **App ID** (number on the app's settings page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
+6. Base64-encode the private key and split it into two halves:
+   ```bash
+   base64 < your-app.pem | tr -d '\n' | fold -w $(($(base64 < your-app.pem | tr -d '\n' | wc -c) / 2)) | head -2
+   ```
+7. Replace `_GH_APP_ID`, `_GH_INSTALL_ID`, `_K_A`, and `_K_B` in `lib/reporter.js` with your values
+8. Set `CAMOFOX_CRASH_REPORT_REPO=your-org/your-repo`
+
 ### Structured Logging
 
 All log output is JSON (one object per line) for easy parsing by log aggregators:
