@@ -27,8 +27,15 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
+import { createReporter, createTabHealthTracker } from './lib/reporter.js';
 
 const CONFIG = loadConfig();
+
+// --- Crash reporter (opt-in, anonymized GitHub issues) ---
+import { readFileSync } from 'fs';
+const _pkgVersion = (() => { try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
+const reporter = createReporter({ ...CONFIG, version: _pkgVersion });
+reporter.startWatchdog(5000);
 
 // --- Plugin event bus ---
 const pluginEvents = createPluginEvents();
@@ -889,7 +896,6 @@ function handleRouteError(err, req, res, extraFields = {}) {
   }
   // Lock queue timeout = tab is stuck. Destroy immediately.
   if (userId && isTabLockQueueTimeout(err)) {
-    const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
     const session = sessions.get(normalizeUserId(userId));
     if (session && tabId) {
       destroyTab(session, tabId, 'lock_queue', userId);
@@ -899,6 +905,34 @@ function handleRouteError(err, req, res, extraFields = {}) {
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
     return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', ...extraFields });
+  }
+  // --- Frustration detection: report when a tab hits a streak of failures ---
+  // Individual failures are noise. 3+ consecutive = the site is persistently broken.
+  const FRUSTRATION_TYPES = new Set(['timeout', 'dead_context', 'nav_aborted']);
+  if (FRUSTRATION_TYPES.has(failureType) && userId && tabId) {
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (found) {
+      const ts = found.tabState;
+      ts.consecutiveFailures = (ts.consecutiveFailures || 0) + 1;
+      if (!ts.failureJournal) ts.failureJournal = [];
+      ts.failureJournal.push({ type: failureType, action, at: Date.now() });
+      if (ts.failureJournal.length > 20) ts.failureJournal = ts.failureJournal.slice(-20);
+
+      if (ts.consecutiveFailures === 3) {
+        reporter.reportHang(action, req.startTime ? Date.now() - req.startTime : 0, {
+          error: err,
+          url: ts.lastRequestedUrl || undefined,
+          healthSnapshot: ts.healthTracker ? ts.healthTracker.snapshot() : undefined,
+          context: {
+            failureType,
+            consecutiveFailures: ts.consecutiveFailures,
+            toolCalls: ts.toolCalls,
+            journal: ts.failureJournal.map(j => `${j.type}:${j.action}`),
+          },
+        });
+      }
+    }
   }
   sendError(res, err, extraFields);
 }
@@ -980,6 +1014,7 @@ function findTab(session, tabId) {
 }
 
 function createTabState(page) {
+  const healthTracker = createTabHealthTracker(page);
   return {
     page,
     refs: new Map(),
@@ -987,6 +1022,9 @@ function createTabState(page) {
     downloads: [],
     toolCalls: 0,
     consecutiveTimeouts: 0,
+    consecutiveFailures: 0,
+    failureJournal: [],
+    healthTracker,
     lastSnapshot: null,
     lastRequestedUrl: null,
     googleRetryCount: 0,
@@ -1638,7 +1676,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
       } else {
         tabState = found.tabState;
       }
-      tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+      tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
       
       let targetUrl = url;
       if (macro && macro !== '__NO__' && macro !== 'none' && macro !== 'null') {
@@ -1760,7 +1798,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     // Cached chunk retrieval for offset>0 requests
     if (offset > 0 && tabState.lastSnapshot) {
@@ -1918,7 +1956,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     if (!ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required' });
@@ -2089,7 +2127,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     if (mode !== 'fill' && mode !== 'keyboard') {
       return res.status(400).json({ error: "mode must be 'fill' or 'keyboard'" });
@@ -2171,7 +2209,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     await withTabLock(tabId, async () => {
       await tabState.page.keyboard.press(key);
@@ -2194,7 +2232,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const isVertical = direction === 'up' || direction === 'down';
     const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
@@ -2220,7 +2258,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(tabId, async () => {
       try {
@@ -2256,7 +2294,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(tabId, async () => {
       await tabState.page.goForward({ timeout: 10000 });
@@ -2282,7 +2320,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'Tab not found' });
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(tabId, async () => {
       await tabState.page.reload({ timeout: 30000 });
@@ -2311,7 +2349,7 @@ app.get('/tabs/:tabId/links', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const allLinks = await tabState.page.evaluate(() => {
       const links = [];
@@ -2451,7 +2489,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 
     session.lastAccess = Date.now();
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     pluginEvents.emit('tab:evaluate', { userId, tabId: req.params.tabId, expression });
     const result = await tabState.page.evaluate(expression);
@@ -2749,7 +2787,7 @@ app.post('/navigate', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(targetId, async () => {
       await withPageLoadDuration('navigate', () => tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
@@ -2789,7 +2827,7 @@ app.get('/snapshot', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     // Cached chunk retrieval
     if (offset > 0 && tabState.lastSnapshot) {
@@ -2902,7 +2940,7 @@ app.post('/act', async (req, res) => {
     }
     
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(targetId, async () => {
       switch (kind) {
@@ -3119,6 +3157,7 @@ setInterval(async () => {
 process.on('uncaughtException', (err) => {
   pluginEvents.emit('browser:error', { error: err });
   log('error', 'uncaughtException', { error: err.message, stack: err.stack });
+  reporter.reportCrash(err);
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
