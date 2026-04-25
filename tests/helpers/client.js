@@ -59,15 +59,23 @@ class BrowserClient {
   }
   
   // Tab management
-  async createTab(url = null) {
+  async createTab(url = null, { retries = 2 } = {}) {
     const body = { userId: this.userId, sessionKey: this.sessionKey };
     if (url) body.url = url;
-    
-    const result = await this.request('POST', '/tabs', body);
-    if (result.tabId) {
-      this.tabs.push(result.tabId);
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const result = await this.request('POST', '/tabs', body);
+        if (result.tabId) {
+          this.tabs.push(result.tabId);
+        }
+        return result;
+      } catch (err) {
+        const retriable = err.status === 500 && /closed|disposed|terminated/i.test(err.message);
+        if (!retriable || attempt === retries) throw err;
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
     }
-    return result;
   }
   
   async navigate(tabId, urlOrMacro) {

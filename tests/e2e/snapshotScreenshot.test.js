@@ -1,24 +1,18 @@
-import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
-import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
 import { createClient } from '../helpers/client.js';
 import { PNG } from 'pngjs';
+import { getSharedEnv } from './sharedEnv.js';
 
 describe('Snapshot with includeScreenshot', () => {
   let serverUrl;
   let testSiteUrl;
 
-  beforeAll(async () => {
-    await startServer(9381);
-    serverUrl = getServerUrl();
+  beforeAll(() => {
+    const env = getSharedEnv();
+    serverUrl = env.serverUrl;
+    testSiteUrl = env.testSiteUrl;
+  });
 
-    await startTestSite();
-    testSiteUrl = getTestSiteUrl();
-  }, 120000);
-
-  afterAll(async () => {
-    await stopTestSite();
-    await stopServer();
-  }, 30000);
+  // Server lifecycle managed by globalSetup/globalTeardown
 
   test('snapshot without includeScreenshot has no screenshot field', async () => {
     const client = createClient(serverUrl);

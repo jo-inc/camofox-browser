@@ -28,6 +28,7 @@ import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker } from './lib/reporter.js';
+import { mountDocs } from './lib/openapi.js';
 
 const CONFIG = loadConfig();
 
@@ -175,10 +176,81 @@ function validateUrl(url) {
 //
 // SECURITY:
 // Cookie injection moves this from "anonymous browsing" to "authenticated browsing".
-// By default, this endpoint is protected by CAMOFOX_API_KEY.
-// For local development convenience, when CAMOFOX_API_KEY is NOT set, we allow
-// unauthenticated cookie import ONLY from loopback (127.0.0.1 / ::1) and ONLY
-// when NODE_ENV != production.
+/**
+ * @openapi
+ * /sessions/{userId}/cookies:
+ *   post:
+ *     tags: [Sessions]
+ *     summary: Import cookies into a user session
+ *     description: Import cookies for authenticated browsing. Requires BearerAuth in production.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [cookies]
+ *             properties:
+ *               cookies:
+ *                 type: array
+ *                 maxItems: 500
+ *                 items:
+ *                   type: object
+ *                   required: [name, value, domain]
+ *                   properties:
+ *                     name:
+ *                       type: string
+ *                     value:
+ *                       type: string
+ *                     domain:
+ *                       type: string
+ *                     path:
+ *                       type: string
+ *                     expires:
+ *                       type: number
+ *                     httpOnly:
+ *                       type: boolean
+ *                     secure:
+ *                       type: boolean
+ *                     sameSite:
+ *                       type: string
+ *                       enum: [Strict, Lax, None]
+ *     responses:
+ *       200:
+ *         description: Cookies imported.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 userId:
+ *                   type: string
+ *                 count:
+ *                   type: integer
+ *       400:
+ *         description: Invalid cookie data.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
     if (CONFIG.apiKey) {
@@ -1548,6 +1620,47 @@ async function refreshTabRefs(tabState, options = {}) {
 }
 
 
+/**
+ * @openapi
+ * /health:
+ *   get:
+ *     tags: [System]
+ *     summary: Health check
+ *     description: Detailed health with tab/session counts and failure tracking.
+ *     responses:
+ *       200:
+ *         description: Healthy.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 engine:
+ *                   type: string
+ *                 browserConnected:
+ *                   type: boolean
+ *                 browserRunning:
+ *                   type: boolean
+ *                 activeTabs:
+ *                   type: integer
+ *                 activeSessions:
+ *                   type: integer
+ *                 consecutiveFailures:
+ *                   type: integer
+ *       503:
+ *         description: Unhealthy or recovering.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 recovering:
+ *                   type: boolean
+ */
 app.get('/health', (req, res) => {
   if (healthState.isRecovering) {
     return res.status(503).json({ ok: false, engine: 'camoufox', recovering: true });
@@ -1576,6 +1689,27 @@ app.get('/health', (req, res) => {
   });
 });
 
+/**
+ * @openapi
+ * /metrics:
+ *   get:
+ *     tags: [System]
+ *     summary: Prometheus metrics
+ *     description: Returns Prometheus text exposition format. Requires PROMETHEUS_ENABLED=1.
+ *     responses:
+ *       200:
+ *         description: Prometheus metrics.
+ *         content:
+ *           text/plain:
+ *             schema:
+ *               type: string
+ *       404:
+ *         description: Metrics disabled.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/metrics', async (_req, res) => {
   const reg = getRegister();
   if (!reg) {
@@ -1587,6 +1721,58 @@ app.get('/metrics', async (_req, res) => {
 });
 
 // Create new tab
+/**
+ * @openapi
+ * /tabs:
+ *   post:
+ *     tags: [Tabs]
+ *     summary: Create a new tab
+ *     description: Creates a tab in the given session. Optionally navigates to an initial URL.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, sessionKey]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *                 description: Session owner.
+ *               sessionKey:
+ *                 type: string
+ *                 description: Tab group identifier.
+ *               listItemId:
+ *                 type: string
+ *                 description: Legacy alias for sessionKey.
+ *               url:
+ *                 type: string
+ *                 description: Optional initial URL.
+ *     responses:
+ *       200:
+ *         description: Tab created.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 tabId:
+ *                   type: string
+ *                 url:
+ *                   type: string
+ *       400:
+ *         description: Missing required fields.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       429:
+ *         description: Tab limit reached.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs', async (req, res) => {
   try {
     const { userId, sessionKey, listItemId, url } = req.body;
@@ -1640,6 +1826,61 @@ app.post('/tabs', async (req, res) => {
 });
 
 // Navigate
+/**
+ * @openapi
+ * /tabs/{tabId}/navigate:
+ *   post:
+ *     tags: [Navigation]
+ *     summary: Navigate a tab to a URL or macro
+ *     description: Navigate to a URL or expand a search macro. Auto-creates tab if not found.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               url:
+ *                 type: string
+ *               macro:
+ *                 type: string
+ *                 description: Search macro (e.g. @google_search).
+ *               query:
+ *                 type: string
+ *                 description: Search query for macro.
+ *               sessionKey:
+ *                 type: string
+ *               listItemId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Navigation result with snapshot.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/navigate', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -1788,6 +2029,69 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 });
 
 // Snapshot
+/**
+ * @openapi
+ * /tabs/{tabId}/snapshot:
+ *   get:
+ *     tags: [Content]
+ *     summary: Accessibility snapshot
+ *     description: Returns accessibility tree with element refs. Supports pagination via offset.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: format
+ *         in: query
+ *         schema:
+ *           type: string
+ *           enum: [text, json]
+ *           default: text
+ *       - name: offset
+ *         in: query
+ *         schema:
+ *           type: integer
+ *         description: Character offset for paginated retrieval.
+ *       - name: includeScreenshot
+ *         in: query
+ *         schema:
+ *           type: string
+ *           enum: ['true', 'false']
+ *     responses:
+ *       200:
+ *         description: Snapshot.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 url:
+ *                   type: string
+ *                 snapshot:
+ *                   type: string
+ *                 refsCount:
+ *                   type: integer
+ *                 truncated:
+ *                   type: boolean
+ *                 totalChars:
+ *                   type: integer
+ *                 hasMore:
+ *                   type: boolean
+ *                 nextOffset:
+ *                   type: integer
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/tabs/:tabId/snapshot', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -1928,6 +2232,50 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
 });
 
 // Wait for page ready
+/**
+ * @openapi
+ * /tabs/{tabId}/wait:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Wait for a selector or timeout
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               selector:
+ *                 type: string
+ *               timeout:
+ *                 type: integer
+ *                 description: Max wait in ms.
+ *     responses:
+ *       200:
+ *         description: Wait completed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/wait', async (req, res) => {
   try {
     const { userId, timeout = 10000, waitForNetwork = true } = req.body;
@@ -1946,6 +2294,64 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
 });
 
 // Click
+/**
+ * @openapi
+ * /tabs/{tabId}/click:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Click an element
+ *     description: Click by element ref, CSS selector, or coordinates.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               ref:
+ *                 type: string
+ *                 description: Element ref ID (e.g. "e3").
+ *               selector:
+ *                 type: string
+ *                 description: CSS selector fallback.
+ *               doubleClick:
+ *                 type: boolean
+ *               coordinates:
+ *                 type: object
+ *                 properties:
+ *                   x:
+ *                     type: number
+ *                   y:
+ *                     type: number
+ *     responses:
+ *       200:
+ *         description: Click result with optional post-action snapshot.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -2118,6 +2524,61 @@ app.post('/tabs/:tabId/click', async (req, res) => {
 });
 
 // Type
+/**
+ * @openapi
+ * /tabs/{tabId}/type:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Type text into an element
+ *     description: Types text into a focused element or a specific ref/selector.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, text]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               ref:
+ *                 type: string
+ *               selector:
+ *                 type: string
+ *               text:
+ *                 type: string
+ *               clear:
+ *                 type: boolean
+ *                 description: Clear field before typing.
+ *               submit:
+ *                 type: boolean
+ *                 description: Press Enter after typing.
+ *     responses:
+ *       200:
+ *         description: Type result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/type', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -2200,6 +2661,48 @@ app.post('/tabs/:tabId/type', async (req, res) => {
 });
 
 // Press key
+/**
+ * @openapi
+ * /tabs/{tabId}/press:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Press a keyboard key
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, key]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               key:
+ *                 type: string
+ *                 description: Key name (e.g. "Enter", "Escape", "Tab").
+ *     responses:
+ *       200:
+ *         description: Key pressed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/press', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -2225,6 +2728,51 @@ app.post('/tabs/:tabId/press', async (req, res) => {
 });
 
 // Scroll
+/**
+ * @openapi
+ * /tabs/{tabId}/scroll:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Scroll the page
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               direction:
+ *                 type: string
+ *                 description: '"up" or "down" (default "down").'
+ *               amount:
+ *                 type: integer
+ *                 description: Pixels to scroll.
+ *     responses:
+ *       200:
+ *         description: Scroll result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/scroll', async (req, res) => {
   try {
     const { userId, direction = 'down', amount = 500 } = req.body;
@@ -2249,6 +2797,47 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
 });
 
 // Back
+/**
+ * @openapi
+ * /tabs/{tabId}/back:
+ *   post:
+ *     tags: [Navigation]
+ *     summary: Go back
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Navigated back.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 url:
+ *                   type: string
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/back', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -2285,6 +2874,47 @@ app.post('/tabs/:tabId/back', async (req, res) => {
 });
 
 // Forward
+/**
+ * @openapi
+ * /tabs/{tabId}/forward:
+ *   post:
+ *     tags: [Navigation]
+ *     summary: Go forward
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Navigated forward.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 url:
+ *                   type: string
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/forward', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -2311,6 +2941,47 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
 });
 
 // Refresh
+/**
+ * @openapi
+ * /tabs/{tabId}/refresh:
+ *   post:
+ *     tags: [Navigation]
+ *     summary: Refresh page
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Page refreshed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 url:
+ *                   type: string
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/refresh', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -2337,6 +3008,49 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
 });
 
 // Get links
+/**
+ * @openapi
+ * /tabs/{tabId}/links:
+ *   get:
+ *     tags: [Content]
+ *     summary: Extract page links
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Links extracted.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 links:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       text:
+ *                         type: string
+ *                       href:
+ *                         type: string
+ *                       ref:
+ *                         type: string
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/tabs/:tabId/links', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -2378,6 +3092,49 @@ app.get('/tabs/:tabId/links', async (req, res) => {
 });
 
 // Get captured downloads
+/**
+ * @openapi
+ * /tabs/{tabId}/downloads:
+ *   get:
+ *     tags: [Content]
+ *     summary: List tab downloads
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Downloads list.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 downloads:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       filename:
+ *                         type: string
+ *                       url:
+ *                         type: string
+ *                       state:
+ *                         type: string
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/tabs/:tabId/downloads', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -2407,6 +3164,51 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
 });
 
 // Get image elements from current page
+/**
+ * @openapi
+ * /tabs/{tabId}/images:
+ *   get:
+ *     tags: [Content]
+ *     summary: Extract page images
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Images extracted.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 images:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       src:
+ *                         type: string
+ *                       alt:
+ *                         type: string
+ *                       width:
+ *                         type: integer
+ *                       height:
+ *                         type: integer
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/tabs/:tabId/images', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -2433,6 +3235,46 @@ app.get('/tabs/:tabId/images', async (req, res) => {
 });
 
 // Screenshot
+/**
+ * @openapi
+ * /tabs/{tabId}/screenshot:
+ *   get:
+ *     tags: [Content]
+ *     summary: Take a screenshot
+ *     description: Returns a base64-encoded PNG screenshot.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Screenshot.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 screenshot:
+ *                   type: object
+ *                   properties:
+ *                     data:
+ *                       type: string
+ *                     mimeType:
+ *                       type: string
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/tabs/:tabId/screenshot', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -2453,6 +3295,53 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
 });
 
 // Stats
+/**
+ * @openapi
+ * /tabs/{tabId}/stats:
+ *   get:
+ *     tags: [Tabs]
+ *     summary: Tab statistics
+ *     description: Returns tab metadata including URL, tool call count, visited URLs, download/failure counts.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Tab stats.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 tabId:
+ *                   type: string
+ *                 url:
+ *                   type: string
+ *                 toolCalls:
+ *                   type: integer
+ *                 visitedUrls:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                 downloadCount:
+ *                   type: integer
+ *                 consecutiveFailures:
+ *                   type: integer
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/tabs/:tabId/stats', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -2478,6 +3367,56 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
 });
 
 // Evaluate JavaScript in page context
+/**
+ * @openapi
+ * /tabs/{tabId}/evaluate:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Evaluate JavaScript in tab
+ *     description: Runs arbitrary JS in the page context and returns the result.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, expression]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               expression:
+ *                 type: string
+ *                 description: JavaScript expression to evaluate.
+ *     responses:
+ *       200:
+ *         description: Evaluation result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 result: {}
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
@@ -2505,6 +3444,40 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, re
 });
 
 // Close tab
+/**
+ * @openapi
+ * /tabs/{tabId}:
+ *   delete:
+ *     tags: [Tabs]
+ *     summary: Close a tab
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Tab closed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.delete('/tabs/:tabId', async (req, res) => {
   try {
     const userId = req.query.userId || req.body?.userId;
@@ -2531,6 +3504,42 @@ app.delete('/tabs/:tabId', async (req, res) => {
 });
 
 // Close tab group
+/**
+ * @openapi
+ * /tabs/group/{listItemId}:
+ *   delete:
+ *     tags: [Tabs]
+ *     summary: Close all tabs in a group
+ *     parameters:
+ *       - name: listItemId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Group closed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 closed:
+ *                   type: integer
+ *       404:
+ *         description: Session not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.delete('/tabs/group/:listItemId', async (req, res) => {
   try {
     const userId = req.query.userId || req.body?.userId;
@@ -2560,6 +3569,38 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
 });
 
 // Close session
+/**
+ * @openapi
+ * /sessions/{userId}:
+ *   delete:
+ *     tags: [Sessions]
+ *     summary: Destroy a user session
+ *     description: Closes all tabs and cleans up state for the given userId.
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Session destroyed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 closed:
+ *                   type: integer
+ *       404:
+ *         description: Session not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.delete('/sessions/:userId', async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
@@ -2644,6 +3685,34 @@ setInterval(() => {
 // =============================================================================
 
 // GET / - Status (passive — does not launch browser)
+/**
+ * @openapi
+ * /:
+ *   get:
+ *     tags: [System]
+ *     summary: Server status
+ *     description: Returns basic server liveness and browser state.
+ *     responses:
+ *       200:
+ *         description: Server status.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 enabled:
+ *                   type: boolean
+ *                 running:
+ *                   type: boolean
+ *                 engine:
+ *                   type: string
+ *                 browserConnected:
+ *                   type: boolean
+ *                 browserRunning:
+ *                   type: boolean
+ */
 app.get('/', (req, res) => {
   const running = browser !== null && (browser.isConnected?.() ?? false);
   res.json({ 
@@ -2657,6 +3726,45 @@ app.get('/', (req, res) => {
 });
 
 // GET /tabs - List all tabs (OpenClaw expects this)
+/**
+ * @openapi
+ * /tabs:
+ *   get:
+ *     tags: [Tabs]
+ *     summary: List open tabs
+ *     description: Returns all tabs for a given userId.
+ *     parameters:
+ *       - name: userId
+ *         in: query
+ *         schema:
+ *           type: string
+ *         description: Filter by session owner.
+ *     responses:
+ *       200:
+ *         description: Tab list.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 running:
+ *                   type: boolean
+ *                 tabs:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       tabId:
+ *                         type: string
+ *                       targetId:
+ *                         type: string
+ *                       url:
+ *                         type: string
+ *                       title:
+ *                         type: string
+ *                       listItemId:
+ *                         type: string
+ */
 app.get('/tabs', async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -2687,6 +3795,41 @@ app.get('/tabs', async (req, res) => {
 });
 
 // POST /tabs/open - Open tab (alias for POST /tabs, OpenClaw format)
+/**
+ * @openapi
+ * /tabs/open:
+ *   post:
+ *     tags: [Legacy]
+ *     summary: Open tab (OpenClaw format)
+ *     deprecated: true
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, url]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               url:
+ *                 type: string
+ *               listItemId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Tab opened.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/open', async (req, res) => {
   try {
     const { url, userId, listItemId = 'default' } = req.body;
@@ -2739,6 +3882,32 @@ app.post('/tabs/open', async (req, res) => {
 });
 
 // POST /start - Start browser (OpenClaw expects this)
+/**
+ * @openapi
+ * /start:
+ *   post:
+ *     tags: [Browser]
+ *     summary: Start browser
+ *     description: Ensures the browser process is running. Idempotent.
+ *     responses:
+ *       200:
+ *         description: Browser started.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 profile:
+ *                   type: string
+ *       500:
+ *         description: Launch failed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/start', async (req, res) => {
   try {
     await ensureBrowser();
@@ -2750,6 +3919,36 @@ app.post('/start', async (req, res) => {
 });
 
 // POST /stop - Stop browser (OpenClaw expects this)
+/**
+ * @openapi
+ * /stop:
+ *   post:
+ *     tags: [Browser]
+ *     summary: Stop browser
+ *     description: Stops the browser and closes all sessions. Requires x-admin-key header.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Browser stopped.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 stopped:
+ *                   type: boolean
+ *                 profile:
+ *                   type: string
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/stop', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
@@ -2768,6 +3967,48 @@ app.post('/stop', async (req, res) => {
 });
 
 // POST /navigate - Navigate (OpenClaw format with targetId in body)
+/**
+ * @openapi
+ * /navigate:
+ *   post:
+ *     tags: [Legacy]
+ *     summary: Navigate (OpenClaw format)
+ *     description: Navigate with targetId in body instead of path param.
+ *     deprecated: true
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, url]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               targetId:
+ *                 type: string
+ *               url:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Navigation result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/navigate', async (req, res) => {
   try {
     const { targetId, url, userId } = req.body;
@@ -2813,6 +4054,58 @@ app.post('/navigate', async (req, res) => {
 });
 
 // GET /snapshot - Snapshot (OpenClaw format with query params)
+/**
+ * @openapi
+ * /snapshot:
+ *   get:
+ *     tags: [Legacy]
+ *     summary: Snapshot (OpenClaw format)
+ *     description: Snapshot with targetId/userId as query params.
+ *     deprecated: true
+ *     parameters:
+ *       - name: targetId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: format
+ *         in: query
+ *         schema:
+ *           type: string
+ *       - name: offset
+ *         in: query
+ *         schema:
+ *           type: integer
+ *       - name: includeScreenshot
+ *         in: query
+ *         schema:
+ *           type: string
+ *           enum: ['true', 'false']
+ *     responses:
+ *       200:
+ *         description: Snapshot.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.get('/snapshot', async (req, res) => {
   try {
     const { targetId, userId, format = 'text' } = req.query;
@@ -2923,6 +4216,61 @@ app.get('/snapshot', async (req, res) => {
 
 // POST /act - Combined action endpoint (OpenClaw format)
 // Routes to click/type/scroll/press/etc based on 'kind' parameter
+/**
+ * @openapi
+ * /act:
+ *   post:
+ *     tags: [Legacy]
+ *     summary: Combined action (OpenClaw format)
+ *     description: Routes to click/type/scroll/press/etc based on "kind" parameter.
+ *     deprecated: true
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, kind]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               kind:
+ *                 type: string
+ *                 description: 'Action kind: click, type, scroll, press, key, select_option, drag, hover, screenshot, wait, back, forward.'
+ *               targetId:
+ *                 type: string
+ *               ref:
+ *                 type: string
+ *               selector:
+ *                 type: string
+ *               text:
+ *                 type: string
+ *               key:
+ *                 type: string
+ *               direction:
+ *                 type: string
+ *               url:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Action result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/act', async (req, res) => {
   try {
     const { kind, targetId, userId, ...params } = req.body;
@@ -3230,6 +4578,9 @@ const pluginCtx = {
   VirtualDisplay,
 };
 const loadedPlugins = await loadPlugins(app, pluginCtx);
+
+// --- OpenAPI docs (after all routes are registered) ---
+mountDocs(app);
 
 const server = app.listen(PORT, async () => {
   startMemoryReporter();

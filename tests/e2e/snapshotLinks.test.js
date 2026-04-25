@@ -1,23 +1,17 @@
-import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
-import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
 import { createClient } from '../helpers/client.js';
+import { getSharedEnv } from './sharedEnv.js';
 
 describe('Snapshot and Links', () => {
   let serverUrl;
   let testSiteUrl;
   
-  beforeAll(async () => {
-    const port = await startServer();
-    serverUrl = getServerUrl();
-    
-    const testPort = await startTestSite();
-    testSiteUrl = getTestSiteUrl();
-  }, 120000);
+  beforeAll(() => {
+    const env = getSharedEnv();
+    serverUrl = env.serverUrl;
+    testSiteUrl = env.testSiteUrl;
+  });
   
-  afterAll(async () => {
-    await stopTestSite();
-    await stopServer();
-  }, 30000);
+  // Server lifecycle managed by globalSetup/globalTeardown
   
   test('get snapshot returns page content', async () => {
     const client = createClient(serverUrl);
