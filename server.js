@@ -3713,7 +3713,7 @@ setInterval(() => {
  *                 browserRunning:
  *                   type: boolean
  */
-app.get('/', (req, res)app.get('/', (req, res) => {
+app.get('/', (req, res) => {
   const running = browser !== null && (browser.isConnected?.() ?? false);
   res.json({ 
     ok: true,
@@ -3765,7 +3765,7 @@ app.get('/', (req, res)app.get('/', (req, res) => {
  *                       listItemId:
  *                         type: string
  */
-app.get('/tabs', asyncapp.get('/tabs', async (req, res) => {
+app.get('/tabs', async (req, res) => {
   try {
     const userId = req.query.userId;
     const session = sessions.get(normalizeUserId(userId));
