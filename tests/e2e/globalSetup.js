@@ -32,14 +32,14 @@ export default async function globalSetup() {
   const pluginDir = path.resolve(__dirname, '../..');
 
   const log = {
-    info: (msg) => { if (cfg.serverEnv.DEBUG_SERVER) console.log(msg); },
-    error: (msg) => { if (cfg.serverEnv.DEBUG_SERVER) console.error(msg); },
+    info: (msg) => console.log(msg),
+    error: (msg) => console.error(msg),
   };
 
   const serverProcess = launchServer({
     pluginDir,
     port: serverPort,
-    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false' },
+    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', DISPLAY: process.env.DISPLAY },
     log,
   });
 
