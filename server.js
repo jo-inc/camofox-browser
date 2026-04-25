@@ -23,7 +23,7 @@ import { extractPageImages } from './lib/images.js';
 import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
 import {
   ensureTracesDir, resolveTracePath, tracePathFor, makeTraceFilename,
-  listUserTraces, sweepOldTraces,
+  listUserTraces, statTrace, deleteTrace, sweepOldTraces,
 } from './lib/tracing.js';
 
 import {
@@ -1776,6 +1776,9 @@ app.get('/metrics', async (_req, res) => {
  *               url:
  *                 type: string
  *                 description: Optional initial URL.
+ *               trace:
+ *                 type: boolean
+ *                 description: Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session.
  *     responses:
  *       200:
  *         description: Tab created.
@@ -1796,6 +1799,12 @@ app.get('/metrics', async (_req, res) => {
  *               $ref: '#/components/schemas/Error'
  *       429:
  *         description: Tab limit reached.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Cannot enable tracing on an existing session.
  *         content:
  *           application/json:
  *             schema:
@@ -3755,10 +3764,60 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
 });
 
 // List trace files for a session
-app.get('/sessions/:userId/traces', (req, res) => {
+/**
+ * @openapi
+ * /sessions/{userId}/traces:
+ *   get:
+ *     tags: [Sessions]
+ *     summary: List trace files
+ *     description: Returns all Playwright trace zip files for the given user session, sorted newest first.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *     responses:
+ *       200:
+ *         description: Trace list.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 traces:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       filename:
+ *                         type: string
+ *                       sizeBytes:
+ *                         type: integer
+ *                       createdAt:
+ *                         type: number
+ *                       modifiedAt:
+ *                         type: number
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/sessions/:userId/traces', authMiddleware(), async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
-    const traces = listUserTraces(CONFIG.tracesDir, userId);
+    const traces = await listUserTraces(CONFIG.tracesDir, userId);
     res.json({ traces });
   } catch (err) {
     log('error', 'list traces failed', { error: err.message });
@@ -3767,17 +3826,76 @@ app.get('/sessions/:userId/traces', (req, res) => {
 });
 
 // Stream one trace file
-app.get('/sessions/:userId/traces/:filename', (req, res) => {
+/**
+ * @openapi
+ * /sessions/{userId}/traces/{filename}:
+ *   get:
+ *     tags: [Sessions]
+ *     summary: Download a trace file
+ *     description: Streams a Playwright trace zip for viewing in trace.playwright.dev.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *       - name: filename
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Trace zip filename.
+ *     responses:
+ *       200:
+ *         description: Trace zip stream.
+ *         content:
+ *           application/zip:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       400:
+ *         description: Invalid filename.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Trace not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/sessions/:userId/traces/:filename', authMiddleware(), async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
     const full = resolveTracePath(CONFIG.tracesDir, userId, req.params.filename);
     if (!full) return res.status(400).json({ error: 'invalid filename' });
-    let st;
-    try { st = fs.statSync(full); } catch { return res.status(404).json({ error: 'not found' }); }
-    if (!st.isFile()) return res.status(404).json({ error: 'not found' });
+    const st = await statTrace(full);
+    if (!st) return res.status(404).json({ error: 'not found' });
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Length', String(st.size));
-    fs.createReadStream(full).pipe(res);
+    const stream = fs.createReadStream(full);
+    stream.on('error', (err) => {
+      if (!res.headersSent) res.status(404).json({ error: 'not found' });
+      else res.destroy();
+    });
+    stream.pipe(res);
   } catch (err) {
     log('error', 'stream trace failed', { error: err.message });
     res.status(500).json({ error: err.message });
@@ -3785,13 +3903,70 @@ app.get('/sessions/:userId/traces/:filename', (req, res) => {
 });
 
 // Delete one trace file
-app.delete('/sessions/:userId/traces/:filename', (req, res) => {
+/**
+ * @openapi
+ * /sessions/{userId}/traces/{filename}:
+ *   delete:
+ *     tags: [Sessions]
+ *     summary: Delete a trace file
+ *     description: Removes a specific Playwright trace zip from the server.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Session owner identifier.
+ *       - name: filename
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Trace zip filename.
+ *     responses:
+ *       200:
+ *         description: Trace deleted.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *       400:
+ *         description: Invalid filename.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Trace not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
     const full = resolveTracePath(CONFIG.tracesDir, userId, req.params.filename);
     if (!full) return res.status(400).json({ error: 'invalid filename' });
     try {
-      fs.unlinkSync(full);
+      await deleteTrace(full);
     } catch (err) {
       if (err.code === 'ENOENT') return res.status(404).json({ error: 'not found' });
       throw err;

@@ -7,6 +7,8 @@ import {
   userTracesDir,
   resolveTracePath,
   listUserTraces,
+  statTrace,
+  deleteTrace,
   sweepOldTraces,
   makeTraceFilename,
 } from '../../lib/tracing.js';
@@ -54,20 +56,20 @@ describe('tracing', () => {
     expect(ok.endsWith('trace-ok.zip')).toBe(true);
   });
 
-  test('listUserTraces returns zip files sorted newest first', () => {
+  test('listUserTraces returns zip files sorted newest first', async () => {
     const dir = ensureTracesDir(baseDir, 'u');
     fs.writeFileSync(path.join(dir, 'one.zip'), 'a');
     const past = Date.now() - 60_000;
     fs.utimesSync(path.join(dir, 'one.zip'), past / 1000, past / 1000);
     fs.writeFileSync(path.join(dir, 'two.zip'), 'bb');
     fs.writeFileSync(path.join(dir, 'ignored.txt'), 'x');
-    const list = listUserTraces(baseDir, 'u');
+    const list = await listUserTraces(baseDir, 'u');
     expect(list.map(r => r.filename)).toEqual(['two.zip', 'one.zip']);
     expect(list[0].sizeBytes).toBe(2);
   });
 
-  test('listUserTraces returns empty array when no dir exists', () => {
-    expect(listUserTraces(baseDir, 'nobody')).toEqual([]);
+  test('listUserTraces returns empty array when no dir exists', async () => {
+    expect(await listUserTraces(baseDir, 'nobody')).toEqual([]);
   });
 
   test('sweepOldTraces removes files older than ttl', () => {
