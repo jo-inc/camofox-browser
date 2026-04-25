@@ -7,12 +7,11 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         node-version: [24]
-
     steps:
       - uses: actions/checkout@v4
 
@@ -22,19 +21,70 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
-      - name: Install dependencies and browser
-        run: |
-          npm ci
-          npm install --no-save jest-junit
-          npx playwright install --with-deps firefox
+      - name: Install dependencies
+        run: npm ci
 
       - name: Run tests (node:test)
         run: node --test tests/unit/reporter.test.js
 
-      - name: Run tests (Jest + browser)
+      - name: Run unit + plugin tests (Jest)
+        run: |
+          npm install --no-save jest-junit
+          node --experimental-vm-modules node_modules/.bin/jest \
+            --testPathPattern='tests/unit|plugins' \
+            --testPathIgnorePatterns='reporter\.test|security\.test|tabRecycling\.test|cookies\.test' \
+            --forceExit
+        env:
+          CI: true
+
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm install --no-save jest-junit
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps firefox
+
+      - name: Install browser system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps firefox
+
+      - name: Run e2e + browser-dependent unit tests
         run: |
           xvfb-run --auto-servernum \
-            node --experimental-vm-modules node_modules/.bin/jest --runInBand --forceExit \
-              --testPathIgnorePatterns="live|reporter\.test"
+            node --experimental-vm-modules node_modules/.bin/jest \
+              --config jest.config.e2e.cjs \
+              --runInBand --forceExit
+        env:
+          CI: true
+
+      - name: Run browser-dependent unit tests
+        run: |
+          xvfb-run --auto-servernum \
+            node --experimental-vm-modules node_modules/.bin/jest \
+              --testPathPattern='tests/unit/(security|tabRecycling|cookies)\.test' \
+              --runInBand --forceExit
         env:
           CI: true

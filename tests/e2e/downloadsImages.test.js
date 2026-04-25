@@ -1,23 +1,17 @@
-import { startServer, stopServer, getServerUrl } from '../helpers/startServer.js';
-import { startTestSite, stopTestSite, getTestSiteUrl } from '../helpers/testSite.js';
 import { createClient } from '../helpers/client.js';
+import { getSharedEnv } from './sharedEnv.js';
 
 describe('Downloads and Images', () => {
   let serverUrl;
   let testSiteUrl;
 
-  beforeAll(async () => {
-    await startServer();
-    serverUrl = getServerUrl();
+  beforeAll(() => {
+    const env = getSharedEnv();
+    serverUrl = env.serverUrl;
+    testSiteUrl = env.testSiteUrl;
+  });
 
-    await startTestSite();
-    testSiteUrl = getTestSiteUrl();
-  }, 120000);
-
-  afterAll(async () => {
-    await stopTestSite();
-    await stopServer();
-  }, 30000);
+  // Server lifecycle managed by globalSetup/globalTeardown
 
   test('GET /tabs/:tabId/images returns image sources', async () => {
     const client = createClient(serverUrl);
