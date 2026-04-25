@@ -144,6 +144,7 @@ docker run -p 9377:9377 camofox-browser
 ## Key Files
 
 - `server.js` - Camoufox engine (routes + browser logic only — NO `process.env` or `child_process`)
+- `lib/openapi.js` - OpenAPI spec generation via swagger-jsdoc + docs route setup
 - `lib/config.js` - All `process.env` reads centralized here
 - `plugins/youtube/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
 - `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
@@ -165,6 +166,69 @@ docker run -p 9377:9377 camofox-browser
 - `lib/inflight.js` - Inflight request coalescing
 - `lib/tmp-cleanup.js` - Orphaned temp file cleanup
 - `Dockerfile` - Production container with default plugin deps pre-installed
+
+## OpenAPI Spec (REQUIRED for route changes)
+
+The API spec is auto-generated from `@openapi` JSDoc comments in `server.js` via [swagger-jsdoc](https://github.com/Surnet/swagger-jsdoc). It's served at `GET /openapi.json` (machine-readable) and `GET /docs` ([swagger-stripey](https://github.com/skyfallsin/swagger-stripey) three-panel UI).
+
+**When adding, modifying, or removing a route, you MUST update the `@openapi` JSDoc block above it.**
+
+Every route handler in `server.js` has a JSDoc comment block directly above it like:
+
+```js
+/**
+ * @openapi
+ * /tabs/{tabId}/click:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Click an element
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               ref:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Click result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/click', async (req, res) => {
+```
+
+**Rules:**
+- New routes: add a `@openapi` JSDoc block immediately above the `app.get/post/delete(...)` call
+- Path params use `{tabId}` syntax (not `:tabId`) in the JSDoc YAML
+- Tag must be one of: `System`, `Tabs`, `Navigation`, `Interaction`, `Content`, `Sessions`, `Browser`, `Legacy`
+- Every operation must have `tags`, `summary`, and `responses`
+- Include `requestBody` for POST/PUT/DELETE routes that accept JSON
+- Include `parameters` for path params and required query params
+- Mark backward-compat endpoints with `deprecated: true`
+- Removing a route: delete the `@openapi` block along with the handler
+- **After any route change, run `npm run generate-openapi`** to regenerate the committed `openapi.json`. The test suite will fail if it's stale.
+- Run `npx jest tests/unit/openapi.test.js` to verify coverage — the test fails if any route is missing from the spec, if a stale route exists, or if `openapi.json` is out of date
+- Reusable schemas go in `components.schemas` in `lib/openapi.js` (the `swaggerDefinition`); reference them via `$ref: '#/components/schemas/Name'`
 
 ## OpenClaw Scanner Isolation (CRITICAL)
 

@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<!-- Docs engine: https://github.com/skyfallsin/swagger-stripey -->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<title id="page-title">API Reference</title>
+<script id="docs-config" type="application/json">
+{
+  "specUrl": "./openapi.json",
+  "logoUrl": "./fox.png",
+  "title": "camofox-browser",
+  "subtitle": "API Reference",
+  "accent": "#9B30FF",
+  "accentLight": "#B366FF",
+  "methodGet": "#9B30FF"
+}
+</script>
+<style>
+/* ========================================================
+   Design tokens — dark (default)
+   ======================================================== */
+:root, [data-theme="dark"] {
+  --accent: #9B30FF;
+  --accent-light: #B366FF;
+  --accent-subtle: rgba(155,48,255,0.08);
+  --bg-primary: #070E1A;
+  --bg-secondary: #0B1628;
+  --bg-tertiary: #0F1D33;
+  --bg-code: #0a1120;
+  --text-primary: #E8F0FF;
+  --text-secondary: #8BA3C7;
+  --text-muted: #5a7394;
+  --border: #1a2a42;
+  --border-light: #243550;
+  --method-get: #9B30FF;
+  --method-post: #2563EB;
+  --method-delete: #DC2626;
+  --method-put: #D97706;
+  --method-patch: #0891B2;
+  --code-str: #22C55E;
+  --status-2xx: #22C55E;
+  --status-4xx: #F59E0B;
+  --status-5xx: #EF4444;
+  --deprecated-bg: rgba(220,38,38,0.15);
+  --deprecated-fg: #f87171;
+  --toggle-bg: var(--bg-tertiary);
+  --toggle-fg: var(--text-secondary);
+}
+
+/* ========================================================
+   Light theme
+   ======================================================== */
+[data-theme="light"] {
+  --accent: #7C22DB;
+  --accent-light: #9333EA;
+  --accent-subtle: rgba(124,34,219,0.06);
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F8F9FC;
+  --bg-tertiary: #F0F2F6;
+  --bg-code: #F5F6FA;
+  --text-primary: #1A1D26;
+  --text-secondary: #5C6370;
+  --text-muted: #9CA3AF;
+  --border: #E2E5EC;
+  --border-light: #ECEEF3;
+  --method-get: #7C22DB;
+  --code-str: #16A34A;
+  --status-2xx: #16A34A;
+  --status-4xx: #D97706;
+  --status-5xx: #DC2626;
+  --deprecated-bg: rgba(220,38,38,0.08);
+  --deprecated-fg: #DC2626;
+  --toggle-bg: #E2E5EC;
+  --toggle-fg: #5C6370;
+}
+
+/* ========================================================
+   Shared tokens
+   ======================================================== */
+:root {
+  --font-body: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Menlo', 'Consolas', monospace;
+  --sidebar-width: 260px;
+  --code-panel-width: 42%;
+  --header-height: 56px;
+}
+
+/* ========================================================
+   Reset & base
+   ======================================================== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; scroll-padding-top: calc(var(--header-height) + 24px); }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ========================================================
+   Header
+   ======================================================== */
+.header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 24px; height: var(--header-height);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.header img { height: 32px; width: auto; }
+.header .title {
+  font-family: var(--font-mono);
+  font-size: 16px; font-weight: 600;
+  color: var(--text-primary); letter-spacing: -0.5px;
+}
+.header .subtitle {
+  font-size: 12px; color: var(--text-secondary);
+  margin-left: 12px; font-weight: 400;
+}
+.header .header-right {
+  margin-left: auto; display: flex; align-items: center; gap: 12px;
+}
+.header .version {
+  font-family: var(--font-mono);
+  font-size: 11px; color: var(--text-muted);
+  background: var(--bg-tertiary); padding: 3px 10px;
+  border-radius: 4px; border: 1px solid var(--border);
+}
+
+/* Theme toggle */
+.theme-toggle {
+  background: var(--toggle-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 10px;
+  cursor: pointer; font-size: 14px; line-height: 1;
+  color: var(--toggle-fg); transition: all 0.2s;
+  display: flex; align-items: center; gap: 4px;
+}
+.theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Mobile menu toggle */
+.menu-toggle {
+  display: none;
+  background: var(--toggle-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px;
+  cursor: pointer; font-size: 18px; line-height: 1;
+  color: var(--toggle-fg);
+}
+.menu-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ========================================================
+   Sidebar
+   ======================================================== */
+.sidebar {
+  position: fixed; top: var(--header-height); left: 0; bottom: 0;
+  width: var(--sidebar-width); overflow-y: auto;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  padding: 16px 0;
+  transition: transform 0.25s ease;
+  z-index: 90;
+}
+.sidebar::-webkit-scrollbar { width: 4px; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.sidebar .tag-group { margin-bottom: 4px; }
+.sidebar .tag-name {
+  display: block; padding: 6px 20px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.8px;
+  color: var(--text-muted);
+}
+.sidebar .nav-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 20px 5px 24px;
+  text-decoration: none; color: var(--text-secondary);
+  font-size: 13px; transition: all 0.15s;
+  border-left: 2px solid transparent;
+}
+.sidebar .nav-item:hover {
+  color: var(--text-primary);
+  background: var(--accent-subtle);
+}
+.sidebar .nav-item.active {
+  color: var(--text-primary);
+  border-left-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.sidebar .method-badge {
+  font-family: var(--font-mono);
+  font-size: 9px; font-weight: 600;
+  text-transform: uppercase;
+  padding: 1px 5px; border-radius: 3px;
+  min-width: 36px; text-align: center;
+  color: #fff; flex-shrink: 0;
+}
+.sidebar .method-badge.get { background: var(--method-get); }
+.sidebar .method-badge.post { background: var(--method-post); }
+.sidebar .method-badge.delete { background: var(--method-delete); }
+.sidebar .method-badge.put { background: var(--method-put); }
+.sidebar .method-badge.patch { background: var(--method-patch); }
+
+/* Mobile overlay when sidebar is open */
+.sidebar-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5); z-index: 89;
+}
+
+/* ========================================================
+   Main content — two-panel (Stripe layout)
+   ======================================================== */
+.main {
+  margin-left: var(--sidebar-width);
+  margin-top: var(--header-height);
+}
+
+.endpoint {
+  display: flex; min-height: 100vh;
+  border-bottom: 1px solid var(--border);
+}
+.endpoint:last-child { min-height: auto; }
+
+/* Left panel — description */
+.endpoint .desc-panel {
+  flex: 1; min-width: 0;
+  padding: 40px 48px;
+  max-width: calc(100% - var(--code-panel-width));
+}
+
+/* Right panel — code examples */
+.endpoint .code-panel {
+  width: var(--code-panel-width); flex-shrink: 0;
+  background: var(--bg-code);
+  border-left: 1px solid var(--border);
+  padding: 40px 32px;
+  position: sticky; top: var(--header-height);
+  max-height: calc(100vh - var(--header-height));
+  overflow-y: auto;
+}
+.endpoint .code-panel::-webkit-scrollbar { width: 4px; }
+.endpoint .code-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Endpoint title */
+.endpoint-title {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.endpoint-title .method {
+  font-family: var(--font-mono);
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase;
+  padding: 3px 8px; border-radius: 4px;
+  color: #fff;
+}
+.endpoint-title .method.get { background: var(--method-get); }
+.endpoint-title .method.post { background: var(--method-post); }
+.endpoint-title .method.delete { background: var(--method-delete); }
+.endpoint-title .method.put { background: var(--method-put); }
+.endpoint-title .method.patch { background: var(--method-patch); }
+
+.endpoint-title .path {
+  font-family: var(--font-mono);
+  font-size: 15px; font-weight: 500;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.endpoint-title .path .param { color: var(--accent-light); }
+
+.endpoint .summary {
+  font-size: 22px; font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px; line-height: 1.3;
+}
+
+.endpoint .description {
+  color: var(--text-secondary);
+  font-size: 14px; line-height: 1.7;
+  margin-bottom: 28px;
+}
+
+.deprecated-badge {
+  display: inline-block;
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 8px; border-radius: 3px;
+  background: var(--deprecated-bg);
+  color: var(--deprecated-fg); margin-left: 8px;
+}
+
+/* Parameters table */
+.params-section { margin-bottom: 28px; }
+.params-section h3 {
+  font-size: 13px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.param-row {
+  display: flex; gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.param-row:last-child { border-bottom: none; }
+
+.param-name {
+  font-family: var(--font-mono);
+  font-weight: 500; min-width: 140px;
+  color: var(--text-primary);
+}
+.param-name .required {
+  color: var(--accent-light);
+  font-size: 10px; margin-left: 4px;
+}
+.param-name .in-badge {
+  display: block; font-size: 10px;
+  color: var(--text-muted); font-weight: 400;
+  margin-top: 2px;
+}
+
+.param-desc { color: var(--text-secondary); flex: 1; }
+.param-type {
+  font-family: var(--font-mono);
+  font-size: 11px; color: var(--accent-light);
+}
+
+/* Response status codes */
+.responses-section { margin-bottom: 28px; }
+.response-row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.response-row:last-child { border-bottom: none; }
+.status-code {
+  font-family: var(--font-mono);
+  font-weight: 600; min-width: 40px;
+}
+.status-code.s2xx { color: var(--status-2xx); }
+.status-code.s4xx { color: var(--status-4xx); }
+.status-code.s5xx { color: var(--status-5xx); }
+.response-desc { color: var(--text-secondary); }
+
+/* Code panel content */
+.code-block {
+  position: relative;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px; margin-bottom: 16px;
+  overflow-x: auto;
+}
+.code-block .label {
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.code-block .copy-btn {
+  position: absolute; top: 10px; right: 10px;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+  color: var(--text-muted); transition: all 0.15s;
+  opacity: 0;
+}
+.code-block:hover .copy-btn { opacity: 1; }
+.code-block .copy-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+.code-block .copy-btn.copied { color: var(--status-2xx); border-color: var(--status-2xx); opacity: 1; }
+.code-block pre {
+  font-family: var(--font-mono);
+  font-size: 12px; line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-all;
+}
+.code-block pre .str { color: var(--code-str); }
+.code-block pre .key { color: var(--accent-light); }
+.code-block pre .comment { color: var(--text-muted); }
+.code-block pre .method-h { color: var(--accent); font-weight: 600; }
+.code-block pre .url-h { color: var(--text-primary); }
+
+/* Body schema tree */
+.schema-tree { font-size: 13px; }
+.schema-prop {
+  padding: 4px 0;
+  display: flex; gap: 8px; align-items: baseline;
+  flex-wrap: wrap;
+}
+.schema-prop .prop-name {
+  font-family: var(--font-mono);
+  color: var(--text-primary); font-weight: 500;
+}
+.schema-prop .prop-type {
+  font-family: var(--font-mono);
+  font-size: 11px; color: var(--accent-light);
+}
+.schema-prop .prop-required {
+  font-size: 10px; color: var(--accent-light);
+}
+.schema-prop .prop-desc {
+  color: var(--text-secondary); font-size: 12px;
+}
+
+/* Intro section */
+.intro-section {
+  padding: 48px;
+  border-bottom: 1px solid var(--border);
+  max-width: calc(100% - var(--code-panel-width));
+}
+.intro-section h2 {
+  font-size: 28px; font-weight: 600;
+  margin-bottom: 16px;
+}
+.intro-section p {
+  color: var(--text-secondary);
+  font-size: 15px; line-height: 1.7;
+  max-width: 640px;
+}
+.intro-section .base-url {
+  display: inline-block; margin-top: 20px;
+  font-family: var(--font-mono);
+  font-size: 14px; padding: 8px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent-light);
+}
+
+/* ========================================================
+   Responsive — tablet (< 1024px): stack code below
+   ======================================================== */
+@media (max-width: 1024px) {
+  :root { --code-panel-width: 0%; }
+
+  .endpoint { flex-direction: column; min-height: auto; }
+  .endpoint .desc-panel {
+    max-width: 100%; padding: 32px 24px;
+  }
+  .endpoint .code-panel {
+    width: 100%; position: static; max-height: none;
+    border-left: none; border-top: 1px solid var(--border);
+    padding: 24px;
+  }
+  .intro-section { max-width: 100%; padding: 32px 24px; }
+}
+
+/* ========================================================
+   Responsive — mobile (< 768px): collapsible sidebar
+   ======================================================== */
+@media (max-width: 768px) {
+  :root { --sidebar-width: 280px; }
+
+  .menu-toggle { display: block; }
+
+  .sidebar {
+    transform: translateX(-100%);
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+  }
+  .sidebar-overlay.open { display: block; }
+
+  .main { margin-left: 0; }
+  .intro-section { max-width: 100%; }
+
+  .header .subtitle { display: none; }
+  .endpoint .desc-panel { padding: 24px 16px; }
+  .endpoint .code-panel { padding: 16px; }
+  .endpoint .summary { font-size: 18px; }
+  .endpoint-title .path { font-size: 13px; }
+
+  .param-row { flex-direction: column; gap: 4px; }
+  .param-name { min-width: unset; }
+}
+</style>
+</head>
+<body>
+
+<div class="header" id="header"></div>
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
+<nav class="sidebar" id="sidebar"></nav>
+<div class="main" id="main"></div>
+
+<script>
+// ============================================================
+// Configuration
+// ============================================================
+const docsConfig = window.docsConfig || {};
+
+try {
+  const configEl = document.getElementById('docs-config');
+  if (configEl) Object.assign(docsConfig, JSON.parse(configEl.textContent));
+} catch(e) {}
+
+const conf = {
+  specUrl:      docsConfig.specUrl      || './openapi.json',
+  logoUrl:      docsConfig.logoUrl      || null,
+  title:        docsConfig.title        || null,
+  subtitle:     docsConfig.subtitle     || 'API Reference',
+  defaultTheme: docsConfig.defaultTheme || 'dark',
+  theme: {
+    '--accent':         docsConfig.accent         || null,
+    '--accent-light':   docsConfig.accentLight    || null,
+    '--bg-primary':     docsConfig.bgPrimary      || null,
+    '--bg-secondary':   docsConfig.bgSecondary    || null,
+    '--bg-tertiary':    docsConfig.bgTertiary     || null,
+    '--text-primary':   docsConfig.textPrimary    || null,
+    '--text-secondary': docsConfig.textSecondary  || null,
+    '--font-body':      docsConfig.fontBody       || null,
+    '--font-mono':      docsConfig.fontMono       || null,
+    '--method-get':     docsConfig.methodGet      || null,
+    '--method-post':    docsConfig.methodPost     || null,
+    '--method-delete':  docsConfig.methodDelete   || null,
+  },
+};
+
+// Apply theme overrides (only in dark mode — light mode uses its own)
+for (const [prop, val] of Object.entries(conf.theme)) {
+  if (val) document.documentElement.style.setProperty(prop, val);
+}
+
+// ============================================================
+// Theme toggle
+// ============================================================
+function getStoredTheme() {
+  try { return localStorage.getItem('api-docs-theme'); } catch { return null; }
+}
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('api-docs-theme', theme); } catch {}
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+}
+setTheme(getStoredTheme() || conf.defaultTheme);
+
+// ============================================================
+// Mobile sidebar
+// ============================================================
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+
+// ============================================================
+// Render helpers
+// ============================================================
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function copyCode(btn) {
+  const pre = btn.parentElement.querySelector('pre');
+  const text = pre.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+function opId(method, path) { return `${method}-${path.replace(/[^a-zA-Z0-9]/g, '-')}`; }
+function highlightPath(path) { return esc(path).replace(/\{([^}]+)\}/g, '<span class="param">{$1}</span>'); }
+function statusClass(code) {
+  const n = parseInt(code);
+  if (n >= 200 && n < 300) return 's2xx';
+  if (n >= 400 && n < 500) return 's4xx';
+  return 's5xx';
+}
+
+function renderSchemaProps(schema, depth = 0) {
+  if (!schema || !schema.properties) return '';
+  const required = new Set(schema.required || []);
+  let html = '';
+  for (const [name, prop] of Object.entries(schema.properties)) {
+    const type = prop.type || (prop.$ref ? prop.$ref.split('/').pop() : 'object');
+    html += `<div class="schema-prop" style="padding-left:${depth*16}px">
+      <span class="prop-name">${esc(name)}</span>
+      <span class="prop-type">${esc(type)}${prop.enum ? ' enum' : ''}</span>
+      ${required.has(name) ? '<span class="prop-required">required</span>' : ''}
+      ${prop.description ? `<span class="prop-desc">— ${esc(prop.description)}</span>` : ''}
+    </div>`;
+    if (prop.properties) html += renderSchemaProps(prop, depth + 1);
+    if (prop.items?.properties) html += renderSchemaProps(prop.items, depth + 1);
+  }
+  return html;
+}
+
+function buildCurlExample(method, path, op, servers) {
+  const base = servers?.[0]?.url || 'http://localhost:9377';
+  const url = base + path.replace(/\{(\w+)\}/g, ':$1');
+  let curl = `<span class="comment"># ${esc(op.summary || `${method.toUpperCase()} ${path}`)}</span>\ncurl`;
+  if (method !== 'get') curl += ` -X <span class="method-h">${method.toUpperCase()}</span>`;
+  curl += ` <span class="url-h">${esc(url)}</span>`;
+
+  const bodySchema = op.requestBody?.content?.['application/json']?.schema;
+  if (bodySchema?.properties) {
+    curl += ` \\\n  -H <span class="str">"Content-Type: application/json"</span>`;
+    const props = {};
+    for (const [k, v] of Object.entries(bodySchema.properties)) {
+      if (v.type === 'string') props[k] = `<${k}>`;
+      else if (v.type === 'boolean') props[k] = true;
+      else if (v.type === 'integer' || v.type === 'number') props[k] = 0;
+      else if (v.type === 'array') props[k] = [];
+      else props[k] = {};
+    }
+    const body = JSON.stringify(props, null, 2)
+      .replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:')
+      .replace(/"<([^>]+)>"/g, '<span class="str">"&lt;$1&gt;"</span>');
+    curl += ` \\\n  -d '${body}'`;
+  }
+  return curl;
+}
+
+function buildResponseExample(op) {
+  const resp200 = op.responses?.['200'];
+  if (!resp200) return null;
+  const schema = resp200.content?.['application/json']?.schema;
+  if (!schema?.properties) return null;
+
+  const obj = {};
+  for (const [k, v] of Object.entries(schema.properties)) {
+    if (v.type === 'string') obj[k] = v.example || '';
+    else if (v.type === 'boolean') obj[k] = true;
+    else if (v.type === 'integer' || v.type === 'number') obj[k] = 0;
+    else if (v.type === 'array') obj[k] = [];
+    else if (v.type === 'object' && v.properties) {
+      const inner = {};
+      for (const [ik, iv] of Object.entries(v.properties)) {
+        if (iv.type === 'string') inner[ik] = iv.example || '';
+        else if (iv.type === 'boolean') inner[ik] = true;
+        else inner[ik] = null;
+      }
+      obj[k] = inner;
+    } else obj[k] = null;
+  }
+
+  return JSON.stringify(obj, null, 2)
+    .replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:')
+    .replace(/: "([^"]*)"/g, ': <span class="str">"$1"</span>');
+}
+
+// ============================================================
+// Main render
+// ============================================================
+async function render() {
+  const res = await fetch(conf.specUrl);
+  const spec = await res.json();
+
+  const title = conf.title || spec.info?.title || 'API';
+  document.title = `${title} — ${conf.subtitle}`;
+  document.getElementById('page-title').textContent = document.title;
+
+  // Header
+  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+  document.getElementById('header').innerHTML = `
+    <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+    ${conf.logoUrl ? `<img src="${esc(conf.logoUrl)}" alt="">` : ''}
+    <span class="title">${esc(title)}</span>
+    <span class="subtitle">${esc(conf.subtitle)}</span>
+    <div class="header-right">
+      <span class="version">v${esc(spec.info?.version || '?')}</span>
+      <button class="theme-toggle" id="theme-btn"
+        onclick="setTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark')"
+        aria-label="Toggle theme">${currentTheme === 'dark' ? '☀️' : '🌙'}</button>
+    </div>
+  `;
+
+  // Group operations by tag
+  const tagMap = new Map();
+  const tagOrder = (spec.tags || []).map(t => t.name);
+
+  for (const [path, methods] of Object.entries(spec.paths || {})) {
+    for (const [method, op] of Object.entries(methods)) {
+      if (method.startsWith('x-')) continue;
+      const tag = op.tags?.[0] || 'Other';
+      if (!tagMap.has(tag)) tagMap.set(tag, []);
+      tagMap.get(tag).push({ method, path, op });
+    }
+  }
+
+  const sortedTags = [...tagMap.keys()].sort((a, b) => {
+    const ai = tagOrder.indexOf(a), bi = tagOrder.indexOf(b);
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  });
+
+  // Sidebar
+  let sidebarHtml = '';
+  for (const tag of sortedTags) {
+    sidebarHtml += `<div class="tag-group"><span class="tag-name">${esc(tag)}</span>`;
+    for (const { method, path, op } of tagMap.get(tag)) {
+      const id = opId(method, path);
+      const label = op.summary || path;
+      sidebarHtml += `<a class="nav-item" href="#${id}" data-id="${id}" onclick="closeSidebar()">
+        <span class="method-badge ${method}">${method}</span>
+        <span>${esc(label)}</span>
+      </a>`;
+    }
+    sidebarHtml += '</div>';
+  }
+  document.getElementById('sidebar').innerHTML = sidebarHtml;
+
+  // Main content
+  let mainHtml = '';
+
+  if (spec.info?.description) {
+    const base = spec.servers?.[0]?.url || '';
+    mainHtml += `<div class="intro-section">
+      <h2>${esc(conf.subtitle)}</h2>
+      <p>${esc(spec.info.description)}</p>
+      ${base ? `<div class="base-url">${esc(base)}</div>` : ''}
+    </div>`;
+  }
+
+  for (const tag of sortedTags) {
+    for (const { method, path, op } of tagMap.get(tag)) {
+      const id = opId(method, path);
+      const allParams = op.parameters || [];
+      const pathParams = allParams.filter(p => p.in === 'path');
+      const queryParams = allParams.filter(p => p.in === 'query');
+      const bodySchema = op.requestBody?.content?.['application/json']?.schema;
+      const curl = buildCurlExample(method, path, op, spec.servers);
+      const respExample = buildResponseExample(op);
+
+      mainHtml += `<div class="endpoint" id="${id}">
+        <div class="desc-panel">
+          <div class="endpoint-title">
+            <span class="method ${method}">${method.toUpperCase()}</span>
+            <span class="path">${highlightPath(path)}</span>
+            ${op.deprecated ? '<span class="deprecated-badge">Deprecated</span>' : ''}
+          </div>
+          <div class="summary">${esc(op.summary || '')}</div>
+          ${op.description ? `<div class="description">${esc(op.description)}</div>` : ''}`;
+
+      if (pathParams.length) {
+        mainHtml += `<div class="params-section"><h3>Path Parameters</h3>`;
+        for (const p of pathParams) {
+          mainHtml += `<div class="param-row">
+            <div class="param-name">${esc(p.name)}${p.required ? '<span class="required">required</span>' : ''}
+              <span class="in-badge">${esc(p.in)}</span></div>
+            <div class="param-desc">
+              <div class="param-type">${esc(p.schema?.type || 'string')}</div>
+              ${p.description ? esc(p.description) : ''}</div>
+          </div>`;
+        }
+        mainHtml += '</div>';
+      }
+
+      if (queryParams.length) {
+        mainHtml += `<div class="params-section"><h3>Query Parameters</h3>`;
+        for (const p of queryParams) {
+          mainHtml += `<div class="param-row">
+            <div class="param-name">${esc(p.name)}${p.required ? '<span class="required">required</span>' : ''}
+              <span class="in-badge">${esc(p.in)}</span></div>
+            <div class="param-desc">
+              <div class="param-type">${esc(p.schema?.type || 'string')}${p.schema?.enum ? ` — ${p.schema.enum.join(', ')}` : ''}</div>
+              ${p.description ? esc(p.description) : ''}</div>
+          </div>`;
+        }
+        mainHtml += '</div>';
+      }
+
+      if (bodySchema) {
+        mainHtml += `<div class="params-section"><h3>Request Body</h3>
+          <div class="schema-tree">${renderSchemaProps(bodySchema)}</div></div>`;
+      }
+
+      if (op.responses) {
+        mainHtml += `<div class="responses-section"><h3>Responses</h3>`;
+        for (const [code, resp] of Object.entries(op.responses)) {
+          if (code.startsWith('x-')) continue;
+          const desc = resp.description || resp.$ref || '';
+          mainHtml += `<div class="response-row">
+            <span class="status-code ${statusClass(code)}">${esc(code)}</span>
+            <span class="response-desc">${esc(desc)}</span>
+          </div>`;
+        }
+        mainHtml += '</div>';
+      }
+
+      mainHtml += `</div>`; // close desc-panel
+
+      mainHtml += `<div class="code-panel">
+        <div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <div class="label">Request</div>
+          <pre>${curl}</pre>
+        </div>`;
+      if (respExample) {
+        mainHtml += `<div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <div class="label">Response</div>
+          <pre>${respExample}</pre>
+        </div>`;
+      }
+      mainHtml += `</div></div>`;
+    }
+  }
+
+  document.getElementById('main').innerHTML = mainHtml;
+
+  // Active nav tracking via IntersectionObserver
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+        const link = document.querySelector(`.nav-item[data-id="${entry.target.id}"]`);
+        if (link) {
+          link.classList.add('active');
+          link.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    }
+  }, { rootMargin: '-80px 0px -60% 0px', threshold: 0 });
+
+  document.querySelectorAll('.endpoint[id]').forEach(el => observer.observe(el));
+
+  // Close sidebar on overlay click
+  document.getElementById('sidebar-overlay').addEventListener('click', closeSidebar);
+}
+
+render().catch(err => {
+  document.getElementById('main').innerHTML =
+    `<div class="intro-section"><h2>Error</h2><p>${esc(err.message)}</p></div>`;
+});
+</script>
+</body>
+</html>

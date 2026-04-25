@@ -60,6 +60,7 @@
     "test:live": "RUN_LIVE_TESTS=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/live",
     "test:debug": "DEBUG_SERVER=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
     "plugin": "node scripts/plugin.js",
+    "generate-openapi": "node scripts/generate-openapi.js",
     "version:sync": "node scripts/sync-version.js",
     "version": "node scripts/sync-version.js && git add openclaw.plugin.json",
     "postinstall": "npx camoufox-js fetch || true"
@@ -71,7 +72,8 @@
     "playwright-core": "^1.58.0",
     "playwright-extra": "^4.3.6",
     "prom-client": "^15.1.3",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "swagger-jsdoc": "^6.2.8"
   },
   "devDependencies": {
     "jest": "^29.7.0",

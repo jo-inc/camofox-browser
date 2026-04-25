@@ -51,6 +51,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
 - **Deploy Anywhere** - Docker, Fly.io, Railway
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
+- **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 
 ## Optional Dependencies
 
