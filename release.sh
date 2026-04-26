@@ -4,6 +4,15 @@ set -euo pipefail
 # Release script for @askjo/camofox-browser
 # Usage: ./release.sh [patch|minor|major]
 # Defaults to patch if no argument given.
+#
+# This script:
+#   1. Runs pre-flight checks (clean tree, on master, up to date)
+#   2. Runs tests locally
+#   3. Bumps version via npm version (which syncs openclaw.plugin.json)
+#   4. Pushes commit + tag to origin
+#   5. GitHub Actions publishes to npm with provenance
+#
+# The actual npm publish happens in CI (.github/workflows/publish.yml).
 
 BUMP="${1:-patch}"
 
@@ -39,23 +48,15 @@ if [[ "$LOCAL" != "$REMOTE" ]]; then
   exit 1
 fi
 
-# --- npm auth ---
-echo "🔑 Checking npm auth..."
-if ! npm whoami --registry=https://registry.npmjs.org/ 2>/dev/null; then
-  echo ""
-  echo "Not logged in to npm. Logging in..."
-  echo "(Use your npmjs.com credentials or create a token at https://www.npmjs.com/settings/tokens)"
-  echo ""
-  npm login --registry=https://registry.npmjs.org/
-  echo ""
-fi
-NPM_USER=$(npm whoami --registry=https://registry.npmjs.org/)
-echo "✅ Logged in as: $NPM_USER"
-
 # --- Tests ---
 echo ""
 echo "🧪 Running tests..."
-NODE_OPTIONS='--experimental-vm-modules' npx jest --runInBand --forceExit --testPathPattern='tests/unit' 2>&1 | tail -5
+JEST_OUTPUT=$(NODE_OPTIONS='--experimental-vm-modules' npx jest --runInBand --forceExit --testPathPattern='tests/unit' --testPathIgnorePatterns='reporter\.test' 2>&1)
+echo "$JEST_OUTPUT" | tail -5
+if echo "$JEST_OUTPUT" | grep -q 'Tests:.*failed'; then
+  echo "❌ Tests failed"
+  exit 1
+fi
 echo ""
 # reporter.test.js uses node:test, not Jest
 node --test tests/unit/reporter.test.js 2>&1 | tail -3
@@ -75,16 +76,13 @@ NEW_VERSION=$(node -p "require('./package.json').version")
 echo ""
 echo "📦 New version: $NEW_VERSION"
 
-# --- Publish ---
+# --- Push (triggers CI publish) ---
 echo ""
-echo "🚀 Publishing @askjo/camofox-browser@$NEW_VERSION..."
-npm publish --access public
-
-# --- Push ---
-echo ""
-echo "📤 Pushing commit and tag..."
+echo "📤 Pushing commit and tag (CI will publish to npm)..."
 git push origin master --follow-tags
 
 echo ""
-echo "✅ Released @askjo/camofox-browser@$NEW_VERSION"
-echo "   https://www.npmjs.com/package/@askjo/camofox-browser/v/$NEW_VERSION"
+echo "✅ Release v${NEW_VERSION} triggered"
+echo "   CI will publish @askjo/camofox-browser@${NEW_VERSION} with provenance"
+echo "   Watch: https://github.com/jo-inc/camofox-browser/actions"
+echo "   Package: https://www.npmjs.com/package/@askjo/camofox-browser"

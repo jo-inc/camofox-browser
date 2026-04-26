@@ -1,0 +1,98 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit tests (node:test)
+        run: node --test tests/unit/reporter.test.js
+
+      - name: Unit + plugin tests (Jest)
+        run: |
+          npm install --no-save jest-junit
+          node --experimental-vm-modules node_modules/.bin/jest \
+            --testPathPattern='tests/unit|plugins' \
+            --testPathIgnorePatterns='reporter\.test|security\.test|tabRecycling\.test|cookies\.test' \
+            --forceExit
+        env:
+          CI: true
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps firefox
+
+      - name: Install browser system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps firefox
+
+      - name: E2E tests
+        run: |
+          xvfb-run --auto-servernum \
+            node --experimental-vm-modules node_modules/.bin/jest \
+              --config jest.config.e2e.cjs \
+              --runInBand --forceExit
+        env:
+          CI: true
+
+      - name: Browser-dependent unit tests
+        run: |
+          xvfb-run --auto-servernum \
+            node --experimental-vm-modules node_modules/.bin/jest \
+              --testPathPattern='tests/unit/(security|tabRecycling|cookies)\.test' \
+              --runInBand --forceExit
+        env:
+          CI: true
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) != package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "✅ Publishing v${PKG_VERSION}"
+
+      - run: npm ci --ignore-scripts
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
