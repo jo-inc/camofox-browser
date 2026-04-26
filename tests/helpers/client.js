@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { CI_TIMEOUT } from './test-env.js';
 
 class BrowserClient {
   constructor(baseUrl) {
@@ -7,7 +8,7 @@ class BrowserClient {
     this.sessionKey = crypto.randomUUID();
     this.listItemId = this.sessionKey; // Legacy alias
     this.tabs = [];
-    this.timeout = process.env.CI ? 60000 : 30000;
+    this.timeout = CI_TIMEOUT;
   }
   
   async request(method, path, body = null, options = {}) {

@@ -1,9 +1,9 @@
 /**
- * VNC launcher — owns all child_process spawning and process.env reads.
+ * VNC launcher — owns all process spawning and env reads.
  * Isolated from route handlers for OpenClaw scanner compliance.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn } from './spawn.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
