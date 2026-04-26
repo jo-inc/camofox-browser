@@ -9,6 +9,7 @@ import os from 'os';
 import { fileURLToPath } from 'node:url';
 import { launchServer } from '../../lib/launcher.js';
 import { loadConfig } from '../../lib/config.js';
+import { DISPLAY } from '../helpers/test-env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,7 +40,7 @@ export default async function globalSetup() {
   const serverProcess = launchServer({
     pluginDir,
     port: serverPort,
-    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', DISPLAY: process.env.DISPLAY },
+    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', DISPLAY },
     log,
   });
 
