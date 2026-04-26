@@ -15,7 +15,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const MIN_VERSION = [1, 7, 2];
+            const MIN_VERSION = [1, 7, 3];
             const body = context.payload.issue.body || '';
 
             // Parse "- **version:** X.Y.Z" from issue body
@@ -32,8 +32,9 @@ jobs:
               if (!dominated) {
                 console.log(`Version ${match[1]} meets minimum ${MIN_VERSION.join('.')}.`);
 
-                // Auto-close likely-sleep issues (CPU ratio near zero = OS suspend, not real stall)
                 const labels = context.payload.issue.labels.map(l => l.name);
+
+                // Auto-close likely-sleep issues (CPU ratio near zero = OS suspend, not real stall)
                 if (labels.includes('likely-sleep')) {
                   console.log('likely-sleep label detected, closing.');
                   await github.rest.issues.createComment({
@@ -50,6 +51,28 @@ jobs:
                     state_reason: 'not_planned',
                   });
                   return;
+                }
+
+                // Auto-close stalls with no active tabs (no user work affected)
+                if (labels.includes('stuck')) {
+                  const tabMatch = body.match(/\*\*active tabs:\*\*\s*(\d+)/);
+                  if (tabMatch && parseInt(tabMatch[1], 10) === 0) {
+                    console.log('Stall with 0 active tabs, closing.');
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      body: 'Closing — event loop stall with no active tabs (no user work affected). If you hit this during active browsing, please re-open.',
+                    });
+                    await github.rest.issues.update({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      state: 'closed',
+                      state_reason: 'not_planned',
+                    });
+                    return;
+                  }
                 }
 
                 console.log('Keeping open.');
