@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "camofox-browser",
-    "version": "1.7.2",
+    "version": "1.7.3",
     "description": "Anti-detection browser automation server for AI agents. Accessibility snapshots, element refs, session isolation, cookie import, proxy rotation, and structured logs.",
     "license": {
       "name": "MIT",
