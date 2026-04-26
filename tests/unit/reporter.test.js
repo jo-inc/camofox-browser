@@ -88,8 +88,9 @@ describe('anonymize', () => {
     assert.ok(!result.includes('192.168.1.100'), `leaked IP: ${result}`);
   });
 
-  it('preserves localhost 127.0.0.1', () => {
-    assert.ok(anonymize('Listening on 127.0.0.1:3000').includes('127.0.0.1'));
+  it('redacts localhost 127.0.0.1', () => {
+    assert.ok(!anonymize('Listening on 127.0.0.1:3000').includes('127.0.0.1'));
+    assert.ok(anonymize('Listening on 127.0.0.1:3000').includes('<ip>'));
   });
 
   it('strips IPv6 addresses', () => {
@@ -539,10 +540,10 @@ describe('createUrlAnonymizer', () => {
     assert.ok(result.includes('site-'), 'should hash IP');
   });
 
-  it('preserves localhost', () => {
+  it('redacts localhost', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
-    assert.ok(anonymizeUrl('http://localhost:3000/test').includes('localhost'));
-    assert.ok(anonymizeUrl('http://127.0.0.1:3000/test').includes('localhost'));
+    assert.ok(!anonymizeUrl('http://localhost:3000/test').includes('localhost'));
+    assert.ok(!anonymizeUrl('http://127.0.0.1:3000/test').includes('127.0.0.1'));
   });
 
   it('handles data/blob/javascript URIs', () => {
