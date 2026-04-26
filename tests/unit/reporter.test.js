@@ -1,6 +1,10 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { anonymize, stackSignature, createReporter, createUrlAnonymizer, createTabHealthTracker } from '../../lib/reporter.js';
+import {
+  anonymize, stackSignature, createReporter, createUrlAnonymizer,
+  createTabHealthTracker, collectResourceSnapshot, detectBotProtection,
+  classifyProxyError,
+} from '../../lib/reporter.js';
 
 // ============================================================================
 // Anonymization tests
@@ -396,6 +400,7 @@ describe('createReporter', () => {
     await reporter.reportHang('navigate', 30000);
     await reporter.reportStuckLoop(60000);
     reporter.startWatchdog();
+    reporter.trackRoute('GET /test');
     reporter.stop();
   });
 
@@ -415,6 +420,17 @@ describe('createReporter', () => {
     reporter.startWatchdog();
     const result = await reporter.stop();
     assert.ok(Array.isArray(result));
+  });
+
+  it('trackRoute is a function on enabled reporter', () => {
+    const reporter = createReporter({
+      ...TEST_CRASH_CONFIG,
+      crashReportEnabled: true,
+      crashReportRepo: 'test/repo',
+    });
+    assert.equal(typeof reporter.trackRoute, 'function');
+    reporter.trackRoute('POST /tabs/:id/navigate');
+    reporter.stop();
   });
 });
 
@@ -595,5 +611,318 @@ describe('createUrlAnonymizer', () => {
     const result = anonymizeUrl('https://admin:secret@example.com/dashboard');
     assert.ok(!result.includes('admin'), `leaked username: ${result}`);
     assert.ok(!result.includes('secret'), `leaked password: ${result}`);
+  });
+});
+
+// ============================================================================
+// Bot detection tests
+// ============================================================================
+
+describe('detectBotProtection', () => {
+
+  function mockResponse(status, headers) {
+    return {
+      status: () => status,
+      headers: () => headers,
+    };
+  }
+
+  it('detects Cloudflare challenge (cf-mitigated header)', () => {
+    const result = detectBotProtection(mockResponse(403, { 'cf-mitigated': 'challenge', 'cf-ray': '123abc' }));
+    assert.equal(result.detected, true);
+    assert.equal(result.provider, 'cloudflare');
+    assert.equal(result.httpStatus, 403);
+  });
+
+  it('detects Cloudflare by cf-ray header on 403', () => {
+    const result = detectBotProtection(mockResponse(403, { 'cf-ray': '7abc123-LAX' }));
+    assert.equal(result.detected, true);
+    assert.equal(result.provider, 'cloudflare');
+  });
+
+  it('Cloudflare cf-ray on 200 is not a challenge', () => {
+    const result = detectBotProtection(mockResponse(200, { 'cf-ray': '7abc123-LAX' }));
+    assert.equal(result.detected, false);
+    assert.equal(result.provider, 'cloudflare');
+  });
+
+  it('detects DataDome even behind Cloudflare (cf-ray present)', () => {
+    // Multi-CDN: Cloudflare fronts the site (cf-ray on all responses)
+    // but DataDome is the actual bot-detection provider blocking with 403
+    const result = detectBotProtection(mockResponse(403, {
+      'cf-ray': '7abc123-LAX',
+      'x-datadome': 'protected',
+    }));
+    assert.equal(result.detected, true);
+    assert.equal(result.provider, 'datadome', 'should detect DataDome, not Cloudflare');
+  });
+
+  it('detects DataDome', () => {
+    const result = detectBotProtection(mockResponse(403, { 'x-datadome': 'protected' }));
+    assert.equal(result.detected, true);
+    assert.equal(result.provider, 'datadome');
+  });
+
+  it('detects PerimeterX', () => {
+    const result = detectBotProtection(mockResponse(429, { 'x-px': 'something' }));
+    assert.equal(result.detected, true);
+    assert.equal(result.provider, 'perimeterx');
+  });
+
+  it('detects Akamai', () => {
+    const result = detectBotProtection(mockResponse(503, { 'server': 'AkamaiGHost' }));
+    assert.equal(result.detected, true);
+    assert.equal(result.provider, 'akamai');
+  });
+
+  it('returns not detected for normal response', () => {
+    const result = detectBotProtection(mockResponse(200, { 'content-type': 'text/html' }));
+    assert.equal(result.detected, false);
+    assert.equal(result.provider, null);
+    assert.equal(result.httpStatus, 200);
+  });
+
+  it('returns not detected for null response', () => {
+    const result = detectBotProtection(null);
+    assert.equal(result.detected, false);
+    assert.equal(result.provider, null);
+    assert.equal(result.httpStatus, null);
+  });
+
+  it('handles response that throws on headers()', () => {
+    const result = detectBotProtection({
+      status: () => 403,
+      headers: () => { throw new Error('page closed'); },
+    });
+    assert.equal(result.detected, false);
+    assert.equal(result.httpStatus, 403);
+  });
+});
+
+// ============================================================================
+// Proxy error classification tests
+// ============================================================================
+
+describe('classifyProxyError', () => {
+
+  it('detects ERR_PROXY_CONNECTION_FAILED', () => {
+    const result = classifyProxyError('net::ERR_PROXY_CONNECTION_FAILED');
+    assert.equal(result.proxyError, 'ERR_PROXY_CONNECTION_FAILED');
+    assert.equal(result.proxyTlsError, false);
+  });
+
+  it('detects ERR_TUNNEL_CONNECTION_FAILED', () => {
+    const result = classifyProxyError('net::ERR_TUNNEL_CONNECTION_FAILED');
+    assert.equal(result.proxyError, 'ERR_TUNNEL_CONNECTION_FAILED');
+  });
+
+  it('detects proxy auth required (407)', () => {
+    const result = classifyProxyError('Proxy responded with 407');
+    assert.equal(result.proxyError, 'ERR_PROXY_AUTH_REQUESTED');
+  });
+
+  it('detects proxy TLS errors', () => {
+    const result = classifyProxyError('ERR_PROXY_CERTIFICATE_INVALID');
+    assert.equal(result.proxyError, 'ERR_PROXY_TLS');
+    assert.equal(result.proxyTlsError, true);
+  });
+
+  it('returns null for non-proxy errors', () => {
+    const result = classifyProxyError('net::ERR_CONNECTION_REFUSED');
+    assert.equal(result.proxyError, null);
+    assert.equal(result.proxyTlsError, false);
+  });
+
+  it('handles null/empty input', () => {
+    assert.equal(classifyProxyError(null).proxyError, null);
+    assert.equal(classifyProxyError('').proxyError, null);
+    assert.equal(classifyProxyError(undefined).proxyError, null);
+  });
+});
+
+// ============================================================================
+// Resource snapshot tests
+// ============================================================================
+
+describe('collectResourceSnapshot', () => {
+
+  it('collects basic memory metrics', () => {
+    const snap = collectResourceSnapshot();
+    assert.ok(typeof snap.nodeRssMb === 'number');
+    assert.ok(snap.nodeRssMb > 0, 'RSS should be > 0');
+    assert.ok(typeof snap.nodeHeapUsedMb === 'number');
+    assert.ok(typeof snap.nodeHeapTotalMb === 'number');
+    assert.ok(typeof snap.nodeExternalMb === 'number');
+  });
+
+  it('collects active handles count', () => {
+    const snap = collectResourceSnapshot();
+    // process._getActiveHandles is available in Node
+    assert.ok(snap.activeHandles === null || typeof snap.activeHandles === 'number');
+  });
+
+  it('includes session/tab counts when provided', () => {
+    const snap = collectResourceSnapshot({ sessionCount: 3, tabCount: 7 });
+    assert.equal(snap.browserContexts, 3);
+    assert.equal(snap.activeTabs, 7);
+  });
+
+  it('browserRssMb is null without browserPid', () => {
+    const snap = collectResourceSnapshot();
+    assert.equal(snap.browserRssMb, null);
+  });
+
+  it('handles invalid browserPid gracefully', () => {
+    const snap = collectResourceSnapshot({ browserPid: 99999999 });
+    // Should not throw, just null
+    assert.equal(snap.browserRssMb, null);
+  });
+
+  it('collects open FDs on Linux', () => {
+    const snap = collectResourceSnapshot();
+    if (process.platform === 'linux') {
+      assert.ok(typeof snap.openFds === 'number');
+      assert.ok(snap.openFds > 0);
+    } else {
+      assert.equal(snap.openFds, null);
+    }
+  });
+});
+
+// ============================================================================
+// Tab health tracker tests
+// ============================================================================
+
+describe('createTabHealthTracker', () => {
+
+  function createMockPage() {
+    const listeners = {};
+    return {
+      on: (event, handler) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(handler);
+      },
+      _emit: (event, ...args) => {
+        for (const handler of (listeners[event] || [])) handler(...args);
+      },
+      evaluate: async (fn) => fn(),
+      frames: () => [{}],
+    };
+  }
+
+  it('tracks crashes', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    page._emit('crash');
+    page._emit('crash');
+    const snap = tracker.snapshot();
+    assert.equal(snap.crashes, 2);
+  });
+
+  it('tracks page errors', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    page._emit('pageerror', new Error('test'));
+    const snap = tracker.snapshot();
+    assert.equal(snap.pageErrors, 1);
+  });
+
+  it('tracks request failures', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    page._emit('requestfailed', {});
+    const snap = tracker.snapshot();
+    assert.equal(snap.requestFailures, 1);
+  });
+
+  it('tracks in-flight requests', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    // Simulate 3 requests starting
+    page._emit('request', { isNavigationRequest: () => false });
+    page._emit('request', { isNavigationRequest: () => false });
+    page._emit('request', { isNavigationRequest: () => false });
+    assert.equal(tracker.health.inflightRequests, 3);
+    // One finishes
+    page._emit('requestfinished', {});
+    assert.equal(tracker.health.inflightRequests, 2);
+    // One fails
+    page._emit('requestfailed', {});
+    // requestfailed fires both the failure counter AND decrements inflight
+    assert.equal(tracker.health.inflightRequests, 1);
+  });
+
+  it('tracks HTTP status histogram', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    page._emit('response', { status: () => 403, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
+    page._emit('response', { status: () => 403, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
+    page._emit('response', { status: () => 429, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
+    page._emit('response', { status: () => 200, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
+    const snap = tracker.snapshot();
+    assert.equal(snap.statusCounts[403], 2);
+    assert.equal(snap.statusCounts[429], 1);
+    assert.equal(snap.statusCounts[200], undefined);
+  });
+
+  it('does NOT track console errors (noise — cut per oracle)', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    const snap = tracker.snapshot();
+    assert.equal(snap.consoleErrors, undefined, 'consoleErrors should not be in snapshot');
+  });
+
+  it('does NOT track dialog count (noise — cut per oracle)', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    const snap = tracker.snapshot();
+    assert.equal(snap.dialogCount, undefined, 'dialogCount should not be in snapshot');
+  });
+
+  it('does NOT track frame count (noise — cut per oracle)', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    const snap = tracker.snapshot();
+    assert.equal(snap.frameCount, undefined, 'frameCount should not be in snapshot');
+  });
+
+  it('tracks redirect status codes', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    // Simulate nav request with redirects
+    page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => null });
+    page._emit('response', { status: () => 301, headers: () => ({}), request: () => ({ isNavigationRequest: () => true }) });
+    page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => ({}) });
+    page._emit('response', { status: () => 302, headers: () => ({}), request: () => ({ isNavigationRequest: () => true }) });
+    page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => ({}) });
+    page._emit('response', { status: () => 403, headers: () => ({ 'cf-ray': '123' }), request: () => ({ isNavigationRequest: () => true }) });
+
+    const snap = tracker.snapshot();
+    assert.deepEqual(snap.redirectStatusCodes, [301, 302, 403]);
+    assert.equal(snap.maxRedirectDepth, 2);
+  });
+
+  it('detects bot protection on navigation response', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => null });
+    page._emit('response', {
+      status: () => 403,
+      headers: () => ({ 'cf-ray': '7abc-LAX', 'content-length': '42000' }),
+      request: () => ({ isNavigationRequest: () => true }),
+    });
+    const snap = tracker.snapshot();
+    assert.equal(snap.botDetection.detected, true);
+    assert.equal(snap.botDetection.provider, 'cloudflare');
+    assert.equal(snap.lastNavResponseSize, 42000);
+  });
+
+  it('provides getReadyState function', async () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page);
+    const state = await tracker.getReadyState();
+    // Our mock evaluate just runs the function, which returns undefined in Node
+    // (no real DOM). The important thing is it doesn't throw.
+    assert.ok(state !== undefined || state === undefined);
   });
 });

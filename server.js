@@ -33,7 +33,7 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
-import { createReporter, createTabHealthTracker } from './lib/reporter.js';
+import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 
 const CONFIG = loadConfig();
@@ -42,18 +42,21 @@ const CONFIG = loadConfig();
 import { readFileSync } from 'fs';
 const _pkgVersion = (() => { try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 const reporter = createReporter({ ...CONFIG, version: _pkgVersion });
-reporter.startWatchdog(5000, () => {
-  const summary = [];
-  for (const [userId, session] of sessions) {
-    const urls = [];
-    for (const group of session.tabGroups.values()) {
-      for (const tab of group.values()) {
-        try { if (tab.page) urls.push(tab.page.url()); } catch {}
-      }
-    }
-    summary.push({ userId, urls });
+function _countTabs() {
+  let total = 0;
+  for (const session of sessions.values()) {
+    for (const group of session.tabGroups.values()) total += group.size;
   }
-  return { sessions: sessions.size, summary };
+  return total;
+}
+function _browserPid() {
+  try { return browser?.process?.()?.pid ?? null; } catch { return null; }
+}
+function _resourceOpts() {
+  return { sessionCount: sessions.size, tabCount: _countTabs(), browserPid: _browserPid() };
+}
+reporter.startWatchdog(5000, () => {
+  return { resourceOpts: _resourceOpts() };
 });
 
 // --- Plugin event bus ---
@@ -101,6 +104,7 @@ app.use((req, res, next) => {
   }
 
   const action = actionFromReq(req);
+  reporter.trackRoute(`${req.method} ${req.route?.path || '[unmatched]'}`);
   const done = requestDuration.startTimer({ action });
 
   const origEnd = res.end.bind(res);
@@ -1046,10 +1050,19 @@ function handleRouteError(err, req, res, extraFields = {}) {
       if (ts.failureJournal.length > 20) ts.failureJournal = ts.failureJournal.slice(-20);
 
       if (ts.consecutiveFailures === 3) {
+        const _proxyErr = classifyProxyError(err?.message);
         reporter.reportHang(action, req.startTime ? Date.now() - req.startTime : 0, {
           error: err,
-          url: ts.lastRequestedUrl || undefined,
           healthSnapshot: ts.healthTracker ? ts.healthTracker.snapshot() : undefined,
+          healthTracker: ts.healthTracker || null,
+          resourceOpts: _resourceOpts(),
+          proxy: proxyPool ? {
+            configured: true,
+            type: proxyPool.mode || null,
+            authConfigured: !!CONFIG.proxy?.username,
+            error: _proxyErr.proxyError,
+            tlsError: _proxyErr.proxyTlsError,
+          } : { configured: false },
           context: {
             failureType,
             consecutiveFailures: ts.consecutiveFailures,
@@ -4941,7 +4954,7 @@ setInterval(async () => {
 process.on('uncaughtException', (err) => {
   pluginEvents.emit('browser:error', { error: err });
   log('error', 'uncaughtException', { error: err.message, stack: err.stack });
-  reporter.reportCrash(err);
+  reporter.reportCrash(err, { resourceOpts: _resourceOpts() });
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
