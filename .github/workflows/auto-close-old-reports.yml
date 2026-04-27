@@ -15,7 +15,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const MIN_VERSION = [1, 7, 3];
+            const MIN_VERSION = [1, 7, 4];
             const body = context.payload.issue.body || '';
 
             // Parse "- **version:** X.Y.Z" from issue body
