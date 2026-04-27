@@ -23,14 +23,17 @@ function mockRes() {
   const res = {
     _status: null,
     _json: null,
+    _headers: {},
     status(code) { res._status = code; return res; },
     json(body) { res._json = body; return res; },
+    set(key, val) { res._headers[key.toLowerCase()] = val; return res; },
   };
   return res;
 }
 
 const ACCESS_KEY = 'ak-test-secret-key-12345';
 const API_KEY = 'api-test-secret-key-67890';
+const ADMIN_KEY = 'admin-test-secret-key-99999';
 const WRONG_KEY = 'wrong-key-nope';
 
 // ────────────────────────────────────────────────────────────────────
@@ -68,7 +71,7 @@ describe('accessKeyMiddleware', () => {
   });
 
   describe('when accessKey IS set', () => {
-    const mw = accessKeyMiddleware({ accessKey: ACCESS_KEY });
+    const mw = accessKeyMiddleware({ accessKey: ACCESS_KEY, apiKey: API_KEY, adminKey: ADMIN_KEY });
 
     // --- Exemptions ---
 
@@ -81,7 +84,7 @@ describe('accessKeyMiddleware', () => {
       expect(res._status).toBeNull();
     });
 
-    test('exempts POST /sessions/:userId/cookies (has own CAMOFOX_API_KEY gate)', () => {
+    test('exempts POST /sessions/:userId/cookies when apiKey is set', () => {
       const req = mockReq({ method: 'POST', path: '/sessions/user123/cookies' });
       const res = mockRes();
       const next = jest.fn();
@@ -89,7 +92,7 @@ describe('accessKeyMiddleware', () => {
       expect(next).toHaveBeenCalled();
     });
 
-    test('exempts POST /stop (has own CAMOFOX_ADMIN_KEY gate)', () => {
+    test('exempts POST /stop when adminKey is set', () => {
       const req = mockReq({ method: 'POST', path: '/stop' });
       const res = mockRes();
       const next = jest.fn();
@@ -125,6 +128,14 @@ describe('accessKeyMiddleware', () => {
       expect(next).not.toHaveBeenCalled();
       expect(res._status).toBe(401);
       expect(res._json).toEqual({ error: 'Unauthorized' });
+    });
+
+    test('includes WWW-Authenticate header on 401', () => {
+      const req = mockReq({ method: 'POST', path: '/tabs' });
+      const res = mockRes();
+      const next = jest.fn();
+      mw(req, res, next);
+      expect(res._headers['www-authenticate']).toBe('Bearer realm="camofox"');
     });
 
     test('rejects request with wrong bearer token → 401', () => {
@@ -213,6 +224,17 @@ describe('accessKeyMiddleware', () => {
       expect(next).toHaveBeenCalled();
     });
 
+    test('trims trailing whitespace from bearer token', () => {
+      const req = mockReq({
+        path: '/tabs',
+        headers: { authorization: `Bearer ${ACCESS_KEY}  ` },
+      });
+      const res = mockRes();
+      const next = jest.fn();
+      mw(req, res, next);
+      expect(next).toHaveBeenCalled();
+    });
+
     // --- Route coverage ---
 
     test('gates /tabs/:tabId/evaluate (arbitrary JS execution)', () => {
@@ -269,6 +291,43 @@ describe('accessKeyMiddleware', () => {
       expect(res._status).toBe(401);
     });
   });
+
+  // --- Defense-in-depth: conditional exemptions ---
+
+  describe('defense-in-depth: exemptions only when dedicated key is set', () => {
+    test('does NOT exempt POST /stop when adminKey is NOT set', () => {
+      const mw = accessKeyMiddleware({ accessKey: ACCESS_KEY, adminKey: '', apiKey: API_KEY });
+      const req = mockReq({ method: 'POST', path: '/stop' });
+      const res = mockRes();
+      const next = jest.fn();
+      mw(req, res, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(res._status).toBe(401);
+    });
+
+    test('does NOT exempt POST /sessions/:userId/cookies when apiKey is NOT set', () => {
+      const mw = accessKeyMiddleware({ accessKey: ACCESS_KEY, apiKey: '', adminKey: ADMIN_KEY });
+      const req = mockReq({ method: 'POST', path: '/sessions/u1/cookies' });
+      const res = mockRes();
+      const next = jest.fn();
+      mw(req, res, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(res._status).toBe(401);
+    });
+
+    test('POST /stop with access key passes when adminKey is NOT set', () => {
+      const mw = accessKeyMiddleware({ accessKey: ACCESS_KEY, adminKey: '', apiKey: API_KEY });
+      const req = mockReq({
+        method: 'POST',
+        path: '/stop',
+        headers: { authorization: `Bearer ${ACCESS_KEY}` },
+      });
+      const res = mockRes();
+      const next = jest.fn();
+      mw(req, res, next);
+      expect(next).toHaveBeenCalled();
+    });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -316,6 +375,15 @@ describe('requireAuth with accessKey (superkey)', () => {
       expect(next).not.toHaveBeenCalled();
       expect(res._status).toBe(403);
     });
+
+    test('trims trailing whitespace from bearer token', () => {
+      const mw = requireAuth(config);
+      const req = mockReq({ headers: { authorization: `Bearer ${API_KEY}   ` } });
+      const res = mockRes();
+      const next = jest.fn();
+      mw(req, res, next);
+      expect(next).toHaveBeenCalled();
+    });
   });
 
   describe('only accessKey set (no apiKey)', () => {
@@ -330,7 +398,7 @@ describe('requireAuth with accessKey (superkey)', () => {
       expect(next).toHaveBeenCalled();
     });
 
-    test('rejects wrong token even from loopback in production', () => {
+    test('rejects wrong token — does NOT fall through to loopback', () => {
       const mw = requireAuth(config);
       const req = mockReq({
         headers: { authorization: `Bearer ${WRONG_KEY}` },
@@ -339,18 +407,19 @@ describe('requireAuth with accessKey (superkey)', () => {
       const res = mockRes();
       const next = jest.fn();
       mw(req, res, next);
-      // No apiKey configured, so falls through to loopback check — but it's production
       expect(next).not.toHaveBeenCalled();
+      expect(res._status).toBe(403);
     });
 
-    test('allows loopback without token in development (no apiKey)', () => {
+    test('rejects loopback without token — accessKey gates even loopback', () => {
       const devConfig = { apiKey: '', accessKey: ACCESS_KEY, nodeEnv: 'development' };
       const mw = requireAuth(devConfig);
       const req = mockReq({ remoteAddress: '127.0.0.1' });
       const res = mockRes();
       const next = jest.fn();
       mw(req, res, next);
-      expect(next).toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+      expect(res._status).toBe(403);
     });
   });
 
@@ -407,7 +476,7 @@ describe('requireAuth with accessKey (superkey)', () => {
 // ────────────────────────────────────────────────────────────────────
 
 describe('double-auth chain (access-key middleware → requireAuth)', () => {
-  const config = { apiKey: API_KEY, accessKey: ACCESS_KEY, nodeEnv: 'production' };
+  const config = { apiKey: API_KEY, accessKey: ACCESS_KEY, adminKey: ADMIN_KEY, nodeEnv: 'production' };
   const globalMw = accessKeyMiddleware(config);
   const routeMw = requireAuth(config);
 
@@ -431,10 +500,7 @@ describe('double-auth chain (access-key middleware → requireAuth)', () => {
     expect(chainResult).toBe('allowed');
   });
 
-  test('API key passes both middlewares (matches access-key gate + route-level gate)', () => {
-    // API_KEY ≠ ACCESS_KEY, so global middleware rejects it.
-    // This verifies the bug is fixed: before the fix, API_KEY-only users
-    // couldn't reach routes with requireAuth because the global gate blocked them.
+  test('API key does NOT pass global middleware (different from access key)', () => {
     const req = mockReq({
       path: '/sessions/u1/traces',
       headers: { authorization: `Bearer ${API_KEY}` },
@@ -461,10 +527,25 @@ describe('double-auth chain (access-key middleware → requireAuth)', () => {
       path: '/tabs',
       headers: { authorization: `Bearer ${ACCESS_KEY}` },
     });
-    // For /tabs, there's no route-level requireAuth — just the global gate
     const res = mockRes();
     const next = jest.fn();
     globalMw(req, res, next);
     expect(next).toHaveBeenCalled();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Named middleware functions (debuggability)
+// ────────────────────────────────────────────────────────────────────
+
+describe('middleware function naming', () => {
+  test('accessKeyMiddleware returns named function', () => {
+    const mw = accessKeyMiddleware({ accessKey: '' });
+    expect(mw.name).toBe('accessKeyCheck');
+  });
+
+  test('requireAuth returns named function', () => {
+    const mw = requireAuth({ apiKey: '', nodeEnv: 'development' });
+    expect(mw.name).toBe('requireAuthCheck');
   });
 });
