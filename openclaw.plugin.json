@@ -2,7 +2,7 @@
   "id": "camofox-browser",
   "name": "Camofox Browser",
   "description": "Anti-detection browser automation for AI agents using Camoufox (Firefox-based)",
-  "version": "1.8.8",
+  "version": "1.8.9",
   "envVars": {
     "CAMOFOX_API_KEY": {
       "description": "Secret key for the cookie-import endpoint. Cookie import is disabled when unset. Only set this if you need to import browser cookies and the server is local or access-controlled.",
