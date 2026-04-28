@@ -53,7 +53,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **Large Page Handling** - automatic snapshot truncation with offset-based pagination
 - **Download Capture** - capture browser downloads and fetch them via API (optional inline base64)
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
-- **Deploy Anywhere** - Docker, Fly.io
+- **Deploy Anywhere** - Docker, Fly.io, Railway
 - **VNC Interactive Login** - log into sites visually via noVNC, export storage state for agent reuse
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 - **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
@@ -116,6 +116,21 @@ make up VERSION=135.0.1 RELEASE=beta.24
 ### Fly.io
 
 For Fly.io or other remote CI, you'll need a Dockerfile that downloads binaries at build time instead of using bind mounts.
+
+### Railway
+
+A `railway.toml` is included. It uses `Dockerfile.ci` (which downloads binaries at build time) and maps Railway's `PORT` env var to `CAMOFOX_PORT` automatically.
+
+```bash
+# Install Railway CLI, then:
+railway link
+railway up
+```
+
+Set secrets via the Railway dashboard or CLI:
+```bash
+railway variables set CAMOFOX_API_KEY="your-generated-key"
+```
 
 ## Usage
 
@@ -252,7 +267,7 @@ curl -X POST http://localhost:9377/sessions/agent1/cookies \
   -d '{"cookies":[{"name":"foo","value":"bar","domain":"example.com","path":"/","expires":-1,"httpOnly":false,"secure":false}]}'
 ```
 
-#### Docker / Fly.io
+#### Docker / Fly.io / Railway
 
 ```bash
 docker run -p 9377:9377 \
@@ -264,6 +279,11 @@ docker run -p 9377:9377 \
 For Fly.io:
 ```bash
 fly secrets set CAMOFOX_API_KEY="your-generated-key"
+```
+
+For Railway:
+```bash
+railway variables set CAMOFOX_API_KEY="your-generated-key"
 ```
 
 ### Proxy + GeoIP
@@ -480,7 +500,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CAMOFOX_PORT` | Server port | `9377` |
-| `PORT` | Server port (fallback, for platforms like Fly.io) | `9377` |
+| `PORT` | Server port (fallback, for platforms like Fly.io, Railway) | `9377` |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
