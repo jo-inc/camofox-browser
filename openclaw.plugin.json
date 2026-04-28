@@ -68,7 +68,7 @@
   },
   "telemetry": {
     "crashReporter": {
-      "description": "Anonymized crash/hang reports sent to a Cloudflare Worker relay. No secrets or private keys are shipped in this package.",
+      "description": "Anonymized crash/hang reports sent to a Cloudflare Worker relay. All credentials are environment secrets on the relay — nothing sensitive ships in this package.",
       "enabled": true,
       "optOut": "CAMOFOX_CRASH_REPORT_ENABLED=false",
       "relay": "https://camofox-crash-relay.askjo.workers.dev/report",

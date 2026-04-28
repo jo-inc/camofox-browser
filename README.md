@@ -412,7 +412,7 @@ To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser
 1. **Create a GitHub App** — [Settings → Developer settings → GitHub Apps → New](https://github.com/settings/apps/new)
    - Permissions: **Repository → Issues → Read & Write**
    - Uncheck **Webhook → Active** (not needed)
-   - Click **Generate a private key** — downloads a `.pem` file
+   - Click **Generate a key** — downloads a `.pem` file
    - Install the app on your target repo (Install App → select repo)
    - Note your **App ID** (number on the app's General page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
 
