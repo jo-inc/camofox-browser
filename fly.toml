@@ -28,9 +28,9 @@ primary_region = "sjc"
   path = "/metrics"
 
 [[vm]]
-  memory = "8gb"
+  memory = "4gb"
   cpu_kind = "performance"
-  cpus = 2
+  cpus = 1
 
 [[restart]]
   policy = "always"
