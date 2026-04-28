@@ -1,0 +1,10 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.ci"
+
+[deploy]
+startCommand = "sh -c 'CAMOFOX_PORT=${PORT:-9377} node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js'"
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
