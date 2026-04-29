@@ -1,4 +1,4 @@
-name = "camofox-crash-relay"
+name = "camofox-telemetry"
 main = "index.ts"
 compatibility_date = "2024-12-01"
 account_id = "ec4ecdec16bd6fc65e76f4f585f5bd9d"

@@ -15,16 +15,16 @@
       "sensitive": true
     },
     "CAMOFOX_CRASH_REPORT_ENABLED": {
-      "description": "Enable or disable anonymized crash/hang reporting. Set to 'false' to disable all outbound crash reports.",
+      "description": "Enable or disable anonymized crash/hang telemetry. Set to 'false' to disable all outbound telemetry.",
       "required": false,
       "sensitive": false,
       "default": "true"
     },
     "CAMOFOX_CRASH_REPORT_URL": {
-      "description": "Crash report relay endpoint. Override to point to a self-hosted relay instead of the default Cloudflare Worker.",
+      "description": "Telemetry endpoint URL. Override to point to a self-hosted endpoint instead of the default.",
       "required": false,
       "sensitive": false,
-      "default": "https://camofox-crash-relay.askjo.workers.dev/report"
+      "default": "https://camofox-telemetry.askjo.workers.dev/report"
     }
   },
   "configSchema": {
@@ -79,25 +79,25 @@
       },
       "crashReportEnabled": {
         "type": "boolean",
-        "description": "Enable anonymized crash/hang reporting to the relay. Set false to disable all outbound crash reports.",
+        "description": "Enable anonymized crash/hang telemetry. Set false to disable all outbound telemetry.",
         "default": true
       },
       "crashReportUrl": {
         "type": "string",
-        "description": "Crash report relay endpoint. Override to point to a self-hosted relay. Set via CAMOFOX_CRASH_REPORT_URL env var.",
-        "default": "https://camofox-crash-relay.askjo.workers.dev/report"
+        "description": "Telemetry endpoint URL. Override to point to a self-hosted endpoint. Set via CAMOFOX_CRASH_REPORT_URL env var.",
+        "default": "https://camofox-telemetry.askjo.workers.dev/report"
       }
     },
     "additionalProperties": false
   },
   "telemetry": {
     "crashReporter": {
-      "description": "Anonymized crash/hang reports sent to a Cloudflare Worker relay. All credentials are environment secrets on the relay -- nothing sensitive ships in this package.",
+      "description": "Anonymized crash/hang telemetry for identifying failure patterns. All credentials are environment secrets on the endpoint -- nothing sensitive ships in this package.",
       "enabled": true,
       "optOut": "CAMOFOX_CRASH_REPORT_ENABLED=false",
-      "relay": "https://camofox-crash-relay.askjo.workers.dev/report",
-      "relaySource": "https://github.com/jo-inc/camofox-browser/blob/main/workers/crash-reporter/index.ts",
-      "relayVerification": "https://camofox-crash-relay.askjo.workers.dev/source",
+      "endpoint": "https://camofox-telemetry.askjo.workers.dev/report",
+      "endpointSource": "https://github.com/jo-inc/camofox-browser/blob/main/workers/crash-reporter/index.ts",
+      "endpointVerification": "https://camofox-telemetry.askjo.workers.dev/source",
       "selfHostable": true,
       "selfHostOverride": "CAMOFOX_CRASH_REPORT_URL",
       "dataCollected": [
@@ -157,11 +157,11 @@
       "placeholder": "Leave empty for localhost-only access"
     },
     "crashReportEnabled": {
-      "label": "Enable Crash Reporting"
+      "label": "Enable Telemetry"
     },
     "crashReportUrl": {
-      "label": "Crash Report Relay URL",
-      "placeholder": "https://camofox-crash-relay.askjo.workers.dev/report"
+      "label": "Telemetry Endpoint URL",
+      "placeholder": "https://camofox-telemetry.askjo.workers.dev/report"
     }
   },
   "tools": [
@@ -201,8 +201,8 @@
           "gatedBy": "Agent request via API"
         },
         {
-          "target": "https://camofox-crash-relay.askjo.workers.dev/report",
-          "purpose": "Anonymized crash/hang reporting",
+          "target": "https://camofox-telemetry.askjo.workers.dev/report",
+          "purpose": "Anonymized crash/hang telemetry",
           "gatedBy": "CAMOFOX_CRASH_REPORT_ENABLED (default: true, set false to disable)"
         }
       ],
@@ -221,8 +221,8 @@
         },
         {
           "path": "/proc/self/status (Linux only)",
-          "purpose": "Memory and resource metrics for crash reports",
-          "gatedBy": "Only read when crash reporting is enabled"
+          "purpose": "Memory and resource metrics for telemetry",
+          "gatedBy": "Only read when telemetry is enabled"
         }
       ],
       "write": [

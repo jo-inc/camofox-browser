@@ -83,7 +83,7 @@ async function getInstallationToken(env: Env): Promise<string | null> {
       headers: {
         Authorization: `Bearer ${jwt}`,
         Accept: "application/vnd.github+json",
-        "User-Agent": "camofox-crash-relay",
+        "User-Agent": "camofox-telemetry",
       },
     },
   );
@@ -113,6 +113,19 @@ interface CrashReport {
   version?: string;
 }
 
+const MIN_VERSION = "1.8.10";
+
+function isVersionAllowed(version?: string): boolean {
+  if (!version) return false;
+  const parts = version.split(".").map(Number);
+  const min = MIN_VERSION.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((parts[i] || 0) > (min[i] || 0)) return true;
+    if ((parts[i] || 0) < (min[i] || 0)) return false;
+  }
+  return true; // equal
+}
+
 function validatePayload(data: unknown): CrashReport | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
@@ -121,13 +134,15 @@ function validatePayload(data: unknown): CrashReport | null {
   if (typeof d.title !== "string" || d.title.length === 0 || d.title.length > 256) return null;
   if (typeof d.body !== "string" || d.body.length > 65536) return null;
   if (!Array.isArray(d.labels) || d.labels.some((l) => typeof l !== "string")) return null;
+  const version = typeof d.version === "string" ? d.version : undefined;
+  if (!isVersionAllowed(version)) return null;
   return {
     type: d.type,
     signature: d.signature,
     title: d.title,
     body: d.body,
     labels: (d.labels as string[]).slice(0, 5),
-    version: typeof d.version === "string" ? d.version : undefined,
+    version,
   };
 }
 
@@ -138,7 +153,7 @@ async function findExistingIssue(token: string, repo: string, signature: string)
     headers: {
       Authorization: `token ${token}`,
       Accept: "application/vnd.github+json",
-      "User-Agent": "camofox-crash-relay",
+      "User-Agent": "camofox-telemetry",
     },
   });
   if (!resp.ok) return null;
@@ -153,7 +168,7 @@ async function commentOnIssue(token: string, repo: string, issueNumber: number, 
       Authorization: `token ${token}`,
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
-      "User-Agent": "camofox-crash-relay",
+      "User-Agent": "camofox-telemetry",
     },
     body: JSON.stringify({ body: body.slice(0, 4096) }),
   });
@@ -169,7 +184,7 @@ async function createIssue(
       Authorization: `token ${token}`,
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
-      "User-Agent": "camofox-crash-relay",
+      "User-Agent": "camofox-telemetry",
     },
     body: JSON.stringify({ title, body, labels }),
   });

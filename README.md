@@ -58,7 +58,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **OpenAPI Docs** - auto-generated spec at [`/openapi.json`](http://localhost:9377/openapi.json) and interactive docs at [`/docs`](http://localhost:9377/docs)
 - **Structured Extract** - `POST /tabs/:tabId/extract` with a JSON Schema that maps properties to snapshot refs via `x-ref`
 - **Session Tracing** - opt-in per-session Playwright trace capture (screenshots + DOM snapshots + network) with API endpoints to list, fetch, and delete trace zips
-- **Crash Reporter** - automatic [anonymized crash/hang reporting](lib/reporter.js#L28-L290) via GitHub Issues. Identifies which sites cause failures and common failure patterns. Private domains are HMAC-hashed, paths/params stripped, tokens/IPs redacted. Opt-out with `CAMOFOX_CRASH_REPORT_ENABLED=false`.
+- **Telemetry** - automatic [anonymized crash/hang telemetry](lib/reporter.js#L28-L290) via GitHub Issues. Identifies which sites cause failures and common failure patterns. Private domains are HMAC-hashed, paths/params stripped, tokens/IPs redacted. Opt-out with `CAMOFOX_CRASH_REPORT_ENABLED=false`.
 
 ## Optional Dependencies
 
@@ -332,11 +332,11 @@ When a proxy is configured:
 - Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
 - Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
 
-### Crash Reporter
+### Telemetry
 
 Browser automation fails in ways that are hard to predict -- Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."
 
-The crash reporter gives us structured data on *which sites fail*, *how they fail*, and *how often*, so we can prioritize fixes for the patterns that actually affect users. It files GitHub Issues automatically when:
+Telemetry gives us structured data on *which sites fail*, *how they fail*, and *how often*, so we can prioritize fixes for the patterns that actually affect users. It files GitHub Issues automatically when:
 
 - **Uncaught exceptions** crash the process
 - **Event loop stalls** exceed 5 seconds (watchdog detection)
@@ -346,11 +346,11 @@ Each report includes the failure type, stack trace, tab health counters (HTTP st
 
 #### How it works
 
-Reports are sent to a lightweight Cloudflare Worker relay at [`https://camofox-crash-relay.askjo.workers.dev`](https://camofox-crash-relay.askjo.workers.dev/health). The relay holds the GitHub App credentials as environment secrets -- **no secrets are shipped in this package**.
+Telemetry is sent to a lightweight Cloudflare Worker endpoint at [`https://camofox-telemetry.askjo.workers.dev`](https://camofox-telemetry.askjo.workers.dev/health). The endpoint holds the GitHub App credentials as environment secrets -- **no secrets are shipped in this package**.
 
 ```
 lib/reporter.js (client, no secrets)
-    |  anonymize -> POST https://camofox-crash-relay.askjo.workers.dev/report
+    |  anonymize -> POST https://camofox-telemetry.askjo.workers.dev/report
     v
 Cloudflare Worker (holds GitHub App key)
     |  validate -> rate-limit -> dedup -> create GitHub Issue
@@ -358,28 +358,28 @@ Cloudflare Worker (holds GitHub App key)
 GitHub Issue created
 ```
 
-The relay source code is in this repo at [`workers/crash-reporter/index.ts`](workers/crash-reporter/index.ts).
+The endpoint source code is in this repo at [`workers/crash-reporter/index.ts`](workers/crash-reporter/index.ts).
 
 #### Verification
 
-You don't have to trust us -- verify what the live relay is running:
+You don't have to trust us -- verify what the live endpoint is running:
 
 ```bash
-# 1. Ask the relay what code it's running
-curl https://camofox-crash-relay.askjo.workers.dev/source
+# 1. Ask the endpoint what code it's running
+curl https://camofox-telemetry.askjo.workers.dev/source
 # -> { "commit": "abc1234", "sha256": "e3b0c44...", "source": "https://github.com/..." }
 
 # 2. Compare the sha256 against the source in this repo
 sha256sum workers/crash-reporter/index.ts
 
 # 3. Check the commit matches what CI deployed
-#    https://github.com/jo-inc/camofox-browser/actions/workflows/crash-relay-deploy.yml
+#    https://github.com/jo-inc/camofox-browser/actions/workflows/telemetry-deploy.yml
 git log --oneline workers/crash-reporter/index.ts | head -1
 ```
 
-If the hashes don't match, the relay is running different code than what's in the repo. The deploy workflow ([`.github/workflows/crash-relay-deploy.yml`](.github/workflows/crash-relay-deploy.yml)) injects the commit and source hash at deploy time -- every deploy is auditable in [GitHub Actions](https://github.com/jo-inc/camofox-browser/actions/workflows/crash-relay-deploy.yml).
+If the hashes don't match, the endpoint is running different code than what's in the repo. The deploy workflow ([`.github/workflows/telemetry-deploy.yml`](.github/workflows/telemetry-deploy.yml)) injects the commit and source hash at deploy time -- every deploy is auditable in [GitHub Actions](https://github.com/jo-inc/camofox-browser/actions/workflows/telemetry-deploy.yml).
 
-Or skip verification entirely: `CAMOFOX_CRASH_REPORT_ENABLED=false` disables all reporting, or point to [your own relay](#self-hosted-relay) with `CAMOFOX_CRASH_REPORT_URL`.
+Or skip verification entirely: `CAMOFOX_CRASH_REPORT_ENABLED=false` disables all telemetry, or point to [your own endpoint](#self-hosted-telemetry-endpoint) with `CAMOFOX_CRASH_REPORT_URL`.
 
 #### Privacy
 
@@ -395,19 +395,19 @@ All reported data goes through paranoid anonymization ([`lib/reporter.js` L28-29
 Duplicate issues are detected by stack signature and get a `+1` comment instead of a new issue.
 
 ```bash
-# Disable crash reporting
+# Disable telemetry
 export CAMOFOX_CRASH_REPORT_ENABLED=false
 
-# Point to your own relay (see below)
-export CAMOFOX_CRASH_REPORT_URL=https://your-relay.example.com/report
+# Point to your own endpoint (see below)
+export CAMOFOX_CRASH_REPORT_URL=https://your-endpoint.example.com/report
 
 # Adjust rate limit (default: 10 per hour)
 export CAMOFOX_CRASH_REPORT_RATE_LIMIT=5
 ```
 
-#### Self-hosted relay
+#### Self-hosted telemetry endpoint
 
-To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser`:
+To file telemetry reports in your own GitHub repo instead of `jo-inc/camofox-browser`:
 
 1. **Create a GitHub App** -- [Settings -> Developer settings -> GitHub Apps -> New](https://github.com/settings/apps/new)
    - Permissions: **Repository -> Issues -> Read & Write**
@@ -416,7 +416,7 @@ To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser
    - Install the app on your target repo (Install App -> select repo)
    - Note your **App ID** (number on the app's General page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
 
-2. **Deploy the relay** -- clone this repo and deploy the worker:
+2. **Deploy the endpoint** -- clone this repo and deploy the worker:
    ```bash
    cd workers/crash-reporter
    # Edit wrangler.toml: set account_id to your Cloudflare account ID
@@ -436,7 +436,7 @@ To file crash reports in your own GitHub repo instead of `jo-inc/camofox-browser
    echo "your-org/your-repo" | npx wrangler secret put GH_REPO
    ```
 
-4. **Point camofox-browser to your relay:**
+4. **Point camofox-browser to your endpoint:**
    ```bash
    export CAMOFOX_CRASH_REPORT_URL=https://your-worker.your-subdomain.workers.dev/report
    ```
@@ -588,10 +588,10 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
-| `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang reporter (`false` to disable) | `true` |
-| `CAMOFOX_CRASH_REPORT_URL` | Crash report relay endpoint ([self-hosted relay](#self-hosted-relay)) | `https://camofox-crash-relay.askjo.workers.dev/report` |
-| `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for issue reports | `jo-inc/camofox-browser` |
-| `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max reports per hour | `10` |
+| `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang telemetry (`false` to disable) | `true` |
+| `CAMOFOX_CRASH_REPORT_URL` | Telemetry endpoint ([self-hosted endpoint](#self-hosted-telemetry-endpoint)) | `https://camofox-telemetry.askjo.workers.dev/report` |
+| `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for telemetry issues | `jo-inc/camofox-browser` |
+| `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max telemetry reports per hour | `10` |
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |
 | `VNC_PASSWORD` | Password for VNC access (recommended in production) | - |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
@@ -622,7 +622,7 @@ All `process.env` reads are centralized in `lib/config.js`. All `child_process` 
 
 ### No embedded secrets
 
-Zero credentials, private keys, API tokens, or signing keys ship in this package. All secrets are provided at runtime via environment variables (`CAMOFOX_API_KEY`, `CAMOFOX_ACCESS_KEY`) or are Cloudflare Worker environment secrets (crash relay GitHub App key).
+Zero credentials, private keys, API tokens, or signing keys ship in this package. All secrets are provided at runtime via environment variables (`CAMOFOX_API_KEY`, `CAMOFOX_ACCESS_KEY`) or are Cloudflare Worker environment secrets (telemetry endpoint GitHub App key).
 
 ### Cookie import is disabled by default
 
@@ -636,9 +636,9 @@ The cookie import endpoint (`POST /sessions/:userId/cookies`) is gated behind `C
 
 The Camoufox browser engine (~300MB) is downloaded at `npm install` time by [`camoufox-js`](https://www.npmjs.com/package/camoufox-js), an npm package maintained by the [Camoufox project](https://camoufox.com). It downloads from [official GitHub releases](https://github.com/nicedayzhu/camoufox/releases) with integrity verification handled by `camoufox-js`. No custom download URLs, no URL shorteners, no raw IP addresses.
 
-### Crash reporting
+### Telemetry
 
-Anonymized crash/hang reports are sent to a Cloudflare Worker relay. The relay source is [in this repo](workers/crash-reporter/index.ts) and auditable. Verification: `GET /source` on the relay returns the deployed commit hash and sha256 so you can compare against the repo. The reporter ([`lib/reporter.js` L28-290](lib/reporter.js#L28-L290)) applies paranoid anonymization: private domains are HMAC-hashed (not reversible), paths are stripped, tokens/IPs/emails are redacted. No page content, cookies, or user data is ever sent. Disable with `CAMOFOX_CRASH_REPORT_ENABLED=false` or point to your own relay with `CAMOFOX_CRASH_REPORT_URL`.
+Anonymized crash/hang telemetry is sent to a Cloudflare Worker endpoint. The endpoint source is [in this repo](workers/crash-reporter/index.ts) and auditable. Verification: `GET /source` on the endpoint returns the deployed commit hash and sha256 so you can compare against the repo. The reporter ([`lib/reporter.js` L28-290](lib/reporter.js#L28-L290)) applies paranoid anonymization: private domains are HMAC-hashed (not reversible), paths are stripped, tokens/IPs/emails are redacted. No page content, cookies, or user data is ever sent. Disable with `CAMOFOX_CRASH_REPORT_ENABLED=false` or point to your own endpoint with `CAMOFOX_CRASH_REPORT_URL`.
 
 ### Session persistence
 
@@ -646,7 +646,7 @@ The persistence plugin saves cookies and localStorage to `~/.camofox/profiles/<h
 
 ### Network access
 
-Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the crash report relay (anonymized, opt-out available). Inbound: the REST API on localhost:9377 (default), optionally protected by `CAMOFOX_ACCESS_KEY`.
+Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on localhost:9377 (default), optionally protected by `CAMOFOX_ACCESS_KEY`.
 
 ### Subprocess usage
 

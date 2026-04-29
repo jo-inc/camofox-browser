@@ -1,4 +1,4 @@
-name: Deploy Crash Relay
+name: Deploy Telemetry Endpoint
 
 on:
   push:
