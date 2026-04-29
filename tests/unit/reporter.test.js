@@ -1,5 +1,3 @@
-import { describe, it, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
 import {
   anonymize, stackSignature, createReporter, sendToRelay, createUrlAnonymizer,
   createTabHealthTracker, collectResourceSnapshot, detectBotProtection,
@@ -14,217 +12,217 @@ describe('anonymize', () => {
 
   // ---- File paths ----
 
-  it('strips Unix home directory paths', () => {
+  test('strips Unix home directory paths', () => {
     const input = 'Error at /Users/pradeep/personal/camofox-browser/server.js:123:45';
     const result = anonymize(input);
-    assert.ok(!result.includes('pradeep'), `leaked username: ${result}`);
-    assert.ok(!result.includes('/Users/'), `leaked /Users/: ${result}`);
-    assert.ok(result.includes('server.js'), 'should keep filename');
+    expect(!result.includes('pradeep')).toBeTruthy();
+    expect(!result.includes('/Users/')).toBeTruthy();
+    expect(result.includes('server.js')).toBeTruthy();
   });
 
-  it('strips /home/ubuntu paths', () => {
+  test('strips /home/ubuntu paths', () => {
     const input = 'at Object.<anonymous> (/home/ubuntu/app/lib/browser.js:456:12)';
     const result = anonymize(input);
-    assert.ok(!result.includes('ubuntu'), `leaked username: ${result}`);
-    assert.ok(result.includes('browser.js'), 'should keep filename');
+    expect(!result.includes('ubuntu')).toBeTruthy();
+    expect(result.includes('browser.js')).toBeTruthy();
   });
 
-  it('strips Windows paths', () => {
+  test('strips Windows paths', () => {
     const input = 'at C:\\Users\\Administrator\\Desktop\\camofox\\server.js:99:10';
     const result = anonymize(input);
-    assert.ok(!result.includes('Administrator'), `leaked username: ${result}`);
-    assert.ok(result.includes('server.js'), 'should keep filename');
+    expect(!result.includes('Administrator')).toBeTruthy();
+    expect(result.includes('server.js')).toBeTruthy();
   });
 
-  it('strips /root paths', () => {
-    assert.ok(!anonymize('/root/.config/secrets/token.txt').includes('.config'));
+  test('strips /root paths', () => {
+    expect(!anonymize('/root/.config/secrets/token.txt').includes('.config')).toBeTruthy();
   });
 
-  it('strips /tmp paths', () => {
+  test('strips /tmp paths', () => {
     const result = anonymize('Reading from /tmp/session-abc123/data.json');
-    assert.ok(!result.includes('session-abc123'), `leaked session dir: ${result}`);
-    assert.ok(result.includes('data.json'), 'should keep filename');
+    expect(!result.includes('session-abc123')).toBeTruthy();
+    expect(result.includes('data.json')).toBeTruthy();
   });
 
-  it('strips /data paths (Fly volumes)', () => {
+  test('strips /data paths (Fly volumes)', () => {
     const result = anonymize('ENOENT /data/conversations/user_1234/ctx.db');
-    assert.ok(!result.includes('user_1234'), `leaked user dir: ${result}`);
+    expect(!result.includes('user_1234')).toBeTruthy();
   });
 
-  it('strips /app paths (Docker)', () => {
+  test('strips /app paths (Docker)', () => {
     const result = anonymize('Module not found: /app/node_modules/foo/dist/bar.js:10:5');
-    assert.ok(!result.includes('/app/node_modules'), `leaked docker path: ${result}`);
+    expect(!result.includes('/app/node_modules')).toBeTruthy();
   });
 
   // ---- URLs ----
 
-  it('strips browsed URLs', () => {
+  test('strips browsed URLs', () => {
     const input = 'Navigate failed for https://secret-internal.corp.example.com/admin/dashboard?token=abc123';
     const result = anonymize(input);
-    assert.ok(!result.includes('secret-internal'), `leaked URL: ${result}`);
-    assert.ok(!result.includes('corp.example.com'), `leaked host: ${result}`);
-    assert.ok(result.includes('<https-url>'), 'should show placeholder');
+    expect(!result.includes('secret-internal')).toBeTruthy();
+    expect(!result.includes('corp.example.com')).toBeTruthy();
+    expect(result.includes('<https-url>')).toBeTruthy();
   });
 
-  it('strips WebSocket URLs', () => {
+  test('strips WebSocket URLs', () => {
     const result = anonymize('Connection to wss://broker.internal:8443/ws failed');
-    assert.ok(!result.includes('broker.internal'), `leaked ws host: ${result}`);
-    assert.ok(result.includes('<wss-url>'), 'should show placeholder');
+    expect(!result.includes('broker.internal')).toBeTruthy();
+    expect(result.includes('<wss-url>')).toBeTruthy();
   });
 
-  it('preserves safe GitHub URLs', () => {
-    assert.ok(anonymize('Fetching https://api.github.com/repos/foo/bar').includes('api.github.com'));
+  test('preserves safe GitHub URLs', () => {
+    expect(anonymize('Fetching https://api.github.com/repos/foo/bar').includes('api.github.com')).toBeTruthy();
   });
 
-  it('preserves safe npm URLs', () => {
-    assert.ok(anonymize('GET https://registry.npmjs.org/express 200').includes('registry.npmjs.org'));
+  test('preserves safe npm URLs', () => {
+    expect(anonymize('GET https://registry.npmjs.org/express 200').includes('registry.npmjs.org')).toBeTruthy();
   });
 
   // ---- IP addresses ----
 
-  it('strips IPv4 addresses', () => {
+  test('strips IPv4 addresses', () => {
     const result = anonymize('connect ECONNREFUSED 10.0.44.5:3001');
-    assert.ok(!result.includes('10.0.44.5'), `leaked IP: ${result}`);
+    expect(!result.includes('10.0.44.5')).toBeTruthy();
   });
 
-  it('strips private IPs', () => {
+  test('strips private IPs', () => {
     const result = anonymize('Proxy at 192.168.1.100:8080 failed');
-    assert.ok(!result.includes('192.168.1.100'), `leaked IP: ${result}`);
+    expect(!result.includes('192.168.1.100')).toBeTruthy();
   });
 
-  it('redacts localhost 127.0.0.1', () => {
-    assert.ok(!anonymize('Listening on 127.0.0.1:3000').includes('127.0.0.1'));
-    assert.ok(anonymize('Listening on 127.0.0.1:3000').includes('<ip>'));
+  test('redacts localhost 127.0.0.1', () => {
+    expect(!anonymize('Listening on 127.0.0.1:3000').includes('127.0.0.1')).toBeTruthy();
+    expect(anonymize('Listening on 127.0.0.1:3000').includes('<ip>')).toBeTruthy();
   });
 
-  it('strips IPv6 addresses', () => {
+  test('strips IPv6 addresses', () => {
     const result = anonymize('connect to 2001:0db8:85a3:0000:0000:8a2e:0370:7334 failed');
-    assert.ok(!result.includes('2001:0db8'), `leaked IPv6: ${result}`);
+    expect(!result.includes('2001:0db8')).toBeTruthy();
   });
 
-  it('strips IPv4-mapped IPv6', () => {
+  test('strips IPv4-mapped IPv6', () => {
     const result = anonymize('from ::ffff:10.0.0.1');
-    assert.ok(!result.includes('10.0.0.1'), `leaked mapped IP: ${result}`);
+    expect(!result.includes('10.0.0.1')).toBeTruthy();
   });
 
   // ---- Tokens & secrets ----
 
-  it('strips GitHub PATs (ghp_)', () => {
+  test('strips GitHub PATs (ghp_)', () => {
     const result = anonymize('Auth failed with ghp_ABCDEFghijklmnopqrstuvwxyz0123456789AB');
-    assert.ok(!result.includes('ghp_'), `leaked PAT: ${result}`);
-    assert.ok(result.includes('<token>'));
+    expect(!result.includes('ghp_')).toBeTruthy();
+    expect(result.includes('<token>')).toBeTruthy();
   });
 
-  it('strips OpenAI keys (sk-)', () => {
+  test('strips OpenAI keys (sk-)', () => {
     const result = anonymize('OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz12345678');
-    assert.ok(!result.includes('sk-proj'), `leaked key: ${result}`);
+    expect(!result.includes('sk-proj')).toBeTruthy();
   });
 
-  it('strips Bearer tokens', () => {
+  test('strips Bearer tokens', () => {
     const result = anonymize('Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U');
-    assert.ok(!result.includes('eyJ'), `leaked JWT: ${result}`);
-    assert.ok(result.includes('<token>'));
+    expect(!result.includes('eyJ')).toBeTruthy();
+    expect(result.includes('<token>')).toBeTruthy();
   });
 
-  it('strips Basic auth', () => {
+  test('strips Basic auth', () => {
     const result = anonymize('Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ=');
-    assert.ok(!result.includes('dXNlcm5hbWU'), `leaked basic auth: ${result}`);
+    expect(!result.includes('dXNlcm5hbWU')).toBeTruthy();
   });
 
-  it('strips AWS access keys', () => {
+  test('strips AWS access keys', () => {
     const result = anonymize('key=AKIAIOSFODNN7EXAMPLE');
-    assert.ok(!result.includes('AKIAIOSFODNN7'), `leaked AWS key: ${result}`);
+    expect(!result.includes('AKIAIOSFODNN7')).toBeTruthy();
   });
 
-  it('strips long alphanumeric strings (40+ chars)', () => {
+  test('strips long alphanumeric strings (40+ chars)', () => {
     const secret = 'aB'.repeat(25); // mixed case avoids hex ID pattern
     const result = anonymize(`Token: ${secret}`);
-    assert.ok(!result.includes(secret), 'leaked long string');
-    assert.ok(result.includes('<redacted>'));
+    expect(!result.includes(secret)).toBeTruthy();
+    expect(result.includes('<redacted>')).toBeTruthy();
   });
 
-  it('strips long lowercase hex strings as IDs', () => {
+  test('strips long lowercase hex strings as IDs', () => {
     const secret = 'a'.repeat(50);
     const result = anonymize(`Token: ${secret}`);
-    assert.ok(!result.includes(secret), 'leaked long string');
-    assert.ok(result.includes('<id>'));
+    expect(!result.includes(secret)).toBeTruthy();
+    expect(result.includes('<id>')).toBeTruthy();
   });
 
-  it('strips Slack tokens', () => {
+  test('strips Slack tokens', () => {
     const result = anonymize('SLACK_TOKEN=xoxb-fake-test-token-placeholder');
-    assert.ok(!result.includes('xoxb'), `leaked slack token: ${result}`);
+    expect(!result.includes('xoxb')).toBeTruthy();
   });
 
   // ---- Fly.io / Docker IDs ----
 
-  it('strips Fly machine IDs (14-char hex)', () => {
+  test('strips Fly machine IDs (14-char hex)', () => {
     const result = anonymize('Machine e784079b295268 stopped');
-    assert.ok(!result.includes('e784079b295268'), `leaked machine ID: ${result}`);
-    assert.ok(result.includes('<id>'));
+    expect(!result.includes('e784079b295268')).toBeTruthy();
+    expect(result.includes('<id>')).toBeTruthy();
   });
 
-  it('strips Docker container IDs', () => {
+  test('strips Docker container IDs', () => {
     const result = anonymize('Container abc123def45678 exited');
-    assert.ok(!result.includes('abc123def45678'), `leaked container ID: ${result}`);
+    expect(!result.includes('abc123def45678')).toBeTruthy();
   });
 
-  it('strips jo-machine app names', () => {
+  test('strips jo-machine app names', () => {
     const result = anonymize('Connecting to jo-machine-prod-1234');
-    assert.ok(!result.includes('jo-machine-prod-1234'), `leaked app name: ${result}`);
-    assert.ok(result.includes('<app>'));
+    expect(!result.includes('jo-machine-prod-1234')).toBeTruthy();
+    expect(result.includes('<app>')).toBeTruthy();
   });
 
-  it('strips jo-browser app name', () => {
+  test('strips jo-browser app name', () => {
     const result = anonymize('Deployed to jo-browser-staging');
-    assert.ok(!result.includes('jo-browser'), `leaked app name: ${result}`);
+    expect(!result.includes('jo-browser')).toBeTruthy();
   });
 
   // ---- Email addresses ----
 
-  it('strips email addresses', () => {
+  test('strips email addresses', () => {
     const result = anonymize('User pradeep@askjo.ai sent request');
-    assert.ok(!result.includes('pradeep@'), `leaked email: ${result}`);
-    assert.ok(result.includes('<email>'));
+    expect(!result.includes('pradeep@')).toBeTruthy();
+    expect(result.includes('<email>')).toBeTruthy();
   });
 
   // ---- Env var assignments ----
 
-  it('strips env var assignments', () => {
+  test('strips env var assignments', () => {
     const result = anonymize('SPRITE_TOKEN=abc123secretvalue456 in environment');
-    assert.ok(!result.includes('abc123secret'), `leaked env value: ${result}`);
-    assert.ok(result.includes('<env-var>'));
+    expect(!result.includes('abc123secret')).toBeTruthy();
+    expect(result.includes('<env-var>')).toBeTruthy();
   });
 
   // ---- Proxy credentials ----
 
-  it('strips proxy URLs with credentials', () => {
+  test('strips proxy URLs with credentials', () => {
     const result = anonymize('Using proxy http://user:p4ssw0rd@proxy.corp.com:8080');
-    assert.ok(!result.includes('p4ssw0rd'), `leaked proxy password: ${result}`);
-    assert.ok(!result.includes('proxy.corp.com'), `leaked proxy host: ${result}`);
-    assert.ok(result.includes('<proxy-url>'));
+    expect(!result.includes('p4ssw0rd')).toBeTruthy();
+    expect(!result.includes('proxy.corp.com')).toBeTruthy();
+    expect(result.includes('<proxy-url>')).toBeTruthy();
   });
 
-  it('strips socks5 proxy credentials', () => {
+  test('strips socks5 proxy credentials', () => {
     const result = anonymize('socks5://admin:secret@10.0.0.1:1080');
-    assert.ok(!result.includes('admin:secret'), `leaked socks creds: ${result}`);
+    expect(!result.includes('admin:secret')).toBeTruthy();
   });
 
   // ---- Connection errors with hostnames ----
 
-  it('strips hostnames in ECONNREFUSED errors', () => {
+  test('strips hostnames in ECONNREFUSED errors', () => {
     const result = anonymize('connect ECONNREFUSED internal.service.local:3001');
-    assert.ok(!result.includes('internal.service.local'), `leaked hostname: ${result}`);
-    assert.ok(result.includes('<host>'));
+    expect(!result.includes('internal.service.local')).toBeTruthy();
+    expect(result.includes('<host>')).toBeTruthy();
   });
 
-  it('strips hostnames in ETIMEDOUT errors', () => {
+  test('strips hostnames in ETIMEDOUT errors', () => {
     const result = anonymize('connect ETIMEDOUT api.private.svc:443');
-    assert.ok(!result.includes('api.private.svc'), `leaked hostname: ${result}`);
+    expect(!result.includes('api.private.svc')).toBeTruthy();
   });
 
   // ---- Compound / real-world ----
 
-  it('handles a realistic stack trace with multiple leak vectors', () => {
+  test('handles a realistic stack trace with multiple leak vectors', () => {
     const stack = `Error: Navigation timeout of 30000ms exceeded
     at navigate (/Users/pradeep/personal/camofox-browser/server.js:1500:15)
     at processRequest (/Users/pradeep/personal/camofox-browser/server.js:800:10)
@@ -234,58 +232,58 @@ describe('anonymize', () => {
     env: BROWSER_TOKEN=sk-abcdefghijklmnopqrstuvwxyz1234567890abcd`;
     const result = anonymize(stack);
 
-    assert.ok(!result.includes('pradeep'), `leaked username: ${result}`);
-    assert.ok(!result.includes('super-secret'), `leaked URL: ${result}`);
-    assert.ok(!result.includes('ghp_'), `leaked PAT: ${result}`);
-    assert.ok(!result.includes('user:pass'), `leaked proxy creds: ${result}`);
-    assert.ok(!result.includes('192.168.1.50'), `leaked IP: ${result}`);
-    assert.ok(!result.includes('e784079b295268'), `leaked machine ID: ${result}`);
-    assert.ok(!result.includes('sk-abcdef'), `leaked token: ${result}`);
-    assert.ok(result.includes('server.js'), 'should keep filename');
+    expect(!result.includes('pradeep')).toBeTruthy();
+    expect(!result.includes('super-secret')).toBeTruthy();
+    expect(!result.includes('ghp_')).toBeTruthy();
+    expect(!result.includes('user:pass')).toBeTruthy();
+    expect(!result.includes('192.168.1.50')).toBeTruthy();
+    expect(!result.includes('e784079b295268')).toBeTruthy();
+    expect(!result.includes('sk-abcdef')).toBeTruthy();
+    expect(result.includes('server.js')).toBeTruthy();
   });
 
-  it('handles empty/null/undefined input gracefully', () => {
-    assert.equal(anonymize(''), '');
-    assert.equal(anonymize(null), '');
-    assert.equal(anonymize(undefined), '');
+  test('handles empty/null/undefined input gracefully', () => {
+    expect(anonymize('')).toBe('');
+    expect(anonymize(null)).toBe('');
+    expect(anonymize(undefined)).toBe('');
   });
 
-  it('preserves clean error messages', () => {
+  test('preserves clean error messages', () => {
     const msg = 'TypeError: Cannot read properties of undefined';
-    assert.equal(anonymize(msg), msg);
+    expect(anonymize(msg)).toBe(msg);
   });
 
-  it('preserves standard error names', () => {
+  test('preserves standard error names', () => {
     const msg = 'TimeoutError: page.goto: Timeout 30000ms exceeded.';
-    assert.equal(anonymize(msg), msg);
+    expect(anonymize(msg)).toBe(msg);
   });
 
-  it('handles JSON-serialized error context', () => {
+  test('handles JSON-serialized error context', () => {
     const ctx = JSON.stringify({
       url: 'https://internal.corp.com/api',
       headers: { Authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.secretpayload' },
       proxy: 'socks5://admin:hunter2@10.0.0.5:1080',
     });
     const result = anonymize(ctx);
-    assert.ok(!result.includes('internal.corp.com'));
-    assert.ok(!result.includes('eyJ'));
-    assert.ok(!result.includes('hunter2'));
-    assert.ok(!result.includes('10.0.0.5'));
+    expect(!result.includes('internal.corp.com')).toBeTruthy();
+    expect(!result.includes('eyJ')).toBeTruthy();
+    expect(!result.includes('hunter2')).toBeTruthy();
+    expect(!result.includes('10.0.0.5')).toBeTruthy();
   });
 
-  it('strips Sentry DSN URLs', () => {
+  test('strips Sentry DSN URLs', () => {
     const result = anonymize('Sentry DSN: https://abc123def456@o123456.ingest.sentry.io/789');
-    assert.ok(!result.includes('o123456'), `leaked sentry org: ${result}`);
+    expect(!result.includes('o123456')).toBeTruthy();
   });
 
-  it('preserves operation names and durations', () => {
+  test('preserves operation names and durations', () => {
     const msg = 'Operation "navigate" hung for 30s';
-    assert.equal(anonymize(msg), msg);
+    expect(anonymize(msg)).toBe(msg);
   });
 
-  it('does not create <token> from short strings after prefix', () => {
+  test('does not create <token> from short strings after prefix', () => {
     const result = anonymize('key is sk-short');
-    assert.equal(result, 'key is sk-short');
+    expect(result).toBe('key is sk-short');
   });
 });
 
@@ -295,31 +293,31 @@ describe('anonymize', () => {
 
 describe('stackSignature', () => {
 
-  it('produces stable signatures for the same error', () => {
+  test('produces stable signatures for the same error', () => {
     const err = new Error('test');
     err.stack = `Error: test\n    at foo (/app/server.js:100:10)\n    at bar (/app/lib/utils.js:50:5)`;
     const sig1 = stackSignature('crash', err);
     const sig2 = stackSignature('crash', err);
-    assert.equal(sig1, sig2);
+    expect(sig1).toBe(sig2);
   });
 
-  it('produces different signatures for different locations', () => {
+  test('produces different signatures for different locations', () => {
     const err1 = new Error('test');
     err1.stack = `Error: test\n    at foo (server.js:100:10)`;
     const err2 = new Error('test');
     err2.stack = `Error: test\n    at foo (server.js:200:10)`;
-    assert.notEqual(stackSignature('crash', err1), stackSignature('crash', err2));
+    expect(stackSignature('crash', err1)).not.toBe(stackSignature('crash', err2));
   });
 
-  it('ignores column number differences (same file:line)', () => {
+  test('ignores column number differences (same file:line)', () => {
     const err1 = new Error('test');
     err1.stack = `Error: test\n    at foo (server.js:100:10)`;
     const err2 = new Error('test');
     err2.stack = `Error: test\n    at foo (server.js:100:55)`;
-    assert.equal(stackSignature('crash', err1), stackSignature('crash', err2));
+    expect(stackSignature('crash', err1)).toBe(stackSignature('crash', err2));
   });
 
-  it('skips node_modules frames', () => {
+  test('skips node_modules frames', () => {
     const err = new Error('test');
     err.stack = `Error: test
     at Object.something (node_modules/express/lib/router.js:50:10)
@@ -328,18 +326,18 @@ describe('stackSignature', () => {
     err2.stack = `Error: different message
     at Object.other (node_modules/express/lib/router.js:99:10)
     at myHandler (server.js:300:15)`;
-    assert.equal(stackSignature('crash', err), stackSignature('crash', err2));
+    expect(stackSignature('crash', err)).toBe(stackSignature('crash', err2));
   });
 
-  it('handles errors without stack traces', () => {
+  test('handles errors without stack traces', () => {
     const sig = stackSignature('crash', { message: 'ENOMEM', name: 'SystemError' });
-    assert.ok(typeof sig === 'string');
-    assert.ok(sig.length === 8, 'should be 8-char hex');
+    expect(typeof sig === 'string').toBeTruthy();
+    expect(sig.length === 8).toBeTruthy();
   });
 
-  it('returns 8-char hex string', () => {
+  test('returns 8-char hex string', () => {
     const sig = stackSignature('crash', new Error('any'));
-    assert.match(sig, /^[0-9a-f]{8}$/);
+    expect(sig).toMatch(/^[0-9a-f]{8}$/);
   });
 });
 
@@ -352,21 +350,21 @@ const TEST_CRASH_CONFIG = {};
 
 describe('rate limiting', () => {
 
-  it('allows up to maxPerHour reports', () => {
+  test('allows up to maxPerHour reports', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
       crashReportRateLimit: 3,
     });
     const rl = reporter._rateLimiter._default;
-    assert.ok(rl.tryAcquire());
-    assert.ok(rl.tryAcquire());
-    assert.ok(rl.tryAcquire());
-    assert.ok(!rl.tryAcquire(), 'should reject 4th attempt');
+    expect(rl.tryAcquire()).toBeTruthy();
+    expect(rl.tryAcquire()).toBeTruthy();
+    expect(rl.tryAcquire()).toBeTruthy();
+    expect(!rl.tryAcquire()).toBeTruthy();
     reporter.stop();
   });
 
-  it('expires old entries after 1 hour', () => {
+  test('expires old entries after 1 hour', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
@@ -374,9 +372,9 @@ describe('rate limiting', () => {
     });
     const rl = reporter._rateLimiter._default;
     rl.timestamps = [Date.now() - 3700_000, Date.now() - 3600_001];
-    assert.ok(rl.tryAcquire(), 'old entries should be expired');
-    assert.ok(rl.tryAcquire(), 'second should work too');
-    assert.ok(!rl.tryAcquire(), 'third should fail');
+    expect(rl.tryAcquire()).toBeTruthy();
+    expect(rl.tryAcquire()).toBeTruthy();
+    expect(!rl.tryAcquire()).toBeTruthy();
     reporter.stop();
   });
 });
@@ -387,7 +385,7 @@ describe('rate limiting', () => {
 
 describe('createReporter', () => {
 
-  it('returns no-op functions when disabled', async () => {
+  test('returns no-op functions when disabled', async () => {
     const reporter = createReporter({
       crashReportEnabled: false,
       crashReportRepo: '',
@@ -400,29 +398,29 @@ describe('createReporter', () => {
     reporter.stop();
   });
 
-  it('exposes anonymize for testing even when disabled', () => {
+  test('exposes anonymize for testing even when disabled', () => {
     const reporter = createReporter({ crashReportEnabled: false });
-    assert.equal(typeof reporter._anonymize, 'function');
-    assert.ok(reporter._anonymize('/Users/foo/bar/baz.js').includes('baz.js'));
-    assert.ok(!reporter._anonymize('/Users/foo/bar/baz.js').includes('foo'));
+    expect(typeof reporter._anonymize).toBe('function');
+    expect(reporter._anonymize('/Users/foo/bar/baz.js').includes('baz.js')).toBeTruthy();
+    expect(!reporter._anonymize('/Users/foo/bar/baz.js').includes('foo')).toBeTruthy();
   });
 
-  it('stop() resolves even with no in-flight reports', async () => {
+  test('stop() resolves even with no in-flight reports', async () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
     });
     reporter.startWatchdog();
     const result = await reporter.stop();
-    assert.ok(Array.isArray(result));
+    expect(Array.isArray(result)).toBeTruthy();
   });
 
-  it('trackRoute is a function on enabled reporter', () => {
+  test('trackRoute is a function on enabled reporter', () => {
     const reporter = createReporter({
       ...TEST_CRASH_CONFIG,
       crashReportEnabled: true,
     });
-    assert.equal(typeof reporter.trackRoute, 'function');
+    expect(typeof reporter.trackRoute).toBe('function');
     reporter.trackRoute('POST /tabs/:id/navigate');
     reporter.stop();
   });
@@ -434,14 +432,14 @@ describe('createReporter', () => {
 
 describe('createUrlAnonymizer', () => {
 
-  it('preserves public infra domains verbatim', () => {
+  test('preserves public infra domains verbatim', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://challenges.cloudflare.com/cdn-cgi/challenge-platform/main.js');
-    assert.ok(result.includes('challenges.cloudflare.com'), `stripped public domain: ${result}`);
-    assert.ok(!result.includes('main.js'), `leaked filename: ${result}`);
+    expect(result.includes('challenges.cloudflare.com')).toBeTruthy();
+    expect(!result.includes('main.js')).toBeTruthy();
   });
 
-  it('preserves major public sites verbatim (actionable reports)', () => {
+  test('preserves major public sites verbatim (actionable reports)', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const sites = [
       ['https://www.amazon.com/dp/B09876', 'amazon.com'],
@@ -457,14 +455,13 @@ describe('createUrlAnonymizer', () => {
     ];
     for (const [url, expectedHost] of sites) {
       const result = anonymizeUrl(url);
-      assert.ok(result.includes(expectedHost), `hashed public site ${expectedHost}: ${result}`);
+      expect(result.includes(expectedHost)).toBeTruthy();
       // paths should still be stripped
-      assert.ok(!result.includes('someone') && !result.includes('programming'),
-        `leaked path for ${expectedHost}: ${result}`);
+      expect(!result.includes('someone') && !result.includes('programming')).toBeTruthy();
     }
   });
 
-  it('preserves scraping targets and prediction markets verbatim', () => {
+  test('preserves scraping targets and prediction markets verbatim', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const sites = [
       ['https://polymarket.com/event/some-market-slug', 'polymarket.com'],
@@ -480,97 +477,97 @@ describe('createUrlAnonymizer', () => {
     ];
     for (const [url, expectedHost] of sites) {
       const result = anonymizeUrl(url);
-      assert.ok(result.includes(expectedHost), `hashed public site ${expectedHost}: ${result}`);
+      expect(result.includes(expectedHost)).toBeTruthy();
     }
   });
 
-  it('hashes private domains', () => {
+  test('hashes private domains', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://internal-dashboard.corp.example.com/admin/users');
-    assert.ok(!result.includes('internal-dashboard'), `leaked hostname: ${result}`);
-    assert.ok(!result.includes('corp.example.com'), `leaked domain: ${result}`);
-    assert.ok(result.startsWith('https://site-'), 'should hash domain');
+    expect(!result.includes('internal-dashboard')).toBeTruthy();
+    expect(!result.includes('corp.example.com')).toBeTruthy();
+    expect(result.startsWith('https://site-')).toBeTruthy();
   });
 
-  it('strips all path segments, preserves depth', () => {
+  test('strips all path segments, preserves depth', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://example.com/patients/john-doe/records/2024');
-    assert.ok(!result.includes('patients'), `leaked path: ${result}`);
-    assert.ok(!result.includes('john-doe'), `leaked PII: ${result}`);
+    expect(!result.includes('patients')).toBeTruthy();
+    expect(!result.includes('john-doe')).toBeTruthy();
     // Should have 4 bullet points for 4 segments
     const bullets = (result.match(/\u2022/g) || []).length;
-    assert.equal(bullets, 4, `expected 4 path segments, got ${bullets}: ${result}`);
+    expect(bullets).toBe(4);
   });
 
-  it('strips query param names and values, preserves count', () => {
+  test('strips query param names and values, preserves count', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://example.com/page?email=user@test.com&token=abc123&view=full');
-    assert.ok(!result.includes('email'), `leaked param name: ${result}`);
-    assert.ok(!result.includes('user@'), `leaked param value: ${result}`);
-    assert.ok(result.includes('?[3]'), `should show param count: ${result}`);
+    expect(!result.includes('email')).toBeTruthy();
+    expect(!result.includes('user@')).toBeTruthy();
+    expect(result.includes('?[3]')).toBeTruthy();
   });
 
-  it('notes fragment presence without content', () => {
+  test('notes fragment presence without content', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://example.com/page#secret-section');
-    assert.ok(!result.includes('secret-section'), `leaked fragment: ${result}`);
-    assert.ok(result.includes('#[frag]'), `should note fragment: ${result}`);
+    expect(!result.includes('secret-section')).toBeTruthy();
+    expect(result.includes('#[frag]')).toBeTruthy();
   });
 
-  it('preserves non-standard ports', () => {
+  test('preserves non-standard ports', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://example.com:8443/api');
-    assert.ok(result.includes(':8443'), `lost port: ${result}`);
+    expect(result.includes(':8443')).toBeTruthy();
   });
 
-  it('same domain produces same hash within one anonymizer', () => {
+  test('same domain produces same hash within one anonymizer', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const r1 = anonymizeUrl('https://mysite.com/page1');
     const r2 = anonymizeUrl('https://mysite.com/page2');
     // Extract the site-XXXXXXXX part
     const hash1 = r1.match(/site-[a-f0-9]+/)?.[0];
     const hash2 = r2.match(/site-[a-f0-9]+/)?.[0];
-    assert.equal(hash1, hash2, 'same domain should produce same hash');
+    expect(hash1).toBe(hash2);
   });
 
-  it('different anonymizers produce SAME hashes (stable key, cross-report correlation)', () => {
+  test('different anonymizers produce SAME hashes (stable key, cross-report correlation)', () => {
     const a1 = createUrlAnonymizer();
     const a2 = createUrlAnonymizer();
     const r1 = a1.anonymizeUrl('https://mysite.com/');
     const r2 = a2.anonymizeUrl('https://mysite.com/');
     const hash1 = r1.match(/site-[a-f0-9]+/)?.[0];
     const hash2 = r2.match(/site-[a-f0-9]+/)?.[0];
-    assert.equal(hash1, hash2, 'stable key should produce same hash across reports');
+    expect(hash1).toBe(hash2);
   });
 
-  it('hashes IP addresses', () => {
+  test('hashes IP addresses', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('http://192.168.1.100:8080/api');
-    assert.ok(!result.includes('192.168'), `leaked IP: ${result}`);
-    assert.ok(result.includes('site-'), 'should hash IP');
+    expect(!result.includes('192.168')).toBeTruthy();
+    expect(result.includes('site-')).toBeTruthy();
   });
 
-  it('redacts localhost', () => {
+  test('redacts localhost', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
-    assert.ok(!anonymizeUrl('http://localhost:3000/test').includes('localhost'));
-    assert.ok(!anonymizeUrl('http://127.0.0.1:3000/test').includes('127.0.0.1'));
+    expect(!anonymizeUrl('http://localhost:3000/test').includes('localhost')).toBeTruthy();
+    expect(!anonymizeUrl('http://127.0.0.1:3000/test').includes('127.0.0.1')).toBeTruthy();
   });
 
-  it('handles data/blob/javascript URIs', () => {
+  test('handles data/blob/javascript URIs', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
-    assert.equal(anonymizeUrl('data:text/html,<h1>secret</h1>'), '[data-uri]');
-    assert.equal(anonymizeUrl('blob:https://example.com/abc'), '[blob-uri]');
-    assert.equal(anonymizeUrl('javascript:alert(1)'), '[javascript-uri]');
+    expect(anonymizeUrl('data:text/html).toBe(<h1>secret</h1>'));
+    expect(anonymizeUrl('blob:https://example.com/abc')).toBe('[blob-uri]');
+    expect(anonymizeUrl('javascript:alert(1)')).toBe('[javascript-uri]');
   });
 
-  it('handles empty/null/invalid input', () => {
+  test('handles empty/null/invalid input', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
-    assert.equal(anonymizeUrl(''), '[empty]');
-    assert.equal(anonymizeUrl(null), '[empty]');
-    assert.equal(anonymizeUrl('not-a-url'), '[invalid-url]');
+    expect(anonymizeUrl('')).toBe('[empty]');
+    expect(anonymizeUrl(null)).toBe('[empty]');
+    expect(anonymizeUrl('not-a-url')).toBe('[invalid-url]');
   });
 
-  it('anonymizes redirect chains with correlation', () => {
+  test('anonymizes redirect chains with correlation', () => {
     const { anonymizeChain } = createUrlAnonymizer();
     const chain = [
       'https://mysite.com/login',
@@ -578,15 +575,15 @@ describe('createUrlAnonymizer', () => {
       'https://mysite.com/callback?code=yyy',
     ];
     const result = anonymizeChain(chain);
-    assert.ok(result.includes('accounts.google.com'), 'should preserve Google');
-    assert.ok(!result.includes('mysite.com'), `leaked domain: ${result}`);
-    assert.ok(result.includes('\u2192'), 'should have arrow separators');
+    expect(result.includes('accounts.google.com')).toBeTruthy();
+    expect(!result.includes('mysite.com')).toBeTruthy();
+    expect(result.includes('\u2192')).toBeTruthy();
     // Both mysite.com entries should have same hash
     const hashes = result.match(/site-[a-f0-9]+/g);
-    assert.equal(hashes[0], hashes[1], 'same domain should correlate in chain');
+    expect(hashes[0]).toBe(hashes[1]);
   });
 
-  it('never leaks multi-tenant hosting domains', () => {
+  test('never leaks multi-tenant hosting domains', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     // These should all be hashed, not preserved
     for (const url of [
@@ -596,15 +593,15 @@ describe('createUrlAnonymizer', () => {
       'https://myapp.fly.dev/',
     ]) {
       const result = anonymizeUrl(url);
-      assert.ok(result.includes('site-'), `should hash ${url}: ${result}`);
+      expect(result.includes('site-')).toBeTruthy();
     }
   });
 
-  it('strips auth credentials from URLs', () => {
+  test('strips auth credentials from URLs', () => {
     const { anonymizeUrl } = createUrlAnonymizer();
     const result = anonymizeUrl('https://admin:secret@example.com/dashboard');
-    assert.ok(!result.includes('admin'), `leaked username: ${result}`);
-    assert.ok(!result.includes('secret'), `leaked password: ${result}`);
+    expect(!result.includes('admin')).toBeTruthy();
+    expect(!result.includes('secret')).toBeTruthy();
   });
 });
 
@@ -621,75 +618,75 @@ describe('detectBotProtection', () => {
     };
   }
 
-  it('detects Cloudflare challenge (cf-mitigated header)', () => {
+  test('detects Cloudflare challenge (cf-mitigated header)', () => {
     const result = detectBotProtection(mockResponse(403, { 'cf-mitigated': 'challenge', 'cf-ray': '123abc' }));
-    assert.equal(result.detected, true);
-    assert.equal(result.provider, 'cloudflare');
-    assert.equal(result.httpStatus, 403);
+    expect(result.detected).toBe(true);
+    expect(result.provider).toBe('cloudflare');
+    expect(result.httpStatus).toBe(403);
   });
 
-  it('detects Cloudflare by cf-ray header on 403', () => {
+  test('detects Cloudflare by cf-ray header on 403', () => {
     const result = detectBotProtection(mockResponse(403, { 'cf-ray': '7abc123-LAX' }));
-    assert.equal(result.detected, true);
-    assert.equal(result.provider, 'cloudflare');
+    expect(result.detected).toBe(true);
+    expect(result.provider).toBe('cloudflare');
   });
 
-  it('Cloudflare cf-ray on 200 is not a challenge', () => {
+  test('Cloudflare cf-ray on 200 is not a challenge', () => {
     const result = detectBotProtection(mockResponse(200, { 'cf-ray': '7abc123-LAX' }));
-    assert.equal(result.detected, false);
-    assert.equal(result.provider, 'cloudflare');
+    expect(result.detected).toBe(false);
+    expect(result.provider).toBe('cloudflare');
   });
 
-  it('detects DataDome even behind Cloudflare (cf-ray present)', () => {
+  test('detects DataDome even behind Cloudflare (cf-ray present)', () => {
     // Multi-CDN: Cloudflare fronts the site (cf-ray on all responses)
     // but DataDome is the actual bot-detection provider blocking with 403
     const result = detectBotProtection(mockResponse(403, {
       'cf-ray': '7abc123-LAX',
       'x-datadome': 'protected',
     }));
-    assert.equal(result.detected, true);
-    assert.equal(result.provider, 'datadome', 'should detect DataDome, not Cloudflare');
+    expect(result.detected).toBe(true);
+    expect(result.provider).toBe('datadome');
   });
 
-  it('detects DataDome', () => {
+  test('detects DataDome', () => {
     const result = detectBotProtection(mockResponse(403, { 'x-datadome': 'protected' }));
-    assert.equal(result.detected, true);
-    assert.equal(result.provider, 'datadome');
+    expect(result.detected).toBe(true);
+    expect(result.provider).toBe('datadome');
   });
 
-  it('detects PerimeterX', () => {
+  test('detects PerimeterX', () => {
     const result = detectBotProtection(mockResponse(429, { 'x-px': 'something' }));
-    assert.equal(result.detected, true);
-    assert.equal(result.provider, 'perimeterx');
+    expect(result.detected).toBe(true);
+    expect(result.provider).toBe('perimeterx');
   });
 
-  it('detects Akamai', () => {
+  test('detects Akamai', () => {
     const result = detectBotProtection(mockResponse(503, { 'server': 'AkamaiGHost' }));
-    assert.equal(result.detected, true);
-    assert.equal(result.provider, 'akamai');
+    expect(result.detected).toBe(true);
+    expect(result.provider).toBe('akamai');
   });
 
-  it('returns not detected for normal response', () => {
+  test('returns not detected for normal response', () => {
     const result = detectBotProtection(mockResponse(200, { 'content-type': 'text/html' }));
-    assert.equal(result.detected, false);
-    assert.equal(result.provider, null);
-    assert.equal(result.httpStatus, 200);
+    expect(result.detected).toBe(false);
+    expect(result.provider).toBe(null);
+    expect(result.httpStatus).toBe(200);
   });
 
-  it('returns not detected for null response', () => {
+  test('returns not detected for null response', () => {
     const result = detectBotProtection(null);
-    assert.equal(result.detected, false);
-    assert.equal(result.provider, null);
-    assert.equal(result.httpStatus, null);
+    expect(result.detected).toBe(false);
+    expect(result.provider).toBe(null);
+    expect(result.httpStatus).toBe(null);
   });
 
-  it('handles response that throws on headers()', () => {
+  test('handles response that throws on headers()', () => {
     const result = detectBotProtection({
       status: () => 403,
       headers: () => { throw new Error('page closed'); },
     });
-    assert.equal(result.detected, false);
-    assert.equal(result.httpStatus, 403);
+    expect(result.detected).toBe(false);
+    expect(result.httpStatus).toBe(403);
   });
 });
 
@@ -699,38 +696,38 @@ describe('detectBotProtection', () => {
 
 describe('classifyProxyError', () => {
 
-  it('detects ERR_PROXY_CONNECTION_FAILED', () => {
+  test('detects ERR_PROXY_CONNECTION_FAILED', () => {
     const result = classifyProxyError('net::ERR_PROXY_CONNECTION_FAILED');
-    assert.equal(result.proxyError, 'ERR_PROXY_CONNECTION_FAILED');
-    assert.equal(result.proxyTlsError, false);
+    expect(result.proxyError).toBe('ERR_PROXY_CONNECTION_FAILED');
+    expect(result.proxyTlsError).toBe(false);
   });
 
-  it('detects ERR_TUNNEL_CONNECTION_FAILED', () => {
+  test('detects ERR_TUNNEL_CONNECTION_FAILED', () => {
     const result = classifyProxyError('net::ERR_TUNNEL_CONNECTION_FAILED');
-    assert.equal(result.proxyError, 'ERR_TUNNEL_CONNECTION_FAILED');
+    expect(result.proxyError).toBe('ERR_TUNNEL_CONNECTION_FAILED');
   });
 
-  it('detects proxy auth required (407)', () => {
+  test('detects proxy auth required (407)', () => {
     const result = classifyProxyError('Proxy responded with 407');
-    assert.equal(result.proxyError, 'ERR_PROXY_AUTH_REQUESTED');
+    expect(result.proxyError).toBe('ERR_PROXY_AUTH_REQUESTED');
   });
 
-  it('detects proxy TLS errors', () => {
+  test('detects proxy TLS errors', () => {
     const result = classifyProxyError('ERR_PROXY_CERTIFICATE_INVALID');
-    assert.equal(result.proxyError, 'ERR_PROXY_TLS');
-    assert.equal(result.proxyTlsError, true);
+    expect(result.proxyError).toBe('ERR_PROXY_TLS');
+    expect(result.proxyTlsError).toBe(true);
   });
 
-  it('returns null for non-proxy errors', () => {
+  test('returns null for non-proxy errors', () => {
     const result = classifyProxyError('net::ERR_CONNECTION_REFUSED');
-    assert.equal(result.proxyError, null);
-    assert.equal(result.proxyTlsError, false);
+    expect(result.proxyError).toBe(null);
+    expect(result.proxyTlsError).toBe(false);
   });
 
-  it('handles null/empty input', () => {
-    assert.equal(classifyProxyError(null).proxyError, null);
-    assert.equal(classifyProxyError('').proxyError, null);
-    assert.equal(classifyProxyError(undefined).proxyError, null);
+  test('handles null/empty input', () => {
+    expect(classifyProxyError(null).proxyError).toBe(null);
+    expect(classifyProxyError('').proxyError).toBe(null);
+    expect(classifyProxyError(undefined).proxyError).toBe(null);
   });
 });
 
@@ -740,45 +737,45 @@ describe('classifyProxyError', () => {
 
 describe('collectResourceSnapshot', () => {
 
-  it('collects basic memory metrics', () => {
+  test('collects basic memory metrics', () => {
     const snap = collectResourceSnapshot();
-    assert.ok(typeof snap.nodeRssMb === 'number');
-    assert.ok(snap.nodeRssMb > 0, 'RSS should be > 0');
-    assert.ok(typeof snap.nodeHeapUsedMb === 'number');
-    assert.ok(typeof snap.nodeHeapTotalMb === 'number');
-    assert.ok(typeof snap.nodeExternalMb === 'number');
+    expect(typeof snap.nodeRssMb === 'number').toBeTruthy();
+    expect(snap.nodeRssMb > 0).toBeTruthy();
+    expect(typeof snap.nodeHeapUsedMb === 'number').toBeTruthy();
+    expect(typeof snap.nodeHeapTotalMb === 'number').toBeTruthy();
+    expect(typeof snap.nodeExternalMb === 'number').toBeTruthy();
   });
 
-  it('collects active handles count', () => {
+  test('collects active handles count', () => {
     const snap = collectResourceSnapshot();
     // process._getActiveHandles is available in Node
-    assert.ok(snap.activeHandles === null || typeof snap.activeHandles === 'number');
+    expect(snap.activeHandles === null || typeof snap.activeHandles === 'number').toBeTruthy();
   });
 
-  it('includes session/tab counts when provided', () => {
+  test('includes session/tab counts when provided', () => {
     const snap = collectResourceSnapshot({ sessionCount: 3, tabCount: 7 });
-    assert.equal(snap.browserContexts, 3);
-    assert.equal(snap.activeTabs, 7);
+    expect(snap.browserContexts).toBe(3);
+    expect(snap.activeTabs).toBe(7);
   });
 
-  it('browserRssMb is null without browserPid', () => {
+  test('browserRssMb is null without browserPid', () => {
     const snap = collectResourceSnapshot();
-    assert.equal(snap.browserRssMb, null);
+    expect(snap.browserRssMb).toBe(null);
   });
 
-  it('handles invalid browserPid gracefully', () => {
+  test('handles invalid browserPid gracefully', () => {
     const snap = collectResourceSnapshot({ browserPid: 99999999 });
     // Should not throw, just null
-    assert.equal(snap.browserRssMb, null);
+    expect(snap.browserRssMb).toBe(null);
   });
 
-  it('collects open FDs on Linux', () => {
+  test('collects open FDs on Linux', () => {
     const snap = collectResourceSnapshot();
     if (process.platform === 'linux') {
-      assert.ok(typeof snap.openFds === 'number');
-      assert.ok(snap.openFds > 0);
+      expect(typeof snap.openFds === 'number').toBeTruthy();
+      expect(snap.openFds > 0).toBeTruthy();
     } else {
-      assert.equal(snap.openFds, null);
+      expect(snap.openFds).toBe(null);
     }
   });
 });
@@ -804,49 +801,49 @@ describe('createTabHealthTracker', () => {
     };
   }
 
-  it('tracks crashes', () => {
+  test('tracks crashes', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     page._emit('crash');
     page._emit('crash');
     const snap = tracker.snapshot();
-    assert.equal(snap.crashes, 2);
+    expect(snap.crashes).toBe(2);
   });
 
-  it('tracks page errors', () => {
+  test('tracks page errors', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     page._emit('pageerror', new Error('test'));
     const snap = tracker.snapshot();
-    assert.equal(snap.pageErrors, 1);
+    expect(snap.pageErrors).toBe(1);
   });
 
-  it('tracks request failures', () => {
+  test('tracks request failures', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     page._emit('requestfailed', {});
     const snap = tracker.snapshot();
-    assert.equal(snap.requestFailures, 1);
+    expect(snap.requestFailures).toBe(1);
   });
 
-  it('tracks in-flight requests', () => {
+  test('tracks in-flight requests', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     // Simulate 3 requests starting
     page._emit('request', { isNavigationRequest: () => false });
     page._emit('request', { isNavigationRequest: () => false });
     page._emit('request', { isNavigationRequest: () => false });
-    assert.equal(tracker.health.inflightRequests, 3);
+    expect(tracker.health.inflightRequests).toBe(3);
     // One finishes
     page._emit('requestfinished', {});
-    assert.equal(tracker.health.inflightRequests, 2);
+    expect(tracker.health.inflightRequests).toBe(2);
     // One fails
     page._emit('requestfailed', {});
     // requestfailed fires both the failure counter AND decrements inflight
-    assert.equal(tracker.health.inflightRequests, 1);
+    expect(tracker.health.inflightRequests).toBe(1);
   });
 
-  it('tracks HTTP status histogram', () => {
+  test('tracks HTTP status histogram', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     page._emit('response', { status: () => 403, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
@@ -854,33 +851,33 @@ describe('createTabHealthTracker', () => {
     page._emit('response', { status: () => 429, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
     page._emit('response', { status: () => 200, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
     const snap = tracker.snapshot();
-    assert.equal(snap.statusCounts[403], 2);
-    assert.equal(snap.statusCounts[429], 1);
-    assert.equal(snap.statusCounts[200], undefined);
+    expect(snap.statusCounts[403]).toBe(2);
+    expect(snap.statusCounts[429]).toBe(1);
+    expect(snap.statusCounts[200]).toBe(undefined);
   });
 
-  it('does NOT track console errors (noise -- cut per oracle)', () => {
+  test('does NOT track console errors (noise -- cut per oracle)', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const snap = tracker.snapshot();
-    assert.equal(snap.consoleErrors, undefined, 'consoleErrors should not be in snapshot');
+    expect(snap.consoleErrors).toBe(undefined);
   });
 
-  it('does NOT track dialog count (noise -- cut per oracle)', () => {
+  test('does NOT track dialog count (noise -- cut per oracle)', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const snap = tracker.snapshot();
-    assert.equal(snap.dialogCount, undefined, 'dialogCount should not be in snapshot');
+    expect(snap.dialogCount).toBe(undefined);
   });
 
-  it('does NOT track frame count (noise -- cut per oracle)', () => {
+  test('does NOT track frame count (noise -- cut per oracle)', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const snap = tracker.snapshot();
-    assert.equal(snap.frameCount, undefined, 'frameCount should not be in snapshot');
+    expect(snap.frameCount).toBe(undefined);
   });
 
-  it('tracks redirect status codes', () => {
+  test('tracks redirect status codes', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     // Simulate nav request with redirects
@@ -892,11 +889,11 @@ describe('createTabHealthTracker', () => {
     page._emit('response', { status: () => 403, headers: () => ({ 'cf-ray': '123' }), request: () => ({ isNavigationRequest: () => true }) });
 
     const snap = tracker.snapshot();
-    assert.deepEqual(snap.redirectStatusCodes, [301, 302, 403]);
-    assert.equal(snap.maxRedirectDepth, 2);
+    expect(snap.redirectStatusCodes).toEqual([301, 302, 403]);
+    expect(snap.maxRedirectDepth).toBe(2);
   });
 
-  it('detects bot protection on navigation response', () => {
+  test('detects bot protection on navigation response', () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => null });
@@ -906,18 +903,18 @@ describe('createTabHealthTracker', () => {
       request: () => ({ isNavigationRequest: () => true }),
     });
     const snap = tracker.snapshot();
-    assert.equal(snap.botDetection.detected, true);
-    assert.equal(snap.botDetection.provider, 'cloudflare');
-    assert.equal(snap.lastNavResponseSize, 42000);
+    expect(snap.botDetection.detected).toBe(true);
+    expect(snap.botDetection.provider).toBe('cloudflare');
+    expect(snap.lastNavResponseSize).toBe(42000);
   });
 
-  it('provides getReadyState function', async () => {
+  test('provides getReadyState function', async () => {
     const page = createMockPage();
     const tracker = createTabHealthTracker(page);
     const state = await tracker.getReadyState();
     // Our mock evaluate just runs the function, which returns undefined in Node
     // (no real DOM). The important thing is it doesn't throw.
-    assert.ok(state !== undefined || state === undefined);
+    expect(state !== undefined || state === undefined).toBeTruthy();
   });
 });
 
@@ -926,39 +923,39 @@ describe('createTabHealthTracker', () => {
 // ============================================================================
 
 describe('collectResourceSnapshot native memory', () => {
-  it('includes RSS, heap, and external memory fields', () => {
+  test('includes RSS, heap, and external memory fields', () => {
     const snap = collectResourceSnapshot();
-    assert.ok(typeof snap.nodeRssMb === 'number', 'nodeRssMb should be a number');
-    assert.ok(typeof snap.nodeHeapUsedMb === 'number', 'nodeHeapUsedMb should be a number');
-    assert.ok(typeof snap.nodeHeapTotalMb === 'number', 'nodeHeapTotalMb should be a number');
-    assert.ok(typeof snap.nodeExternalMb === 'number', 'nodeExternalMb should be a number');
-    assert.ok(snap.nodeRssMb > 0, 'RSS should be > 0');
-    assert.ok(snap.nodeHeapUsedMb > 0, 'heap used should be > 0');
+    expect(typeof snap.nodeRssMb === 'number').toBeTruthy();
+    expect(typeof snap.nodeHeapUsedMb === 'number').toBeTruthy();
+    expect(typeof snap.nodeHeapTotalMb === 'number').toBeTruthy();
+    expect(typeof snap.nodeExternalMb === 'number').toBeTruthy();
+    expect(snap.nodeRssMb > 0).toBeTruthy();
+    expect(snap.nodeHeapUsedMb > 0).toBeTruthy();
   });
 
-  it('native memory (RSS - heapUsed) is non-negative', () => {
+  test('native memory (RSS - heapUsed) is non-negative', () => {
     const snap = collectResourceSnapshot();
     const nativeMb = snap.nodeRssMb - snap.nodeHeapUsedMb;
-    assert.ok(nativeMb >= 0, `native mem should be >= 0, got ${nativeMb}`);
+    expect(nativeMb >= 0).toBeTruthy();
   });
 
-  it('includes session/tab counts when provided', () => {
+  test('includes session/tab counts when provided', () => {
     const snap = collectResourceSnapshot({ sessionCount: 3, tabCount: 7 });
-    assert.equal(snap.browserContexts, 3);
-    assert.equal(snap.activeTabs, 7);
+    expect(snap.browserContexts).toBe(3);
+    expect(snap.activeTabs).toBe(7);
   });
 
-  it('browserRssMb is null when no browserPid', () => {
+  test('browserRssMb is null when no browserPid', () => {
     const snap = collectResourceSnapshot();
-    assert.equal(snap.browserRssMb, null);
+    expect(snap.browserRssMb).toBe(null);
   });
 
-  it('rejects invalid browserPid values', () => {
+  test('rejects invalid browserPid values', () => {
     const snap1 = collectResourceSnapshot({ browserPid: -1 });
-    assert.equal(snap1.browserRssMb, null);
+    expect(snap1.browserRssMb).toBe(null);
     const snap2 = collectResourceSnapshot({ browserPid: 0 });
-    assert.equal(snap2.browserRssMb, null);
+    expect(snap2.browserRssMb).toBe(null);
     const snap3 = collectResourceSnapshot({ browserPid: 'abc' });
-    assert.equal(snap3.browserRssMb, null);
+    expect(snap3.browserRssMb).toBe(null);
   });
 });
