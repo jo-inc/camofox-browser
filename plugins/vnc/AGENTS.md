@@ -19,9 +19,9 @@ Disabled by default. Enable with `ENABLE_VNC=1` env var or `"vnc": { "enabled": 
 - `vnc.test.js` — unit tests
 - `apt.txt` — system deps (x11vnc, novnc, websockify, etc.)
 
-## Scanner Compliance
+## Code Separation
 
-`child_process` is in `vnc-launcher.js`, route handlers are in `index.js`, env var reads are in `vnc-launcher.js` — separate files per OpenClaw scanner rules.
+`child_process` is in `vnc-launcher.js`, route handlers are in `index.js`, env var reads are in `vnc-launcher.js` — separate files per project conventions.
 
 ## Security
 
@@ -37,6 +37,6 @@ The plugin overrides `ctx.createVirtualDisplay` to use a higher-resolution displ
 ## Original Contributors
 
 - [@leoneparise](https://github.com/leoneparise) — original VNC implementation + keyboard mode ([PR #65](https://github.com/jo-inc/camofox-browser/pull/65), [PR #66](https://github.com/jo-inc/camofox-browser/pull/66))
-- [@pradeepe](https://github.com/pradeepe) — plugin system integration, scanner compliance refactor, security hardening
+- [@pradeepe](https://github.com/pradeepe) — plugin system integration, code separation refactor, security hardening
 
 For PRs touching this plugin, tag the contributors above for review.

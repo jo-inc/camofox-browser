@@ -1,6 +1,6 @@
 /**
  * VNC launcher -- owns all process spawning and env reads.
- * Isolated from route handlers for OpenClaw scanner compliance.
+ * Isolated from route handlers to keep subprocess management separate.
  */
 
 import { spawn } from './spawn.js';

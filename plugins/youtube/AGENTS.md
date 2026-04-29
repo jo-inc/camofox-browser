@@ -14,9 +14,9 @@ Extracts video transcripts via yt-dlp (preferred) with Playwright browser fallba
 - `apt.txt` — system deps (python3-minimal for yt-dlp)
 - `post-install.sh` — downloads yt-dlp binary
 
-## Scanner Compliance
+## Code Separation
 
-`child_process` is in `youtube.js`, route handlers are in `index.js` — separate files per OpenClaw scanner rules.
+`child_process` is in `youtube.js`, route handlers are in `index.js` — separate files per project conventions.
 
 ## Maintainers
 
