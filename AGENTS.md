@@ -67,6 +67,19 @@ POST /tabs/:tabId/scroll
 {"userId": "agent1", "direction": "down", "amount": 500}
 ```
 
+### Evaluate JavaScript
+```bash
+POST /tabs/:tabId/evaluate
+{"userId": "agent1", "expression": "document.title"}
+```
+Returns: `{"ok": true, "result": "Page Title"}`
+
+Execute arbitrary JavaScript in the page context. Useful for:
+- Extracting data not visible in the accessibility tree (e.g., `data-*` attributes, hidden inputs)
+- Injecting values into form fields that don't have accessibility refs
+- Reading/writing cookies, localStorage, sessionStorage
+- Triggering JavaScript callbacks (e.g., reCAPTCHA response handlers)
+
 ### Navigation
 ```bash
 POST /tabs/:tabId/back     {"userId": "agent1"}

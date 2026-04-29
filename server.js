@@ -3043,6 +3043,33 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
   }
 });
 
+// Evaluate JavaScript in page context
+app.post('/tabs/:tabId/evaluate', async (req, res) => {
+  const tabId = req.params.tabId;
+  
+  try {
+    const { userId, expression } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!expression) return res.status(400).json({ error: 'expression required' });
+    
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    
+    const { tabState } = found;
+    tabState.toolCalls++;
+    
+    const result = await withTabLock(tabId, async () => {
+      return await tabState.page.evaluate(expression);
+    });
+    
+    res.json({ ok: true, result });
+  } catch (err) {
+    log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
 // Back
 /**
  * @openapi
