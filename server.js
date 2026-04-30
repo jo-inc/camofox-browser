@@ -3026,19 +3026,108 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
-    
+
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
-    
+
     const isVertical = direction === 'up' || direction === 'down';
     const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
     await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
     await tabState.page.waitForTimeout(300);
-    
+
     pluginEvents.emit('tab:scroll', { userId, tabId: req.params.tabId, direction, amount });
     res.json({ ok: true });
   } catch (err) {
     log('error', 'scroll failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Set viewport
+/**
+ * @openapi
+ * /tabs/{tabId}/viewport:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Set the page viewport size
+ *     description: >
+ *       Physically resizes the page via Playwright's `page.setViewportSize`,
+ *       triggering a real layout reflow. SPAs that listen for resize events
+ *       (responsive media queries, useMediaQuery hooks, ResizeObserver
+ *       subscribers) re-render correctly. Useful for responsive testing —
+ *       `evaluate(window.resizeTo(...))` is a no-op on non-popup windows in
+ *       most browsers.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, width, height]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               width:
+ *                 type: integer
+ *                 minimum: 100
+ *                 maximum: 4000
+ *                 description: Viewport width in CSS pixels.
+ *               height:
+ *                 type: integer
+ *                 minimum: 100
+ *                 maximum: 4000
+ *                 description: Viewport height in CSS pixels.
+ *     responses:
+ *       200:
+ *         description: Viewport set.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 width:
+ *                   type: integer
+ *                 height:
+ *                   type: integer
+ *       400:
+ *         description: Width or height missing or out of range.
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/viewport', async (req, res) => {
+  try {
+    const { userId, width, height } = req.body;
+    if (typeof width !== 'number' || typeof height !== 'number' || width < 100 || height < 100 || width > 4000 || height > 4000) {
+      return res.status(400).json({ error: 'width and height required (100..4000 px)' });
+    }
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    await tabState.page.setViewportSize({ width: Math.round(width), height: Math.round(height) });
+    // Settle for SPAs that re-render on viewport change (media queries,
+    // ResizeObserver subscribers, useMediaQuery hooks).
+    await tabState.page.waitForTimeout(150);
+
+    pluginEvents.emit('tab:viewport', { userId, tabId: req.params.tabId, width, height });
+    res.json({ ok: true, width: Math.round(width), height: Math.round(height) });
+  } catch (err) {
+    log('error', 'viewport failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
