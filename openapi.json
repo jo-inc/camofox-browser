@@ -1874,6 +1874,402 @@
         }
       }
     },
+    "/tabs/{tabId}/network-fault": {
+      "post": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Install a network fault on a tab (BugHunter V20)",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "mode"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "offline",
+                      "slow_3g",
+                      "high_latency",
+                      "timeout_at_request",
+                      "timeout_at_response",
+                      "intermittent",
+                      "server_5xx",
+                      "malformed_response"
+                    ]
+                  },
+                  "latencyMs": {
+                    "type": "integer"
+                  },
+                  "percent": {
+                    "type": "integer"
+                  },
+                  "statusCode": {
+                    "type": "integer"
+                  },
+                  "urlGlob": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fault installed."
+          },
+          "400": {
+            "description": "Validation error."
+          },
+          "404": {
+            "description": "Tab not found."
+          },
+          "409": {
+            "description": "Fault already active."
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Read the active network fault state on a tab (BugHunter V20)",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current fault state (null if none)."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/clear-network-fault": {
+      "post": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Remove the active network fault on a tab (BugHunter V20)",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fault cleared (idempotent)."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/in-flight-requests": {
+      "get": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Read in-flight requests on a tab (BugHunter V22)",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "methods",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated HTTP methods to filter (default all)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "In-flight request list."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/init-script": {
+      "post": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Register an init-script on a tab (BugHunter V23)",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "script"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "script": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Script registered."
+          },
+          "400": {
+            "description": "Validation error."
+          },
+          "404": {
+            "description": "Tab not found."
+          },
+          "409": {
+            "description": "Script id already exists."
+          },
+          "413": {
+            "description": "Script too large."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/clear-init-scripts": {
+      "post": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Clear all init-scripts on a tab (BugHunter V23)",
+        "description": "Disposes all registered init-scripts. Does NOT remove their effects from the currently-loaded document — caller must reload or navigate to fully clear.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scripts cleared."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/timezone": {
+      "post": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Set timezone override via init-script polyfill (BugHunter V23)",
+        "description": "Installs a Date/Intl polyfill via addInitScript. BrowserContext.setTimezoneId is creation-time-only on Firefox; CDP Emulation.setTimezoneOverride is Chromium-only. The polyfill takes effect on the next navigation. Caller must reload after install.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "id"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "IANA timezone identifier (e.g. 'America/New_York')"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Timezone polyfill registered."
+          },
+          "400": {
+            "description": "Validation error."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/clear-timezone": {
+      "post": {
+        "tags": [
+          "BugHunter"
+        ],
+        "summary": "Clear the timezone override on a tab (BugHunter V23)",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Timezone cleared (idempotent)."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
     "/tabs/group/{listItemId}": {
       "delete": {
         "tags": [
