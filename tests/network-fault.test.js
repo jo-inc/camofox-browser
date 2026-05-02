@@ -175,6 +175,78 @@ describe('network-fault endpoints', () => {
     });
   });
 
+  test('POST /network-fault installs malformed_truncated_json mode', async () => {
+    const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER, mode: 'malformed_truncated_json' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.fault.mode).toBe('malformed_truncated_json');
+    await fetch(`${serverUrl}/tabs/${tabId}/clear-network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER }),
+    });
+  });
+
+  test('POST /network-fault installs malformed_wrong_content_type mode', async () => {
+    const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER, mode: 'malformed_wrong_content_type' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.fault.mode).toBe('malformed_wrong_content_type');
+    await fetch(`${serverUrl}/tabs/${tabId}/clear-network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER }),
+    });
+  });
+
+  test('POST /network-fault installs intermittent mode with dropEveryN', async () => {
+    const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER, mode: 'intermittent', dropEveryN: 3 }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.fault.mode).toBe('intermittent');
+    expect(body.fault.dropEveryN).toBe(3);
+    expect(body.fault.percent).toBeUndefined();
+    await fetch(`${serverUrl}/tabs/${tabId}/clear-network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER }),
+    });
+  });
+
+  test('400 when dropEveryN sent for non-intermittent mode', async () => {
+    const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER, mode: 'offline', dropEveryN: 3 }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('dropEveryN not valid for mode offline');
+  });
+
+  test('400 when intermittent has neither percent nor dropEveryN', async () => {
+    const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: USER, mode: 'intermittent' }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('intermittent requires either percent');
+  });
+
   test('GET /network-fault reflects installed fault', async () => {
     await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
       method: 'POST',
@@ -245,14 +317,8 @@ describe('network-fault endpoints', () => {
     expect(res.status).toBe(400);
   });
 
-  test('400 when intermittent missing percent', async () => {
-    const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: USER, mode: 'intermittent' }),
-    });
-    expect(res.status).toBe(400);
-  });
+  // Note: 'intermittent missing both percent and dropEveryN' is now covered by the
+  // 'intermittent has neither percent nor dropEveryN' test added in the #101 block above.
 
   test('400 when percent sent for non-intermittent mode', async () => {
     const res = await fetch(`${serverUrl}/tabs/${tabId}/network-fault`, {

@@ -1914,7 +1914,9 @@
                       "timeout_at_response",
                       "intermittent",
                       "server_5xx",
-                      "malformed_response"
+                      "malformed_response",
+                      "malformed_truncated_json",
+                      "malformed_wrong_content_type"
                     ]
                   },
                   "latencyMs": {
@@ -1928,6 +1930,11 @@
                   },
                   "urlGlob": {
                     "type": "string"
+                  },
+                  "dropEveryN": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "For intermittent mode: drop every Nth request deterministically (1-based counter mod N). Mutually exclusive with percent."
                   }
                 }
               }
@@ -2134,7 +2141,7 @@
           "BugHunter"
         ],
         "summary": "Clear all init-scripts on a tab (BugHunter V23)",
-        "description": "Disposes all registered init-scripts. Does NOT remove their effects from the currently-loaded document — caller must reload or navigate to fully clear.\n",
+        "description": "Disposes all registered init-scripts. Does NOT remove their effects from the currently-loaded document \u2014 caller must reload or navigate to fully clear.\n",
         "parameters": [
           {
             "name": "tabId",

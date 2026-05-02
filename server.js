@@ -3952,16 +3952,19 @@ app.delete('/tabs/:tabId', async (req, res) => {
 // Validation helpers for network-fault modes
 const NETWORK_FAULT_MODES = new Set([
   'offline', 'slow_3g', 'high_latency', 'timeout_at_request',
-  'timeout_at_response', 'intermittent', 'server_5xx', 'malformed_response',
+  'timeout_at_response', 'intermittent', 'server_5xx',
+  'malformed_response',
+  'malformed_truncated_json',   // BugHunter #101: truncated JSON body
+  'malformed_wrong_content_type', // BugHunter #101: valid JSON with text/plain Content-Type
 ]);
 
 // Modes that accept / require latencyMs
 const MODES_WITH_LATENCY = new Set(['high_latency', 'slow_3g', 'timeout_at_request', 'timeout_at_response']);
-// Modes that do NOT accept latencyMs, percent, statusCode, or urlGlob on their own
-const MODES_NO_EXTRA = new Set(['offline', 'malformed_response']);
+// All malformed_* modes — no extra params accepted
+const MODES_MALFORMED = new Set(['malformed_response', 'malformed_truncated_json', 'malformed_wrong_content_type']);
 
 function validateNetworkFaultBody(body) {
-  const { mode, latencyMs, percent, statusCode } = body;
+  const { mode, latencyMs, percent, dropEveryN, statusCode } = body;
   if (!mode || !NETWORK_FAULT_MODES.has(mode)) {
     return { error: `Invalid mode: ${mode}` };
   }
@@ -3970,6 +3973,9 @@ function validateNetworkFaultBody(body) {
   }
   if (percent !== undefined && mode !== 'intermittent') {
     return { error: `percent not valid for mode ${mode}` };
+  }
+  if (dropEveryN !== undefined && mode !== 'intermittent') {
+    return { error: `dropEveryN not valid for mode ${mode}` };
   }
   if (statusCode !== undefined && mode !== 'server_5xx') {
     return { error: `statusCode not valid for mode ${mode}` };
@@ -3980,8 +3986,10 @@ function validateNetworkFaultBody(body) {
     }
   }
   if (mode === 'intermittent') {
-    if (percent === undefined || typeof percent !== 'number' || percent < 1 || percent > 99) {
-      return { error: 'intermittent requires percent (1..99)' };
+    const hasPercent = percent !== undefined && typeof percent === 'number' && percent >= 1 && percent <= 99;
+    const hasDropEveryN = dropEveryN !== undefined && typeof dropEveryN === 'number' && Number.isInteger(dropEveryN) && dropEveryN >= 1;
+    if (!hasPercent && !hasDropEveryN) {
+      return { error: 'intermittent requires either percent (1..99) or dropEveryN (integer ≥1)' };
     }
   }
   if (mode === 'server_5xx') {
@@ -3994,7 +4002,9 @@ function validateNetworkFaultBody(body) {
 }
 
 function buildFaultHandler(fault) {
-  const { mode, latencyMs, percent, statusCode } = fault;
+  const { mode, latencyMs, percent, dropEveryN, statusCode } = fault;
+  // For dropEveryN: track a per-handler counter. Each handler closure is per-tab, so this is correct.
+  let dropCounter = 0;
   // timeout_at_response: open architect decision — use 120000 ms ceiling (matches BugHunter 30 s budget
   // with headroom; if BugHunter raises per-test ceiling, a follow-up spec can add a timeoutMs param).
   return async function faultHandler(route) {
@@ -4017,6 +4027,11 @@ function buildFaultHandler(fault) {
       return;
     }
     if (mode === 'intermittent') {
+      if (dropEveryN !== undefined) {
+        dropCounter += 1;
+        if (dropCounter % dropEveryN === 0) return route.abort('failed');
+        return route.continue();
+      }
       if (Math.random() * 100 < percent) return route.abort('failed');
       return route.continue();
     }
@@ -4027,8 +4042,11 @@ function buildFaultHandler(fault) {
         body: JSON.stringify({ error: 'Injected fault' }),
       });
     }
-    if (mode === 'malformed_response') {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"truncated":' });
+    if (mode === 'malformed_response' || mode === 'malformed_truncated_json') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"data":' });
+    }
+    if (mode === 'malformed_wrong_content_type') {
+      return route.fulfill({ status: 200, contentType: 'text/plain', body: '{"ok":true}' });
     }
     // fallback
     return route.continue();
@@ -4081,13 +4099,13 @@ function buildFaultHandler(fault) {
 app.post('/tabs/:tabId/network-fault', async (req, res) => {
   const tabId = req.params.tabId;
   try {
-    const { userId, mode, latencyMs, percent, statusCode, urlGlob } = req.body;
+    const { userId, mode, latencyMs, percent, dropEveryN, statusCode, urlGlob } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
 
-    const validationErr = validateNetworkFaultBody({ mode, latencyMs, percent, statusCode });
+    const validationErr = validateNetworkFaultBody({ mode, latencyMs, percent, dropEveryN, statusCode });
     if (validationErr) return res.status(400).json(validationErr);
 
     const { tabState } = found;
@@ -4104,6 +4122,7 @@ app.post('/tabs/:tabId/network-fault', async (req, res) => {
         mode,
         ...(latencyMs !== undefined && { latencyMs }),
         ...(percent !== undefined && { percent }),
+        ...(dropEveryN !== undefined && { dropEveryN }),
         ...(statusCode !== undefined && { statusCode }),
         ...(effectiveGlob && { urlGlob: effectiveGlob }),
         installedAtMs: Date.now(),
@@ -4112,7 +4131,7 @@ app.post('/tabs/:tabId/network-fault', async (req, res) => {
       if (mode === 'offline') {
         await session.context.setOffline(true);
       } else {
-        const handler = buildFaultHandler({ mode, latencyMs, percent, statusCode: statusCode ?? 503 });
+        const handler = buildFaultHandler({ mode, latencyMs, percent, dropEveryN, statusCode: statusCode ?? 503 });
         fault._routeHandler = handler;
         await session.context.route(effectiveGlob, handler);
         const prev = contextFaultRefCount.get(session.context) ?? 0;
