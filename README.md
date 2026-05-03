@@ -518,6 +518,19 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `POST` | `/tabs/:id/forward` | Go forward |
 | `POST` | `/tabs/:id/refresh` | Refresh page |
 
+### BugHunter Integration (V20 / V22 / V23)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/tabs/:id/network-fault` | Install a network fault (offline, slow_3g, high_latency, timeout_at_request, timeout_at_response, intermittent, server_5xx, malformed_response) |
+| `POST` | `/tabs/:id/clear-network-fault` | Remove the active network fault (idempotent) |
+| `GET` | `/tabs/:id/network-fault` | Read the active network fault state |
+| `GET` | `/tabs/:id/in-flight-requests` | List in-flight requests tracked since last navigation |
+| `POST` | `/tabs/:id/init-script` | Register a JS snippet to run before page code on each new document |
+| `POST` | `/tabs/:id/clear-init-scripts` | Dispose all registered init-scripts (caller must reload to fully clear) |
+| `POST` | `/tabs/:id/timezone` | Override the page timezone via an init-script polyfill (reload required) |
+| `POST` | `/tabs/:id/clear-timezone` | Remove the timezone override (idempotent) |
+
 ### YouTube Transcript
 
 | Method | Endpoint | Description |

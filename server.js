@@ -35,6 +35,7 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
+import { renderTimezonePolyfill } from './lib/timezone-polyfill.js';
 
 const CONFIG = loadConfig();
 
@@ -184,6 +185,20 @@ function safeError(err) {
   }
   return err.message;
 }
+
+// Extract just the pathname from a URL string; falls back to the raw string on parse failure.
+function safeUrlPath(url) {
+  try { return new URL(url).pathname; } catch { return url; }
+}
+
+// IANA timezone identifier regex (loose). Does not embed a 600-zone allow-list — see
+// BugHunter spec open question 5. Intl will reject invalid zones at polyfill install time.
+const IANA_TZ_RE = /^[A-Za-z_]+(\/[A-Za-z_+\-0-9]+)*$/;
+
+// Per-context route-handler reference count for network faults.
+// Key: session context object (identity). Value: number of tabs with active route faults.
+// When count reaches zero, context.unrouteAll({ behavior: 'wait' }) is called.
+const contextFaultRefCount = new WeakMap();
 
 // Send error response with appropriate status code (422 for stale refs, 500 otherwise)
 function sendError(res, err, extraFields = {}) {
@@ -510,13 +525,16 @@ async function withUserLimit(userId, operation) {
 }
 
 async function safePageClose(page) {
+  if (!page || page.isClosed()) return;
   try {
     await Promise.race([
-      page.close(),
-      new Promise(resolve => setTimeout(resolve, PAGE_CLOSE_TIMEOUT_MS))
+      page.close({ runBeforeUnload: false }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('page close timed out')), PAGE_CLOSE_TIMEOUT_MS)),
     ]);
   } catch (e) {
-    log('warn', 'page close failed', { error: e.message });
+    log('warn', 'page close timed out, force-closing', { error: e.message });
+    try { await page.close({ runBeforeUnload: false }); } catch (_) {}
+    page.removeAllListeners();
   }
 }
 
@@ -627,8 +645,12 @@ async function restartBrowser(reason) {
 function getTotalTabCount() {
   let total = 0;
   for (const session of sessions.values()) {
-    for (const group of session.tabGroups.values()) {
-      total += group.size;
+    try {
+      // Use real Playwright page count so leaked pages exert backpressure.
+      total += session.context.pages().length;
+    } catch (_) {
+      // Context is dead — fall back to bookkeeping count for this session.
+      for (const group of session.tabGroups.values()) total += group.size;
     }
   }
   return total;
@@ -1314,7 +1336,7 @@ function findTab(session, tabId) {
 
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
-  return {
+  const tabState = {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
@@ -1328,7 +1350,36 @@ function createTabState(page) {
     lastRequestedUrl: null,
     googleRetryCount: 0,
     navigateAbort: null,
+    // BugHunter V20: active network fault state. null = no fault.
+    networkFault: null,
+    // BugHunter V22: in-flight request tracker (Map<Request, record>).
+    inFlight: new Map(),
+    // BugHunter V23: installed init-script registrations.
+    initScripts: new Map(),
+    // BugHunter V23: id of the active timezone polyfill in initScripts, or null.
+    timezoneInitScriptId: null,
   };
+  wireInFlightListeners(tabState);
+  return tabState;
+}
+
+// Wire request/requestfinished/requestfailed listeners for V22 in-flight tracking.
+// Called on tab creation and after page replacement (auto-recovery).
+// Navigations within the same page do NOT reset the tracker — V22 filters by startedAtMs.
+function wireInFlightListeners(tabState) {
+  const inFlight = tabState.inFlight;
+  tabState.page.on('request', (request) => {
+    inFlight.set(request, {
+      method: request.method().toUpperCase(),
+      url: request.url(),
+      path: safeUrlPath(request.url()),
+      startedAtMs: Date.now(),
+      resourceType: request.resourceType(),
+    });
+  });
+  const drop = (request) => inFlight.delete(request);
+  tabState.page.on('requestfinished', drop);
+  tabState.page.on('requestfailed', drop);
 }
 
 async function isGoogleUnavailable(page) {
@@ -3901,6 +3952,654 @@ app.delete('/tabs/:tabId', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// BugHunter V20 — Network fault injection
+// ---------------------------------------------------------------------------
+
+// Validation helpers for network-fault modes
+const NETWORK_FAULT_MODES = new Set([
+  'offline', 'slow_3g', 'high_latency', 'timeout_at_request',
+  'timeout_at_response', 'intermittent', 'server_5xx',
+  'malformed_response',
+  'malformed_truncated_json',   // BugHunter #101: truncated JSON body
+  'malformed_wrong_content_type', // BugHunter #101: valid JSON with text/plain Content-Type
+]);
+
+// Modes that accept / require latencyMs
+const MODES_WITH_LATENCY = new Set(['high_latency', 'slow_3g', 'timeout_at_request', 'timeout_at_response']);
+// All malformed_* modes — no extra params accepted
+const MODES_MALFORMED = new Set(['malformed_response', 'malformed_truncated_json', 'malformed_wrong_content_type']);
+
+function validateNetworkFaultBody(body) {
+  const { mode, latencyMs, percent, dropEveryN, statusCode } = body;
+  if (!mode || !NETWORK_FAULT_MODES.has(mode)) {
+    return { error: `Invalid mode: ${mode}` };
+  }
+  if (latencyMs !== undefined && !MODES_WITH_LATENCY.has(mode)) {
+    return { error: `latencyMs not valid for mode ${mode}` };
+  }
+  if (percent !== undefined && mode !== 'intermittent') {
+    return { error: `percent not valid for mode ${mode}` };
+  }
+  if (dropEveryN !== undefined && mode !== 'intermittent') {
+    return { error: `dropEveryN not valid for mode ${mode}` };
+  }
+  if (statusCode !== undefined && mode !== 'server_5xx') {
+    return { error: `statusCode not valid for mode ${mode}` };
+  }
+  if (mode === 'high_latency') {
+    if (latencyMs === undefined || typeof latencyMs !== 'number' || latencyMs < 1 || latencyMs > 120000) {
+      return { error: 'high_latency requires latencyMs (1..120000)' };
+    }
+  }
+  if (mode === 'intermittent') {
+    const hasPercent = percent !== undefined && typeof percent === 'number' && percent >= 1 && percent <= 99;
+    const hasDropEveryN = dropEveryN !== undefined && typeof dropEveryN === 'number' && Number.isInteger(dropEveryN) && dropEveryN >= 1;
+    if (!hasPercent && !hasDropEveryN) {
+      return { error: 'intermittent requires either percent (1..99) or dropEveryN (integer ≥1)' };
+    }
+  }
+  if (mode === 'server_5xx') {
+    const code = statusCode ?? 503;
+    if (typeof code !== 'number' || code < 500 || code > 599) {
+      return { error: 'server_5xx statusCode must be 500..599' };
+    }
+  }
+  return null;
+}
+
+function buildFaultHandler(fault) {
+  const { mode, latencyMs, percent, dropEveryN, statusCode } = fault;
+  // For dropEveryN: track a per-handler counter. Each handler closure is per-tab, so this is correct.
+  let dropCounter = 0;
+  // timeout_at_response: open architect decision — use 120000 ms ceiling (matches BugHunter 30 s budget
+  // with headroom; if BugHunter raises per-test ceiling, a follow-up spec can add a timeoutMs param).
+  return async function faultHandler(route) {
+    if (mode === 'slow_3g') {
+      await new Promise((r) => setTimeout(r, latencyMs ?? 2000));
+      return route.continue();
+    }
+    if (mode === 'high_latency') {
+      await new Promise((r) => setTimeout(r, latencyMs));
+      return route.continue();
+    }
+    if (mode === 'timeout_at_request') {
+      await new Promise((r) => setTimeout(r, 120000));
+      return route.abort('timedout');
+    }
+    if (mode === 'timeout_at_response') {
+      // Let the request go, then abort after 120 s to simulate a hung response.
+      // Decision: 120 s ceiling per architect open question 1.
+      setTimeout(() => route.abort('timedout').catch(() => {}), 120000);
+      return;
+    }
+    if (mode === 'intermittent') {
+      if (dropEveryN !== undefined) {
+        dropCounter += 1;
+        if (dropCounter % dropEveryN === 0) return route.abort('failed');
+        return route.continue();
+      }
+      if (Math.random() * 100 < percent) return route.abort('failed');
+      return route.continue();
+    }
+    if (mode === 'server_5xx') {
+      return route.fulfill({
+        status: statusCode ?? 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Injected fault' }),
+      });
+    }
+    if (mode === 'malformed_response' || mode === 'malformed_truncated_json') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"data":' });
+    }
+    if (mode === 'malformed_wrong_content_type') {
+      return route.fulfill({ status: 200, contentType: 'text/plain', body: '{"ok":true}' });
+    }
+    // fallback
+    return route.continue();
+  };
+}
+
+/**
+ * @openapi
+ * /tabs/{tabId}/network-fault:
+ *   post:
+ *     tags: [BugHunter]
+ *     summary: Install a network fault on a tab (BugHunter V20)
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, mode]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               mode:
+ *                 type: string
+ *                 enum: [offline, slow_3g, high_latency, timeout_at_request, timeout_at_response, intermittent, server_5xx, malformed_response]
+ *               latencyMs:
+ *                 type: integer
+ *               percent:
+ *                 type: integer
+ *               statusCode:
+ *                 type: integer
+ *               urlGlob:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Fault installed.
+ *       400:
+ *         description: Validation error.
+ *       404:
+ *         description: Tab not found.
+ *       409:
+ *         description: Fault already active.
+ */
+app.post('/tabs/:tabId/network-fault', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, mode, latencyMs, percent, dropEveryN, statusCode, urlGlob } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const validationErr = validateNetworkFaultBody({ mode, latencyMs, percent, dropEveryN, statusCode });
+    if (validationErr) return res.status(400).json(validationErr);
+
+    const { tabState } = found;
+    if (tabState.networkFault) {
+      return res.status(409).json({
+        error: 'Fault already active. Call POST /tabs/:tabId/clear-network-fault first.',
+        existing: tabState.networkFault,
+      });
+    }
+
+    const result = await withTabLock(tabId, async () => {
+      const effectiveGlob = mode === 'offline' ? undefined : (urlGlob || '**/api/**');
+      const fault = {
+        mode,
+        ...(latencyMs !== undefined && { latencyMs }),
+        ...(percent !== undefined && { percent }),
+        ...(dropEveryN !== undefined && { dropEveryN }),
+        ...(statusCode !== undefined && { statusCode }),
+        ...(effectiveGlob && { urlGlob: effectiveGlob }),
+        installedAtMs: Date.now(),
+      };
+
+      if (mode === 'offline') {
+        await session.context.setOffline(true);
+      } else {
+        const handler = buildFaultHandler({ mode, latencyMs, percent, dropEveryN, statusCode: statusCode ?? 503 });
+        fault._routeHandler = handler;
+        await session.context.route(effectiveGlob, handler);
+        const prev = contextFaultRefCount.get(session.context) ?? 0;
+        contextFaultRefCount.set(session.context, prev + 1);
+      }
+
+      tabState.networkFault = fault;
+      pluginEvents.emit('tab:network_fault_set', { userId, tabId, fault });
+      return { ok: true, tabId, fault: { ...fault, _routeHandler: undefined } };
+    });
+
+    res.json(result);
+  } catch (err) {
+    log('error', 'network-fault install failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/clear-network-fault:
+ *   post:
+ *     tags: [BugHunter]
+ *     summary: Remove the active network fault on a tab (BugHunter V20)
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Fault cleared (idempotent).
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/clear-network-fault', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    const result = await withTabLock(tabId, async () => {
+      const cleared = tabState.networkFault
+        ? { ...tabState.networkFault, _routeHandler: undefined }
+        : null;
+
+      if (tabState.networkFault) {
+        if (tabState.networkFault.mode === 'offline') {
+          await session.context.setOffline(false);
+        } else {
+          const prev = contextFaultRefCount.get(session.context) ?? 1;
+          const next = prev - 1;
+          if (next <= 0) {
+            // 'wait' is the safest behavior: drains in-flight handler invocations cleanly.
+            // Decision: behavior:'wait' per architect open question 2.
+            await session.context.unrouteAll({ behavior: 'wait' });
+            contextFaultRefCount.delete(session.context);
+          } else {
+            contextFaultRefCount.set(session.context, next);
+          }
+        }
+        tabState.networkFault = null;
+        pluginEvents.emit('tab:network_fault_cleared', { userId, tabId });
+      }
+
+      return { ok: true, tabId, cleared };
+    });
+
+    res.json(result);
+  } catch (err) {
+    log('error', 'clear-network-fault failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/network-fault:
+ *   get:
+ *     tags: [BugHunter]
+ *     summary: Read the active network fault state on a tab (BugHunter V20)
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Current fault state (null if none).
+ *       404:
+ *         description: Tab not found.
+ */
+app.get('/tabs/:tabId/network-fault', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const fault = found.tabState.networkFault
+      ? { ...found.tabState.networkFault, _routeHandler: undefined }
+      : null;
+    res.json({ tabId: req.params.tabId, fault });
+  } catch (err) {
+    log('error', 'get-network-fault failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// BugHunter V22 — In-flight request enumeration
+// ---------------------------------------------------------------------------
+
+/**
+ * @openapi
+ * /tabs/{tabId}/in-flight-requests:
+ *   get:
+ *     tags: [BugHunter]
+ *     summary: Read in-flight requests on a tab (BugHunter V22)
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: methods
+ *         in: query
+ *         schema:
+ *           type: string
+ *         description: Comma-separated HTTP methods to filter (default all).
+ *     responses:
+ *       200:
+ *         description: In-flight request list.
+ *       404:
+ *         description: Tab not found.
+ */
+app.get('/tabs/:tabId/in-flight-requests', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    const methodsParam = req.query.methods;
+    const methodFilter = methodsParam
+      ? new Set(methodsParam.toUpperCase().split(',').map((m) => m.trim()).filter(Boolean))
+      : null;
+
+    const requests = [...tabState.inFlight.values()].filter(
+      (r) => !methodFilter || methodFilter.has(r.method),
+    );
+    res.json({ tabId: req.params.tabId, capturedAtMs: Date.now(), requests });
+  } catch (err) {
+    log('error', 'in-flight-requests failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// BugHunter V23 — Init-script injection and timezone override
+// ---------------------------------------------------------------------------
+
+/**
+ * @openapi
+ * /tabs/{tabId}/init-script:
+ *   post:
+ *     tags: [BugHunter]
+ *     summary: Register an init-script on a tab (BugHunter V23)
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, script]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               script:
+ *                 type: string
+ *               id:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Script registered.
+ *       400:
+ *         description: Validation error.
+ *       404:
+ *         description: Tab not found.
+ *       409:
+ *         description: Script id already exists.
+ *       413:
+ *         description: Script too large.
+ */
+app.post('/tabs/:tabId/init-script', express.json({ limit: '256kb' }), async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, script, id: bodyId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (typeof script !== 'string' || script.length === 0) {
+      return res.status(400).json({ error: 'script must be a non-empty string' });
+    }
+    if (script.length > 262144) return res.status(413).json({ error: 'script exceeds 256 KB limit' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    const id = bodyId || crypto.randomUUID();
+    // id collision: silent last-wins replacement when bodyId not supplied; 409 when caller-supplied id collides.
+    // Decision: 409 for caller-supplied ids (callers who supply ids expect uniqueness guarantees).
+    if (bodyId && tabState.initScripts.has(id)) {
+      return res.status(409).json({ error: `Init-script id '${id}' already registered on this tab` });
+    }
+
+    const installedAtMs = Date.now();
+    const disposable = await tabState.page.addInitScript(script);
+    tabState.initScripts.set(id, { disposable, scriptLength: script.length, installedAtMs });
+    log('info', 'init-script added', { reqId: req.reqId, tabId, userId, id, scriptLength: script.length });
+    pluginEvents.emit('tab:init_script_added', { userId, tabId, id });
+
+    res.json({ ok: true, tabId, id, installedAtMs, scriptLength: script.length });
+  } catch (err) {
+    log('error', 'init-script failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/clear-init-scripts:
+ *   post:
+ *     tags: [BugHunter]
+ *     summary: Clear all init-scripts on a tab (BugHunter V23)
+ *     description: >
+ *       Disposes all registered init-scripts. Does NOT remove their effects from the
+ *       currently-loaded document — caller must reload or navigate to fully clear.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Scripts cleared.
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/clear-init-scripts', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    const count = tabState.initScripts.size;
+    for (const { disposable } of tabState.initScripts.values()) {
+      try { disposable?.dispose?.(); } catch { /* disposal is best-effort */ }
+    }
+    tabState.initScripts.clear();
+    tabState.timezoneInitScriptId = null;
+    pluginEvents.emit('tab:init_scripts_cleared', { userId, tabId, cleared: count });
+
+    res.json({ ok: true, tabId, cleared: count, reloadRequired: count > 0 });
+  } catch (err) {
+    log('error', 'clear-init-scripts failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/timezone:
+ *   post:
+ *     tags: [BugHunter]
+ *     summary: Set timezone override via init-script polyfill (BugHunter V23)
+ *     description: >
+ *       Installs a Date/Intl polyfill via addInitScript. BrowserContext.setTimezoneId is
+ *       creation-time-only on Firefox; CDP Emulation.setTimezoneOverride is Chromium-only.
+ *       The polyfill takes effect on the next navigation. Caller must reload after install.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, id]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               id:
+ *                 type: string
+ *                 description: IANA timezone identifier (e.g. 'America/New_York')
+ *     responses:
+ *       200:
+ *         description: Timezone polyfill registered.
+ *       400:
+ *         description: Validation error.
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/timezone', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, id: tzId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!tzId || typeof tzId !== 'string') return res.status(400).json({ error: 'id (IANA timezone) required' });
+
+    // Loose IANA regex — see architect decision (spec open question 5): no 600-zone allow-list.
+    if (!IANA_TZ_RE.test(tzId)) {
+      return res.status(400).json({ error: `id does not look like an IANA timezone: ${tzId}` });
+    }
+    // Warn (but accept) if Intl rejects the zone. The polyfill will no-op inside the page.
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tzId });
+    } catch {
+      log('warn', 'timezone not recognised by Intl — polyfill may no-op in page', { reqId: req.reqId, tzId });
+    }
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    // Single-timezone invariant: dispose prior polyfill before installing new one.
+    if (tabState.timezoneInitScriptId) {
+      const prior = tabState.initScripts.get(tabState.timezoneInitScriptId);
+      if (prior) {
+        try { prior.disposable?.dispose?.(); } catch { /* best-effort */ }
+        tabState.initScripts.delete(tabState.timezoneInitScriptId);
+      }
+      tabState.timezoneInitScriptId = null;
+    }
+
+    const polyfill = renderTimezonePolyfill(tzId);
+    const disposable = await tabState.page.addInitScript(polyfill);
+    const scriptId = crypto.randomUUID();
+    tabState.initScripts.set(scriptId, { disposable, scriptLength: polyfill.length, installedAtMs: Date.now() });
+    tabState.timezoneInitScriptId = scriptId;
+    pluginEvents.emit('tab:timezone_set', { userId, tabId, timezoneId: tzId });
+
+    res.json({ ok: true, tabId, timezoneId: tzId, appliedVia: 'init-script', reloadRequired: true });
+  } catch (err) {
+    log('error', 'timezone set failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/clear-timezone:
+ *   post:
+ *     tags: [BugHunter]
+ *     summary: Clear the timezone override on a tab (BugHunter V23)
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Timezone cleared (idempotent).
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/clear-timezone', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+
+    const { tabState } = found;
+    let cleared = false;
+    if (tabState.timezoneInitScriptId) {
+      const entry = tabState.initScripts.get(tabState.timezoneInitScriptId);
+      if (entry) {
+        try { entry.disposable?.dispose?.(); } catch { /* best-effort */ }
+        tabState.initScripts.delete(tabState.timezoneInitScriptId);
+      }
+      tabState.timezoneInitScriptId = null;
+      cleared = true;
+      pluginEvents.emit('tab:timezone_cleared', { userId, tabId });
+    }
+
+    res.json({ ok: true, tabId, cleared, reloadRequired: cleared });
+  } catch (err) {
+    log('error', 'clear-timezone failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Close tab group
 /**
  * @openapi
@@ -4290,6 +4989,33 @@ setInterval(() => {
     }
   }
   if (sessions.size === 0) scheduleBrowserIdleShutdown();
+}, 60_000);
+
+// Orphan page reaper -- force-closes Playwright pages that survived a safePageClose
+// timeout (BugHunter#174). Runs every 60s alongside the inactivity reaper.
+setInterval(() => {
+  let reaped = 0;
+  for (const session of sessions.values()) {
+    if (session._closing) continue;
+    let contextPages;
+    try {
+      contextPages = session.context.pages();
+    } catch (_) {
+      continue; // context already dead
+    }
+    const registered = new Set();
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) registered.add(tabState.page);
+    }
+    for (const page of contextPages) {
+      if (!registered.has(page)) {
+        reaped++;
+        page.removeAllListeners();
+        page.close({ runBeforeUnload: false }).catch(() => {});
+      }
+    }
+  }
+  if (reaped > 0) log('warn', 'orphan page reaper closed leaked pages', { reaped });
 }, 60_000);
 
 // Native memory pressure restart -- when all sessions are gone and Firefox's
@@ -5087,6 +5813,23 @@ app.post('/act', async (req, res) => {
     handleRouteError(err, req, res);
   }
 });
+
+// BugHunter V22: TTL sweep for in-flight tracker entries older than 5 minutes.
+// A request that never completes (network black-hole, killed server) would otherwise
+// leak indefinitely. 5-min window is safely wider than V22's 30-second capture window.
+setInterval(() => {
+  const staleThreshold = Date.now() - 5 * 60_000;
+  for (const session of sessions.values()) {
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) {
+        if (!tabState.inFlight) continue;
+        for (const [req, record] of tabState.inFlight) {
+          if (record.startedAtMs < staleThreshold) tabState.inFlight.delete(req);
+        }
+      }
+    }
+  }
+}, 60_000);
 
 // Periodic stats beacon (every 5 min)
 setInterval(() => {
