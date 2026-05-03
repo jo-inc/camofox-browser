@@ -29,6 +29,7 @@ interface PluginConfig {
   url?: string;
   autoStart?: boolean;
   port?: number;
+  host?: string;
   maxSessions?: number;
   maxTabsPerSession?: number;
   sessionTimeoutMs?: number;
@@ -123,7 +124,7 @@ async function startServer(
   if (pluginCfg?.maxTabsPerSession != null) env.MAX_TABS_PER_SESSION = String(pluginCfg.maxTabsPerSession);
   if (pluginCfg?.sessionTimeoutMs != null) env.SESSION_TIMEOUT_MS = String(pluginCfg.sessionTimeoutMs);
   if (pluginCfg?.browserIdleTimeoutMs != null) env.BROWSER_IDLE_TIMEOUT_MS = String(pluginCfg.browserIdleTimeoutMs);
-  const proc = launchServer({ pluginDir, port, env, log, nodeArgs: pluginCfg?.maxOldSpaceSize != null ? [`--max-old-space-size=${pluginCfg.maxOldSpaceSize}`] : undefined });
+  const proc = launchServer({ pluginDir, port, host: pluginCfg?.host, env, log, nodeArgs: pluginCfg?.maxOldSpaceSize != null ? [`--max-old-space-size=${pluginCfg.maxOldSpaceSize}`] : undefined });
 
   proc.on("error", (err: Error) => {
     log?.error?.(`Server process error: ${err.message}`);
@@ -138,7 +139,7 @@ async function startServer(
   });
 
   // Wait for server to be ready
-  const baseUrl = `http://localhost:${port}`;
+  const baseUrl = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 500));
     try {
@@ -193,7 +194,8 @@ function toToolResult(data: unknown): ToolResult {
 export default function register(api: PluginApi) {
   const cfg = api.pluginConfig ?? (api.config as unknown as PluginConfig);
   const port = cfg.port || 9377;
-  const baseUrl = cfg.url || `http://localhost:${port}`;
+  const host = cfg.host || "127.0.0.1";
+  const baseUrl = cfg.url || `http://127.0.0.1:${port}`;
   const autoStart = cfg.autoStart !== false; // default true
   const pluginDir = getPluginDir();
   const fallbackUserId = `camofox-${randomUUID()}`;
@@ -206,7 +208,7 @@ export default function register(api: PluginApi) {
         api.log?.info?.(`Camoufox server already running at ${baseUrl}`);
       } else {
         try {
-          serverProcess = await startServer(pluginDir, port, api.log, cfg);
+          serverProcess = await startServer(pluginDir, port, api.log, { ...cfg, host });
         } catch (err) {
           api.log?.error?.(`Failed to auto-start server: ${(err as Error).message}`);
         }
@@ -552,7 +554,7 @@ export default function register(api: PluginApi) {
             return;
           }
           try {
-            serverProcess = await startServer(pluginDir, port, api.log, cfg);
+            serverProcess = await startServer(pluginDir, port, api.log, { ...cfg, host });
           } catch (err) {
             api.log?.error?.(`Failed to start server: ${(err as Error).message}`);
           }
@@ -675,7 +677,7 @@ export default function register(api: PluginApi) {
             }
             try {
               console.log(`Starting camofox server on port ${port}...`);
-              serverProcess = await startServer(pluginDir, port, api.log, cfg);
+              serverProcess = await startServer(pluginDir, port, api.log, { ...cfg, host });
               console.log(`Camoufox server started at ${baseUrl}`);
             } catch (err) {
               console.error(`Failed to start server: ${(err as Error).message}`);
@@ -705,6 +707,7 @@ export default function register(api: PluginApi) {
             console.log("");
             console.log("Current settings:");
             console.log(`  Server URL: ${baseUrl}`);
+            console.log(`  Bind host: ${host}`);
             console.log(`  Port: ${port}`);
             console.log(`  Auto-start: ${autoStart}`);
             console.log("");
@@ -715,6 +718,7 @@ export default function register(api: PluginApi) {
             console.log("      camofox-browser:");
             console.log("        enabled: true");
             console.log("        config:");
+            console.log("          host: 127.0.0.1");
             console.log("          port: 9377");
             console.log("          autoStart: true");
             console.log("");

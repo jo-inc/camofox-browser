@@ -39,6 +39,11 @@
         "description": "Server port (used if url not set)",
         "default": 9377
       },
+      "host": {
+        "type": "string",
+        "description": "Server bind address for auto-started server. Defaults to loopback; use 0.0.0.0 only when intentionally exposing the server.",
+        "default": "127.0.0.1"
+      },
       "autoStart": {
         "type": "boolean",
         "description": "Auto-start the camofox-browser server with the Gateway",

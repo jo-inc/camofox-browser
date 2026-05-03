@@ -560,6 +560,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `CAMOFOX_HOST` | Server bind address. Defaults to loopback; set `0.0.0.0` only when intentionally exposing the server, and pair with `CAMOFOX_ACCESS_KEY`. | `127.0.0.1` |
 | `CAMOFOX_PORT` | Server port | `9377` |
 | `PORT` | Server port (fallback, for platforms like Fly.io, Railway) | `9377` |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
