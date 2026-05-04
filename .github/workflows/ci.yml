@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build plugin (TypeScript → JS)
+        run: npm run build
+
       - name: Run unit + plugin tests (Jest)
         run: |
           npm install --no-save jest-junit

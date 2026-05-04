@@ -40,6 +40,8 @@
     "plugins/",
     "camofox.config.json",
     "plugin.ts",
+    "plugin.js",
+    "tsconfig.json",
     "openclaw.plugin.json",
     "scripts/",
     "run.sh",
@@ -52,11 +54,14 @@
     "extensions": [
       "plugin.ts"
     ],
+    "runtimeExtensions": [
+      "plugin.js"
+    ],
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2"
     },
     "build": {
-      "openclawVersion": "2026.4.26"
+      "openclawVersion": "2026.5.3"
     },
     "tools": [
       {
@@ -102,6 +107,7 @@
     ]
   },
   "scripts": {
+    "build": "tsc -p .",
     "start": "node server.js",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/e2e",
@@ -125,7 +131,9 @@
     "swagger-jsdoc": "^6.2.8"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "jest": "^29.7.0",
-    "pngjs": "^7.0.0"
+    "pngjs": "^7.0.0",
+    "typescript": "^5.7.0"
   }
 }

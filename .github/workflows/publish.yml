@@ -91,6 +91,9 @@ jobs:
 
       - run: npm ci --ignore-scripts
 
+      - name: Build plugin (TypeScript → JS)
+        run: npm run build
+
       - name: Publish with provenance
         run: npm publish --provenance --access public
 

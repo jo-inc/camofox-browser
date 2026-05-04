@@ -20,6 +20,8 @@ coverage/
 # Build
 dist/
 build/
+/plugin.js
+/plugin.js.map
 
 # IDE
 .idea/
