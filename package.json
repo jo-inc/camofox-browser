@@ -112,7 +112,7 @@
     "generate-openapi": "node scripts/generate-openapi.js",
     "version:sync": "node scripts/sync-version.js",
     "version": "node scripts/sync-version.js && node scripts/generate-openapi.js && git add openclaw.plugin.json openapi.json",
-    "postinstall": "npx camoufox-js fetch || true"
+    "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
     "camoufox-js": "^0.8.5",

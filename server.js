@@ -569,6 +569,20 @@ function clearBrowserIdleTimer() {
   }
 }
 
+// Detects errors that retrying cannot recover from (e.g., Camoufox binary
+// missing because postinstall was skipped). The user must run
+// `npx camoufox-js fetch` and restart; looping on this wastes resources
+// and buries the actionable error under noise.
+//
+// Sentinel: matches the human-readable message thrown by camoufox-js's
+// FileNotFoundError in dist/pkgman.js (Version.fromPath). FileNotFoundError
+// is not exported from the public API, so substring matching is the only
+// available hook. If the upstream message changes, this regex needs an
+// update; the dependency range in package.json controls exposure.
+function isFatalInstallError(err) {
+  return /Version information not found/i.test(err?.message || '');
+}
+
 function scheduleBrowserWarmRetry(delayMs = 5000) {
   if (browserWarmRetryTimer || browser || browserLaunchPromise) return;
   browserWarmRetryTimer = setTimeout(async () => {
@@ -578,6 +592,13 @@ function scheduleBrowserWarmRetry(delayMs = 5000) {
       await ensureBrowser();
       log('info', 'background browser warm retry succeeded', { ms: Date.now() - start });
     } catch (err) {
+      if (isFatalInstallError(err)) {
+        log('error', 'browser unavailable: Camoufox binaries are not installed; aborting retry loop', {
+          error: err.message,
+          remediation: 'run `npx camoufox-js fetch` then restart the server',
+        });
+        return;
+      }
       log('warn', 'background browser warm retry failed', { error: err.message, nextDelayMs: delayMs });
       scheduleBrowserWarmRetry(Math.min(delayMs * 2, 30000));
     }
@@ -5263,8 +5284,15 @@ const server = app.listen(PORT, async () => {
     log('info', 'browser pre-warmed', { ms: Date.now() - start });
     scheduleBrowserIdleShutdown();
   } catch (err) {
-    log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });
-    scheduleBrowserWarmRetry();
+    if (isFatalInstallError(err)) {
+      log('error', 'browser pre-warm aborted: Camoufox binaries are not installed', {
+        error: err.message,
+        remediation: 'run `npx camoufox-js fetch` then restart the server',
+      });
+    } else {
+      log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });
+      scheduleBrowserWarmRetry();
+    }
   }
   // Idle self-shutdown removed -- Fly manages machine lifecycle via fly.toml.
 });

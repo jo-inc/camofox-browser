@@ -89,6 +89,10 @@ npm start  # downloads Camoufox on first run (~300MB)
 
 Default port is `9377`. See [Environment Variables](#environment-variables) for all options.
 
+> **Note:** the postinstall script unsets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` for itself before fetching the Camoufox binary. Without that override, an exported `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` (common when Playwright is configured to use system Chrome) would silently skip the binary download and crash the server at runtime.
+>
+> **Air-gapped or custom binary management:** disable the auto-fetch with `npm install --ignore-scripts` (skips lifecycle scripts for *every* dependency — bluntest option) or, more surgically, `npm install --omit=optional` plus a manual `npx camoufox-js fetch` step against your mirror. Note that `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install` no longer skips the Camoufox download (the postinstall sanitizes the env locally); use `--ignore-scripts` for that.
+
 ### Docker
 
 The included `Makefile` auto-detects your CPU architecture and pre-downloads Camoufox + yt-dlp binaries outside the Docker build, so rebuilds are fast (~30s vs ~3min).
