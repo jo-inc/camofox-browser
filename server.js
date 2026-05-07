@@ -162,10 +162,19 @@ const INTERACTIVE_ROLES = [
   // 'combobox' excluded - can trigger date pickers and complex dropdowns
 ];
 
-// Patterns to skip (date pickers, calendar widgets)
+// Patterns to skip (date pickers, calendar widgets -- NOT expiration/expiry fields)
 const SKIP_PATTERNS = [
-  /date/i, /calendar/i, /picker/i, /datepicker/i
+  /datepicker/i, /date.?picker/i, /calendar/i, /^date$/i
 ];
+
+// Iframe support: URL patterns to SKIP (tracking, analytics, pixels)
+const IFRAME_SKIP_PATTERNS = [
+  /web-pixel/i, /analytics/i, /tracking/i, /gtm/i, /facebook/i,
+  /doubleclick/i, /google.*tag/i, /hotjar/i, /segment/i, /sentry/i,
+  /recaptcha/i, /gstatic/i, /app-bridge/i, /extensions\.shopifycdn/i,
+];
+const MAX_IFRAMES_TO_PROCESS = 8;
+const IFRAME_SNAPSHOT_TIMEOUT_MS = 3000;
 
 // timingSafeCompare and isLoopbackAddress imported from lib/auth.js
 const timingSafeCompare = _timingSafeCompare;
@@ -1874,6 +1883,75 @@ async function _buildRefsInner(page, refs, start) {
     }
   }
   
+  // --- IFRAME SUPPORT ---
+  // Process child frames to capture elements inside iframes (e.g., Stripe payment fields)
+  const iframeRemaining = BUILDREFS_TIMEOUT_MS - (Date.now() - start);
+  if (iframeRemaining > 2000 && refCounter <= MAX_SNAPSHOT_NODES) {
+    const childFrames = page.frames().filter(f => f !== page.mainFrame());
+    let iframesProcessed = 0;
+    
+    for (const frame of childFrames) {
+      if (iframesProcessed >= MAX_IFRAMES_TO_PROCESS) break;
+      if (refCounter > MAX_SNAPSHOT_NODES) break;
+      
+      const frameUrl = frame.url();
+      const frameName = frame.name();
+      
+      // Skip tracking/analytics iframes
+      if (IFRAME_SKIP_PATTERNS.some(p => p.test(frameUrl) || p.test(frameName))) continue;
+      // Skip about:blank and empty frames
+      if (!frameUrl || frameUrl === 'about:blank' || frameUrl === 'about:srcdoc') continue;
+      
+      try {
+        const frameYaml = await frame.locator('body').ariaSnapshot({ timeout: IFRAME_SNAPSHOT_TIMEOUT_MS });
+        if (!frameYaml || frameYaml.trim().length < 10) continue;
+        
+        // Check if frame has any interactive elements
+        const hasInteractive = INTERACTIVE_ROLES.some(role => {
+          const regex = new RegExp(`^\\s*-\\s+${role}`, 'im');
+          return regex.test(frameYaml);
+        });
+        if (!hasInteractive) continue;
+        
+        iframesProcessed++;
+        // Use a separate seenCounts for each iframe (nth is per-frame for locator resolution)
+        const frameSeenCounts = new Map();
+        
+        const frameLines = frameYaml.split('\n');
+        for (const line of frameLines) {
+          if (refCounter > MAX_SNAPSHOT_NODES) break;
+          
+          const match = line.match(/^\s*-\s+(\w+)(?:\s+"([^"]*)")?/);
+          if (match) {
+            const [, role, name] = match;
+            const normalizedRole = role.toLowerCase();
+            if (normalizedRole === 'combobox') continue;
+            if (name && SKIP_PATTERNS.some(p => p.test(name))) continue;
+            
+            if (INTERACTIVE_ROLES.includes(normalizedRole)) {
+              const normalizedName = name || '';
+              const key = `${normalizedRole}:${normalizedName}`;
+              const nth = frameSeenCounts.get(key) || 0;
+              frameSeenCounts.set(key, nth + 1);
+              
+              const refId = `e${refCounter++}`;
+              refs.set(refId, { role: normalizedRole, name: normalizedName, nth, frameName: frameName || null, frameUrl });
+            }
+          }
+        }
+        
+        log('debug', 'buildRefs: processed iframe', { frameName, frameUrl: frameUrl.slice(0, 80), refs: refCounter - 1 });
+      } catch (err) {
+        // Frame might have navigated away or be inaccessible — skip silently
+        log('debug', 'buildRefs: iframe snapshot failed', { frameName, error: err.message?.slice(0, 80) });
+      }
+    }
+    
+    if (iframesProcessed > 0) {
+      log('info', 'buildRefs: processed iframes', { count: iframesProcessed, totalRefs: refCounter - 1 });
+    }
+  }
+  
   return refs;
 }
 
@@ -1887,19 +1965,89 @@ async function getAriaSnapshot(page) {
     waitForHydration: false,
     settleMs: 100,
   });
+  let mainYaml;
   try {
-    return await page.locator('body').ariaSnapshot({ timeout: 5000 });
+    mainYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
   } catch (err) {
     log('warn', 'getAriaSnapshot failed', { error: err.message });
     return null;
   }
+  
+  if (!mainYaml) return null;
+  
+  // --- IFRAME SUPPORT ---
+  // Append accessible iframe content to the snapshot YAML
+  const childFrames = page.frames().filter(f => f !== page.mainFrame());
+  const iframeYamls = [];
+  let iframesProcessed = 0;
+  
+  for (const frame of childFrames) {
+    if (iframesProcessed >= MAX_IFRAMES_TO_PROCESS) break;
+    
+    const frameUrl = frame.url();
+    const frameName = frame.name();
+    
+    // Skip tracking/analytics iframes
+    if (IFRAME_SKIP_PATTERNS.some(p => p.test(frameUrl) || p.test(frameName))) continue;
+    if (!frameUrl || frameUrl === 'about:blank' || frameUrl === 'about:srcdoc') continue;
+    
+    try {
+      const frameYaml = await frame.locator('body').ariaSnapshot({ timeout: IFRAME_SNAPSHOT_TIMEOUT_MS });
+      if (!frameYaml || frameYaml.trim().length < 10) continue;
+      
+      // Only include frames with interactive elements
+      const hasInteractive = INTERACTIVE_ROLES.some(role => {
+        const regex = new RegExp(`^\\s*-\\s+${role}`, 'im');
+        return regex.test(frameYaml);
+      });
+      if (!hasInteractive) continue;
+      
+      iframesProcessed++;
+      // Derive a human-readable label from frame name or URL
+      let label = frameName || '';
+      if (!label) {
+        try { label = new URL(frameUrl).hostname; } catch { label = 'iframe'; }
+      }
+      // Clean up Shopify-style frame names for readability
+      label = label.replace(/card-fields-/, '').replace(/-[a-z0-9]{10,}$/, '');
+      
+      iframeYamls.push(`- iframe "${label}":\n${frameYaml.split('\n').map(l => '  ' + l).join('\n')}`);
+    } catch {
+      // Frame inaccessible — skip
+    }
+  }
+  
+  if (iframeYamls.length > 0) {
+    return mainYaml + '\n' + iframeYamls.join('\n');
+  }
+  return mainYaml;
 }
 
 function refToLocator(page, ref, refs) {
   const info = refs.get(ref);
   if (!info) return null;
   
-  const { role, name, nth } = info;
+  const { role, name, nth, frameName, frameUrl } = info;
+  
+  // If ref belongs to an iframe, resolve via frame locator
+  if (frameName || frameUrl) {
+    let frame = null;
+    if (frameName) {
+      frame = page.frame({ name: frameName });
+    }
+    if (!frame && frameUrl) {
+      // Try matching by URL (partial match for long URLs)
+      frame = page.frames().find(f => f.url() === frameUrl || f.url().startsWith(frameUrl.slice(0, 80)));
+    }
+    if (frame) {
+      let locator = frame.getByRole(role, name ? { name } : undefined);
+      locator = locator.nth(nth);
+      return locator;
+    }
+    // Frame not found (navigated away?) — fall through to page-level resolution
+    log('warn', 'refToLocator: frame not found for iframe ref', { ref, frameName, frameUrl: frameUrl?.slice(0, 60) });
+  }
+  
   let locator = page.getByRole(role, name ? { name } : undefined);
   
   // Always use .nth() to disambiguate duplicate role+name combinations
