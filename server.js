@@ -1378,6 +1378,156 @@ function createTabState(page) {
     lastRequestedUrl: null,
     googleRetryCount: 0,
     navigateAbort: null,
+    pressureObservedAt: Date.now(),
+    pressureObservedToolCalls: 0,
+  };
+}
+
+function pressureHash(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
+}
+
+function pressureLockState(tabId) {
+  const lock = tabLocks.get(tabId);
+  return {
+    active: Boolean(lock?.active),
+    queued: Number(lock?.queue?.length || 0),
+  };
+}
+
+async function camofoxPressureCleanup(options = {}) {
+  const now = Date.now();
+  const minIdleMs = Math.max(0, Number(options.minIdleMs ?? 10 * 60 * 1000));
+  const maxTabsToClose = Math.max(0, Number(options.maxTabsToClose ?? 4));
+  const minTabsPerSession = Math.max(0, Number(options.minTabsPerSession ?? 1));
+  const dryRun = options.dryRun !== false;
+  const closeEmptySessions = options.closeEmptySessions !== false;
+  const before = { sessions: sessions.size, tabs: getTotalTabCount() };
+  const sessionTabCounts = new Map();
+  for (const [userId, session] of sessions) {
+    let count = 0;
+    for (const group of session.tabGroups.values()) count += group.size;
+    sessionTabCounts.set(userId, count);
+  }
+  const preserved = {
+    locked: 0,
+    session_minimum: 0,
+    first_observation: 0,
+    recently_active: 0,
+    below_min_idle: 0,
+  };
+  const candidates = [];
+
+  for (const [userId, session] of sessions) {
+    for (const [listItemId, group] of session.tabGroups) {
+      for (const [tabId, tabState] of group) {
+        const lockState = pressureLockState(tabId);
+        if (lockState.active || lockState.queued > 0) {
+          preserved.locked += 1;
+          continue;
+        }
+
+        if ((sessionTabCounts.get(userId) || 0) <= minTabsPerSession) {
+          preserved.session_minimum += 1;
+          continue;
+        }
+
+        if (!Number.isFinite(tabState.pressureObservedAt)) {
+          tabState.pressureObservedAt = now;
+          tabState.pressureObservedToolCalls = tabState.toolCalls;
+          preserved.first_observation += 1;
+          continue;
+        }
+
+        if (tabState.pressureObservedToolCalls !== tabState.toolCalls) {
+          tabState.pressureObservedAt = now;
+          tabState.pressureObservedToolCalls = tabState.toolCalls;
+          preserved.recently_active += 1;
+          continue;
+        }
+
+        const idleMs = now - tabState.pressureObservedAt;
+        if (idleMs < minIdleMs) {
+          preserved.below_min_idle += 1;
+          continue;
+        }
+
+        candidates.push({
+          userId,
+          session,
+          listItemId,
+          group,
+          tabId,
+          tabState,
+          idleMs,
+          toolCalls: tabState.toolCalls,
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => (b.idleMs - a.idleMs) || (a.toolCalls - b.toolCalls));
+  const selected = candidates.slice(0, maxTabsToClose);
+  const selectedSummary = selected.map((item) => ({
+    session: pressureHash(item.userId),
+    tab: pressureHash(item.tabId),
+    group: pressureHash(item.listItemId),
+    idleMs: item.idleMs,
+    toolCalls: item.toolCalls,
+  }));
+  const closed = [];
+
+  if (!dryRun) {
+    for (const item of selected) {
+      if (!item.group.has(item.tabId)) continue;
+      if ((sessionTabCounts.get(item.userId) || 0) <= minTabsPerSession) continue;
+      const lockState = pressureLockState(item.tabId);
+      if (lockState.active || lockState.queued > 0) continue;
+      if (item.tabState.navigateAbort) item.tabState.navigateAbort.abort();
+      await clearTabDownloads(item.tabState).catch(() => {});
+      await safePageClose(item.tabState.page);
+      item.group.delete(item.tabId);
+      sessionTabCounts.set(item.userId, Math.max(0, (sessionTabCounts.get(item.userId) || 0) - 1));
+      const lock = tabLocks.get(item.tabId);
+      if (lock) {
+        lock.drain();
+        tabLocks.delete(item.tabId);
+      }
+      tabsReapedTotal.inc();
+      pluginEvents.emit('tab:reaped', { userId: item.userId, tabId: item.tabId, listItemId: item.listItemId, reason: 'pressure_cleanup', idleMs: item.idleMs });
+      log('info', 'tab reaped (pressure cleanup)', { userId: item.userId, tabId: item.tabId, listItemId: item.listItemId, idleMs: item.idleMs, toolCalls: item.toolCalls });
+      closed.push({ session: pressureHash(item.userId), tab: pressureHash(item.tabId), group: pressureHash(item.listItemId), idleMs: item.idleMs, toolCalls: item.toolCalls });
+    }
+
+    for (const [userId, session] of Array.from(sessions.entries())) {
+      for (const [listItemId, group] of Array.from(session.tabGroups.entries())) {
+        if (group.size === 0) session.tabGroups.delete(listItemId);
+      }
+      if (closeEmptySessions && session.tabGroups.size === 0) {
+        session._closing = true;
+        await closeSession(userId, session, { reason: 'pressure_cleanup_empty_session', clearDownloads: true, clearLocks: true });
+        sessionsExpiredTotal.inc();
+        log('info', 'session closed (pressure cleanup empty)', { userId });
+      }
+    }
+
+    refreshTabLockQueueDepth();
+    refreshActiveTabsGauge();
+    if (sessions.size === 0) scheduleBrowserIdleShutdown();
+  }
+
+  return {
+    ok: true,
+    dryRun,
+    minIdleMs,
+    maxTabsToClose,
+    minTabsPerSession,
+    before,
+    candidates: candidates.length,
+    selected: selectedSummary,
+    closed,
+    preserved,
+    after: { sessions: sessions.size, tabs: getTotalTabCount() },
   };
 }
 
@@ -1999,6 +2149,27 @@ app.get('/metrics', async (_req, res) => {
   }
   res.set('Content-Type', reg.contentType);
   res.send(await reg.metrics());
+});
+
+// Metadata-only pressure cleanup. This closes only tabs observed idle across
+// multiple checks and preserves tabs with active/queued operations. It never
+// returns URLs, titles, cookies, page text, or user IDs.
+app.post('/pressure/cleanup', async (req, res) => {
+  try {
+    const result = await camofoxPressureCleanup(req.body || {});
+    log('info', 'pressure cleanup', {
+      dryRun: result.dryRun,
+      beforeTabs: result.before.tabs,
+      afterTabs: result.after.tabs,
+      candidates: result.candidates,
+      closed: result.closed.length,
+      preserved: result.preserved,
+    });
+    res.json(result);
+  } catch (err) {
+    log('error', 'pressure cleanup failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
 });
 
 // Create new tab
@@ -3652,6 +3823,49 @@ app.get('/tabs/:tabId/images', async (req, res) => {
     failuresTotal.labels(classifyError(err), 'images').inc();
     log('error', 'images failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// Mouse coordinates (for human handoff UIs; coordinates are viewport CSS pixels)
+app.post('/tabs/:tabId/mouse', async (req, res) => {
+  try {
+    const { userId, action = 'click', x, y, button = 'left', clickCount = 1 } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return res.status(404).json({ error: 'Tab not found' });
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+
+    const nx = Number(x);
+    const ny = Number(y);
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+      return res.status(400).json({ error: 'numeric x and y required' });
+    }
+
+    await withUserLimit(userId, () => withTabLock(req.params.tabId, async () => {
+      if (action === 'move') {
+        await tabState.page.mouse.move(nx, ny);
+      } else if (action === 'down') {
+        await tabState.page.mouse.move(nx, ny);
+        await tabState.page.mouse.down({ button });
+      } else if (action === 'up') {
+        await tabState.page.mouse.move(nx, ny);
+        await tabState.page.mouse.up({ button });
+      } else if (action === 'click') {
+        await tabState.page.mouse.click(nx, ny, { button, clickCount });
+      } else {
+        throw new Error("action must be 'click', 'move', 'down', or 'up'");
+      }
+      await tabState.page.waitForTimeout(150);
+    }));
+
+    pluginEvents.emit('tab:mouse', { userId, tabId: req.params.tabId, action, x: nx, y: ny });
+    res.json({ ok: true, action, x: nx, y: ny });
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'mouse').inc();
+    log('error', 'mouse failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
   }
 });
 
@@ -5452,11 +5666,11 @@ const server = app.listen(PORT, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
+  pluginEvents.emit('server:started', { host: HOST, port: PORT, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+    log('info', 'server started (fly)', { host: HOST, port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
-    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+    log('info', 'server started', { host: HOST, port: PORT, pid: process.pid, nodeVersion: process.version });
   }
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {
