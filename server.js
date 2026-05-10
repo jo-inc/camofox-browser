@@ -35,6 +35,7 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
+import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
 
 const CONFIG = loadConfig();
 
@@ -597,6 +598,13 @@ function isFatalInstallError(err) {
   return /Version information not found/i.test(err?.message || '');
 }
 
+function camoufoxInstallRemediation() {
+  if (CONFIG.camoufoxExecutablePath) {
+    return 'verify CAMOUFOX_EXECUTABLE points to a Camoufox bundle with properties.json, version.json, and fontconfig/';
+  }
+  return 'run `npx camoufox-js fetch` then restart the server';
+}
+
 function scheduleBrowserWarmRetry(delayMs = 5000) {
   if (browserWarmRetryTimer || browser || browserLaunchPromise) return;
   browserWarmRetryTimer = setTimeout(async () => {
@@ -609,7 +617,7 @@ function scheduleBrowserWarmRetry(delayMs = 5000) {
       if (isFatalInstallError(err)) {
         log('error', 'browser unavailable: Camoufox binaries are not installed; aborting retry loop', {
           error: err.message,
-          remediation: 'run `npx camoufox-js fetch` then restart the server',
+          remediation: camoufoxInstallRemediation(),
         });
         return;
       }
@@ -679,6 +687,21 @@ function getTotalTabCount() {
 // via Mesa llvmpipe. Without this, WebGL returns "no context" -- a massive bot signal.
 let virtualDisplay = null;
 let browserLaunchProxy = null;
+let externalCamoufoxLaunch = null;
+
+function getExternalCamoufoxLaunch() {
+  if (!CONFIG.camoufoxExecutablePath) return null;
+  if (!externalCamoufoxLaunch) {
+    externalCamoufoxLaunch = prepareExternalCamoufoxExecutable(CONFIG.camoufoxExecutablePath, {
+      cacheDir: CONFIG.camoufoxCacheDir,
+    });
+    log('info', 'using external camoufox executable', {
+      executablePath: externalCamoufoxLaunch.executablePath,
+      resourceDir: externalCamoufoxLaunch.resourceDir,
+    });
+  }
+  return externalCamoufoxLaunch;
+}
 
 async function probeGoogleSearch(candidateBrowser) {
   let context = null;
@@ -882,6 +905,7 @@ async function launchBrowserInstance() {
   const hostOS = getHostOS();
   const maxAttempts = proxyPool?.launchRetries ?? 1;
   let lastError = null;
+  const externalCamoufox = getExternalCamoufoxLaunch();
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const launchProxy = proxyPool
@@ -918,6 +942,7 @@ async function launchBrowserInstance() {
 
     try {
       const options = await launchOptions({
+        executable_path: externalCamoufox?.executablePath,
         headless: useVirtualDisplay ? false : true,
         os: hostOS,
         humanize: true,
@@ -6011,7 +6036,7 @@ const server = app.listen(PORT, async () => {
     if (isFatalInstallError(err)) {
       log('error', 'browser pre-warm aborted: Camoufox binaries are not installed', {
         error: err.message,
-        remediation: 'run `npx camoufox-js fetch` then restart the server',
+        remediation: camoufoxInstallRemediation(),
       });
     } else {
       log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });

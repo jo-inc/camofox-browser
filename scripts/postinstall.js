@@ -21,9 +21,16 @@
 //   is missing.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const EXTERNAL_EXECUTABLE_ENV_VARS = [
+  'CAMOUFOX_EXECUTABLE',
+  'CAMOUFOX_EXECUTABLE_PATH',
+  'CAMOFOX_EXECUTABLE_PATH',
+];
 
 function camoufoxCacheDir() {
   const home = homedir();
@@ -42,45 +49,75 @@ function warn(message) {
   process.stderr.write(`[camofox-browser] postinstall warning: ${message}\n`);
 }
 
-// Skip binary download entirely when CAMOFOX_SKIP_DOWNLOAD is set.
-// Useful for plugin-only installs or CI environments that pre-cache binaries.
-if (process.env.CAMOFOX_SKIP_DOWNLOAD === '1' || process.env.CAMOFOX_SKIP_DOWNLOAD === 'true') {
-  process.stderr.write('[camofox-browser] postinstall: skipping binary download (CAMOFOX_SKIP_DOWNLOAD=1)\n');
-  process.exit(0);
-}
-
-const childEnv = { ...process.env };
-delete childEnv.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD;
-
-const isWindows = platform() === 'win32';
-const result = spawnSync(isWindows ? 'npx.cmd' : 'npx', ['camoufox-js', 'fetch'], {
-  stdio: 'inherit',
-  env: childEnv,
-  shell: isWindows,
-});
-
-if (result.error) {
-  warn(`failed to spawn npx: ${result.error.message}`);
-  warn('The Camoufox browser binary was not downloaded.');
-  warn('Run `npx camoufox-js fetch` manually before starting the server.');
-  process.exit(0);
-}
-
-if (result.status !== 0) {
-  warn(`\`npx camoufox-js fetch\` exited with code ${result.status}`);
+function fail(message) {
+  warn(message);
   warn('The Camoufox browser binary may not have been downloaded.');
   warn('Run `npx camoufox-js fetch` manually before starting the server.');
   process.exit(0);
 }
 
-const versionFile = join(camoufoxCacheDir(), 'version.json');
-if (!existsSync(versionFile)) {
-  warn('Camoufox cache not populated after fetch.');
-  warn(`  Expected file: ${versionFile}`);
-  warn('  Possible causes:');
-  warn('    - Network failure during binary download (check your connection)');
-  warn('    - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD re-exported by a wrapping process');
-  warn('  Manual fix:  npx camoufox-js fetch');
-  warn('The server will fail at startup until the binary is available.');
-  process.exit(0);
+export function externalExecutableFromEnv(env = process.env) {
+  for (const name of EXTERNAL_EXECUTABLE_ENV_VARS) {
+    const value = (env[name] || '').trim();
+    if (value) return { name, value };
+  }
+  return null;
+}
+
+function assertExternalExecutable(path) {
+  if (!existsSync(path)) fail(`external Camoufox executable does not exist: ${path}`);
+  const stat = statSync(path);
+  if (!stat.isFile()) fail(`external Camoufox executable is not a file: ${path}`);
+  if (platform() !== 'win32') {
+    try {
+      accessSync(path, constants.X_OK);
+    } catch {
+      fail(`external Camoufox executable is not executable: ${path}`);
+    }
+  }
+}
+
+export function main() {
+  // Skip binary download entirely when CAMOFOX_SKIP_DOWNLOAD is set.
+  if (process.env.CAMOFOX_SKIP_DOWNLOAD === '1' || process.env.CAMOFOX_SKIP_DOWNLOAD === 'true') {
+    process.stderr.write('[camofox-browser] postinstall: skipping binary download (CAMOFOX_SKIP_DOWNLOAD=1)\n');
+    return;
+  }
+
+  const externalExecutable = externalExecutableFromEnv();
+  if (externalExecutable) {
+    assertExternalExecutable(externalExecutable.value);
+    process.stdout.write(
+      `[camofox-browser] postinstall: ${externalExecutable.name} is set; skipping bundled Camoufox download.\n`
+    );
+    return;
+  }
+
+  const childEnv = { ...process.env };
+  delete childEnv.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD;
+
+  const isWindows = platform() === 'win32';
+  const result = spawnSync(isWindows ? 'npx.cmd' : 'npx', ['camoufox-js', 'fetch'], {
+    stdio: 'inherit',
+    env: childEnv,
+    shell: isWindows,
+  });
+
+  if (result.error) fail(`failed to spawn npx: ${result.error.message}`);
+  if (result.status !== 0) fail(`\`npx camoufox-js fetch\` exited with code ${result.status}`);
+
+  const versionFile = join(camoufoxCacheDir(), 'version.json');
+  if (!existsSync(versionFile)) {
+    process.stderr.write('[camofox-browser] postinstall: Camoufox cache not populated.\n');
+    process.stderr.write(`  Expected file: ${versionFile}\n`);
+    process.stderr.write('  Possible causes:\n');
+    process.stderr.write('    - Network failure during binary download (check your connection)\n');
+    process.stderr.write('    - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD re-exported by a wrapping process\n');
+    process.stderr.write('  Manual fix:  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD= npx camoufox-js fetch\n');
+    process.exit(1);
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
 }

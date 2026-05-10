@@ -25,6 +25,11 @@
       "required": false,
       "sensitive": false,
       "default": "https://camofox-telemetry.askjo.workers.dev/report"
+    },
+    "CAMOUFOX_EXECUTABLE": {
+      "description": "External Camoufox executable to use instead of downloading the bundled browser. Compatibility aliases: CAMOUFOX_EXECUTABLE_PATH, CAMOFOX_EXECUTABLE_PATH.",
+      "required": false,
+      "sensitive": false
     }
   },
   "configSchema": {
@@ -178,10 +183,10 @@
   ],
   "runtimeDependencies": {
     "camoufox": {
-      "description": "Camoufox anti-detection browser (Firefox fork). Downloaded at install time by camoufox-js from the official Camoufox GitHub releases.",
+      "description": "Camoufox anti-detection browser (Firefox fork). Downloaded at install time by camoufox-js unless CAMOUFOX_EXECUTABLE points to an external bundle.",
       "source": "https://github.com/nicedayzhu/camoufox/releases",
       "installer": "camoufox-js (npm)",
-      "installedBy": "postinstall script: npx camoufox-js fetch",
+      "installedBy": "postinstall script: npx camoufox-js fetch, skipped when CAMOUFOX_EXECUTABLE is set",
       "sizeApprox": "300MB",
       "platforms": [
         "linux-x86_64",
@@ -256,7 +261,7 @@
     "cookieImport": "DISABLED by default. Requires CAMOFOX_API_KEY to be explicitly set. Without the key, the server rejects all cookie requests with 403. Cookie files are read from a sandboxed directory (~/.camofox/cookies/) with path traversal protection.",
     "accessControl": "CAMOFOX_ACCESS_KEY provides global bearer auth for all routes (except /health). Recommended for any non-localhost deployment.",
     "crashReporting": "Anonymized via lib/reporter.js (L28-290). Private domains are HMAC-hashed. No page content, cookies, tokens, IPs, or user data is ever sent. Relay source is in-repo and auditable. Verification endpoint: GET /source returns commit hash and sha256.",
-    "binaryDownload": "Camoufox is downloaded at npm install time by camoufox-js (an npm package from the Camoufox project). Downloaded from official GitHub releases with integrity verification by camoufox-js.",
+    "binaryDownload": "Camoufox is downloaded at npm install time by camoufox-js unless CAMOUFOX_EXECUTABLE points to an external Camoufox bundle. Downloaded binaries come from official GitHub releases with integrity verification by camoufox-js.",
     "sessionPersistence": "User sessions are persisted to ~/.camofox/profiles/ so authenticated browsing survives restarts. UserIds are hashed for directory names. Disable via persistence plugin config.",
     "noEmbeddedSecrets": "Zero credentials, private keys, or tokens ship in this package. All secrets are environment variables or Cloudflare Worker secrets."
   }
