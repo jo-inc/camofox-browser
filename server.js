@@ -3194,7 +3194,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
   
   try {
-    const { userId, ref, selector } = req.body;
+    const { userId, ref, selector, coordinates } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
@@ -3203,7 +3203,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
-    if (!ref && !selector) {
+    if (!ref && !selector && !coordinates) {
       return res.status(400).json({ error: 'ref or selector required' });
     }
     
@@ -3272,7 +3272,19 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         }
       };
       
-      if (ref) {
+      if (coordinates) {
+        const x = Number(coordinates.x);
+        const y = Number(coordinates.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return res.status(400).json({ error: 'valid coordinates required' });
+        }
+        await tabState.page.mouse.move(x, y);
+        await tabState.page.waitForTimeout(50);
+        await tabState.page.mouse.down();
+        await tabState.page.waitForTimeout(50);
+        await tabState.page.mouse.up();
+        log('info', 'coordinate mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0) });
+      } else if (ref) {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
           // Use tight timeout (4s max) to leave budget for click + post-click buildRefs
