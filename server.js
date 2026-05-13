@@ -3378,7 +3378,7 @@ app.post('/tabs/:tabId/upload', async (req, res) => {
   const tabId = req.params.tabId;
 
   try {
-    const { userId, ref, selector, filePath, files } = req.body;
+    const { userId, ref, selector, coordinates, filePath, files } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const fileList = Array.isArray(files) ? files : filePath ? [filePath] : [];
     if (fileList.length === 0) return res.status(400).json({ error: 'filePath or files required' });
@@ -3392,9 +3392,26 @@ app.post('/tabs/:tabId/upload', async (req, res) => {
     const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
       let fileSet = false;
 
-      if (ref || selector) {
+      if (ref || selector || coordinates) {
         let locator = null;
-        if (ref) {
+        if (coordinates) {
+          const x = Number(coordinates.x);
+          const y = Number(coordinates.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return res.status(400).json({ error: 'valid coordinates required' });
+          }
+          const chooserPromise = tabState.page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+          await tabState.page.mouse.move(x, y);
+          await tabState.page.waitForTimeout(50);
+          await tabState.page.mouse.down();
+          await tabState.page.waitForTimeout(50);
+          await tabState.page.mouse.up();
+          const chooser = await chooserPromise;
+          if (chooser) {
+            await chooser.setFiles(fileList);
+            fileSet = true;
+          }
+        } else if (ref) {
           locator = refToLocator(tabState.page, ref, tabState.refs);
           if (!locator) {
             tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_upload' });
@@ -3408,18 +3425,20 @@ app.post('/tabs/:tabId/upload', async (req, res) => {
           locator = tabState.page.locator(selector);
         }
 
-        const chooserPromise = tabState.page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
-        await locator.click({ timeout: 5000 }).catch(async (err) => {
-          if (err.message?.includes('intercepts pointer events') || err.message?.toLowerCase().includes('timeout')) {
-            await locator.click({ timeout: 5000, force: true });
-          } else {
-            throw err;
+        if (locator) {
+          const chooserPromise = tabState.page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+          await locator.click({ timeout: 5000 }).catch(async (err) => {
+            if (err.message?.includes('intercepts pointer events') || err.message?.toLowerCase().includes('timeout')) {
+              await locator.click({ timeout: 5000, force: true });
+            } else {
+              throw err;
+            }
+          });
+          const chooser = await chooserPromise;
+          if (chooser) {
+            await chooser.setFiles(fileList);
+            fileSet = true;
           }
-        });
-        const chooser = await chooserPromise;
-        if (chooser) {
-          await chooser.setFiles(fileList);
-          fileSet = true;
         }
       }
 
