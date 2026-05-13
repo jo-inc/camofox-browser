@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_URL="${CAMOFOX_URL:-http://localhost:9377}"
+USER="${CAMOFOX_USER:-claude}"
+AUTH=()
+[ -n "${CAMOFOX_ACCESS_KEY:-}" ] && AUTH=(-H "Authorization: Bearer $CAMOFOX_ACCESS_KEY")
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Build JSON from name=value pairs passed as arguments
+_j() {
+  python3 -c "
+import json, sys
+d = {}
+for a in sys.argv[1:]:
+    k, v = a.split('=', 1)
+    d[k] = {'true': True, 'false': False}.get(v, v)
+print(json.dumps(d))
+" "$@"
+}
+
+# --- Commands ---
+
+cmd_health() {
+  curl -s "${AUTH[@]}" "$BASE_URL/health" | python3 -m json.tool
+}
+
+cmd_create() {
+  local url="${1:?url required}"; shift
+  local session="${CAMOFOX_SESSION:-default}" trace=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) session="$2"; shift 2 ;;
+      --trace)   trace=true; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER" "sessionKey=$session" "url=$url" "trace=$trace")" \
+    | python3 -m json.tool
+}
+
+cmd_snapshot() {
+  local tab="$1"; shift
+  local ss=false offset=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --screenshot) ss=true; shift ;;
+      --offset) offset="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  curl -s "${AUTH[@]}" \
+    "$BASE_URL/tabs/$tab/snapshot?userId=$USER&includeScreenshot=$ss&offset=$offset" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('snapshot',''))"
+}
+
+cmd_click() {
+  local tab="$1" ref="$2"
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/click" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER" "ref=$ref")" | python3 -m json.tool
+}
+
+cmd_type() {
+  local tab="$1" ref="$2" text="$3"; shift 3 || true
+  local enter=false
+  [ $# -gt 0 ] && [ "$1" = "--enter" ] && enter=true
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/type" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER" "ref=$ref" "text=$text" "pressEnter=$enter")" \
+    | python3 -m json.tool
+}
+
+cmd_navigate() {
+  local tab="$1" target="$2"
+  local payload
+  if [[ "$target" == @* ]]; then
+    payload=$(_j "userId=$USER" "macro=$target")
+  else
+    payload=$(_j "userId=$USER" "url=$target")
+  fi
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/navigate" \
+    -H 'Content-Type: application/json' -d "$payload" | python3 -m json.tool
+}
+
+cmd_scroll() {
+  local tab="$1" dir="${2:-down}"
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/scroll" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER" "direction=$dir")" | python3 -m json.tool
+}
+
+cmd_screenshot() {
+  local out="/tmp/camofox-screenshot-$$.png"
+  local http_code
+  http_code=$(curl -s "${AUTH[@]}" -o "$out" -w '%{http_code}' "$BASE_URL/tabs/$1/screenshot?userId=$USER")
+  if [ "$http_code" = "200" ]; then
+    local sz; sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+    printf '{"ok":true,"file":"%s","size":%s,"type":"image/png"}\n' "$out" "$sz" | python3 -m json.tool
+  else
+    printf '{"ok":false,"httpStatus":%s}\n' "$http_code" | python3 -m json.tool
+  fi
+}
+
+cmd_close() {
+  curl -s "${AUTH[@]}" -X DELETE "$BASE_URL/tabs/$1?userId=$USER" | python3 -m json.tool
+}
+
+cmd_list() {
+  curl -s "${AUTH[@]}" "$BASE_URL/tabs?userId=$USER" | python3 -m json.tool
+}
+
+cmd_links() {
+  curl -s "${AUTH[@]}" "$BASE_URL/tabs/$1/links?userId=$USER" | python3 -m json.tool
+}
+
+cmd_images() {
+  local tab="$1"; shift
+  local params="userId=$USER"
+  [ $# -gt 0 ] && [ "$1" = "data" ] && params="$params&includeData=true"
+  curl -s "${AUTH[@]}" "$BASE_URL/tabs/$tab/images?$params" | python3 -m json.tool
+}
+
+cmd_wait() {
+  local tab="$1" selector="$2"
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/wait" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER" "selector=$selector")" | python3 -m json.tool
+}
+
+cmd_press() {
+  local tab="$1" key="$2"
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/press" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER" "key=$key")" | python3 -m json.tool
+}
+
+cmd_back() {
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$1/back" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER")" | python3 -m json.tool
+}
+
+cmd_forward() {
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$1/forward" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER")" | python3 -m json.tool
+}
+
+cmd_refresh() {
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$1/refresh" \
+    -H 'Content-Type: application/json' \
+    -d "$(_j "userId=$USER")" | python3 -m json.tool
+}
+
+cmd_session() {
+  case "${1:-}" in
+    close) curl -s "${AUTH[@]}" -X DELETE "$BASE_URL/sessions/$USER" | python3 -m json.tool ;;
+    *) die "unknown session action: ${1:-} (try: close)" ;;
+  esac
+}
+
+cmd_cookies() {
+  local action="${1:-}"; shift || true
+  case "$action" in
+    import)
+      local file="${1:?cookie-file required}"
+      [ -n "${CAMOFOX_API_KEY:-}" ] || die "CAMOFOX_API_KEY is required"
+      local cookies_json
+      cookies_json=$(python3 -c "
+import json
+cookies = []
+for line in open('$file'):
+    line = line.strip()
+    if not line or line.startswith('#'): continue
+    p = line.split('\t')
+    if len(p) >= 7:
+        cookies.append({
+            'domain': p[0], 'name': p[5], 'value': p[6],
+            'path': p[2] or '/',
+            'expires': int(p[4]) if p[4] and p[4] != '0' else -1,
+            'httpOnly': False, 'secure': p[3] == 'TRUE'
+        })
+print(json.dumps({'cookies': cookies}))
+")
+      curl -s -X POST "$BASE_URL/sessions/$USER/cookies" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $CAMOFOX_API_KEY" \
+        --data-binary @- <<< "$cookies_json" | python3 -m json.tool
+      ;;
+    *) die "unknown cookies action: $action (try: import)" ;;
+  esac
+}
+
+cmd_extract() {
+  local tab="$1" schema="$2"
+  # Need snapshot first to build ref table
+  curl -s "${AUTH[@]}" "$BASE_URL/tabs/$tab/snapshot?userId=$USER" > /dev/null
+  # Pass schema as raw JSON object (not string-escaped)
+  local payload
+  payload=$(printf '{"userId":"%s","schema":%s}' "$USER" "$schema")
+  curl -s "${AUTH[@]}" -X POST "$BASE_URL/tabs/$tab/extract" \
+    -H 'Content-Type: application/json' -d "$payload" | python3 -m json.tool
+}
+
+# --- Dispatch ---
+case "${1:-}" in
+  health)                     shift; cmd_health "$@" ;;
+  create|tab)                 shift; cmd_create "$@" ;;
+  snapshot|snap)              cmd_snapshot "${2:-}" "${@:3}" ;;
+  click)                      cmd_click "${2:-}" "${3:-}" ;;
+  type)                       cmd_type "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+  navigate|nav|go)            cmd_navigate "${2:-}" "${3:-}" ;;
+  scroll)                     cmd_scroll "${2:-}" "${3:-}" ;;
+  screenshot|shot|screen)     cmd_screenshot "${2:-}" ;;
+  close|rm)                   cmd_close "${2:-}" ;;
+  list|ls|tabs)               cmd_list ;;
+  links)                      cmd_links "${2:-}" ;;
+  images|imgs)                cmd_images "${2:-}" "${3:-}" ;;
+  wait)                       cmd_wait "${2:-}" "${3:-}" ;;
+  press|key)                  cmd_press "${2:-}" "${3:-}" ;;
+  back)                       cmd_back "${2:-}" ;;
+  forward|fwd)                cmd_forward "${2:-}" ;;
+  refresh|reload)             cmd_refresh "${2:-}" ;;
+  session)                    shift; cmd_session "$@" ;;
+  cookies|cookie)             shift; cmd_cookies "$@" ;;
+  extract)                    cmd_extract "${2:-}" "${3:-}" ;;
+  *)
+    echo "Usage: camofox <subcommand> [args...]"
+    echo "Commands: health, create, snapshot, click, type, navigate, scroll, screenshot, close, list, links, images, wait, press, back, forward, refresh, session, cookies, extract"
+    echo "Env: CAMOFOX_URL (default http://localhost:9377), CAMOFOX_USER (default claude)"
+    exit 1 ;;
+esac
