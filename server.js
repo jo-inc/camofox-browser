@@ -3374,6 +3374,70 @@ app.post('/tabs/:tabId/click', async (req, res) => {
 });
 
 // Upload file into an input[type=file] or trigger a file chooser from a ref/selector.
+/**
+ * @openapi
+ * /tabs/{tabId}/upload:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Upload files through a file input or file chooser
+ *     description: Sets files on an input[type=file] or triggers a file chooser from an element ref, CSS selector, or coordinates.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               filePath:
+ *                 type: string
+ *                 description: Single local file path to upload.
+ *               files:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: One or more local file paths to upload.
+ *               ref:
+ *                 type: string
+ *                 description: Element ref ID that opens a file chooser or identifies a file input.
+ *               selector:
+ *                 type: string
+ *                 description: CSS selector that opens a file chooser or identifies a file input.
+ *               coordinates:
+ *                 type: object
+ *                 properties:
+ *                   x:
+ *                     type: number
+ *                   y:
+ *                     type: number
+ *     responses:
+ *       200:
+ *         description: Upload result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/upload', async (req, res) => {
   const tabId = req.params.tabId;
 
