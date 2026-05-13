@@ -3373,6 +3373,84 @@ app.post('/tabs/:tabId/click', async (req, res) => {
   }
 });
 
+// Upload file into an input[type=file] or trigger a file chooser from a ref/selector.
+app.post('/tabs/:tabId/upload', async (req, res) => {
+  const tabId = req.params.tabId;
+
+  try {
+    const { userId, ref, selector, filePath, files } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const fileList = Array.isArray(files) ? files : filePath ? [filePath] : [];
+    if (fileList.length === 0) return res.status(400).json({ error: 'filePath or files required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      let fileSet = false;
+
+      if (ref || selector) {
+        let locator = null;
+        if (ref) {
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+          if (!locator) {
+            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_upload' });
+            locator = refToLocator(tabState.page, ref, tabState.refs);
+          }
+          if (!locator) {
+            const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+            throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+          }
+        } else {
+          locator = tabState.page.locator(selector);
+        }
+
+        const chooserPromise = tabState.page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+        await locator.click({ timeout: 5000 }).catch(async (err) => {
+          if (err.message?.includes('intercepts pointer events') || err.message?.toLowerCase().includes('timeout')) {
+            await locator.click({ timeout: 5000, force: true });
+          } else {
+            throw err;
+          }
+        });
+        const chooser = await chooserPromise;
+        if (chooser) {
+          await chooser.setFiles(fileList);
+          fileSet = true;
+        }
+      }
+
+      if (!fileSet) {
+        const inputs = tabState.page.locator('input[type="file"]');
+        const count = await inputs.count().catch(() => 0);
+        if (count > 0) {
+          await inputs.nth(count - 1).setInputFiles(fileList);
+          fileSet = true;
+        }
+      }
+
+      if (!fileSet) {
+        throw new Error('file input or file chooser not available');
+      }
+
+      await tabState.page.waitForTimeout(700);
+      tabState.lastSnapshot = null;
+      tabState.refs = new Map();
+      return { ok: true, files: fileList.length, url: tabState.page.url() };
+    }));
+
+    log('info', 'uploaded file', { reqId: req.reqId, tabId, files: result.files, url: result.url });
+    pluginEvents.emit('tab:upload', { userId: req.body.userId, tabId, ref: req.body.ref, selector: req.body.selector, files: result.files });
+    res.json(result);
+  } catch (err) {
+    log('error', 'upload failed', { reqId: req.reqId, tabId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Type
 /**
  * @openapi
