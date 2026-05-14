@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "camofox-browser",
-    "version": "1.9.1",
+    "version": "1.10.1",
     "description": "Anti-detection browser automation server for AI agents. Accessibility snapshots, element refs, session isolation, cookie import, proxy rotation, and structured logs.",
     "license": {
       "name": "MIT",
@@ -294,6 +294,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pressure/cleanup": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Proactive memory-pressure cleanup",
+        "description": "Closes tabs observed idle across multiple checks while preserving tabs\nwith active/queued operations. Never returns URLs, titles, cookies,\npage text, or user IDs. Defaults to dry-run mode.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dryRun": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When true, returns candidates without closing them."
+                  },
+                  "minIdleMs": {
+                    "type": "number",
+                    "default": 600000,
+                    "description": "Minimum idle time (ms) before a tab is eligible."
+                  },
+                  "maxTabsToClose": {
+                    "type": "number",
+                    "default": 4,
+                    "description": "Maximum tabs to close per invocation."
+                  },
+                  "minTabsPerSession": {
+                    "type": "number",
+                    "default": 1,
+                    "description": "Preserve at least this many tabs per session."
+                  },
+                  "closeEmptySessions": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Close sessions left with zero tabs after cleanup."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cleanup result with before/after counts and hashed metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "before": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "integer"
+                        },
+                        "tabs": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "integer"
+                        },
+                        "tabs": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "candidates": {
+                      "type": "integer"
+                    },
+                    "closed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "preserved": {
+                      "type": "object"
+                    }
+                  }
                 }
               }
             }

@@ -32,22 +32,22 @@ function evaluateMemoryPressure(state, rssMb, heapUsedMb, thresholdMb) {
 }
 
 // ============================================================================
-// Config parsing tests (mirrors the parseInt(env) || 200 pattern in config.js)
+// Config parsing tests (mirrors the parseInt(env) || 300 pattern in config.js)
 // ============================================================================
 
 describe('NATIVE_MEM_RESTART_THRESHOLD_MB config parsing', () => {
   // Replicate the exact parsing expression from lib/config.js line 74:
-  //   nativeMemRestartThresholdMb: parseInt(process.env.NATIVE_MEM_RESTART_THRESHOLD_MB) || 200
+  //   nativeMemRestartThresholdMb: parseInt(process.env.NATIVE_MEM_RESTART_THRESHOLD_MB) || 300
   function parseThreshold(envValue) {
-    return parseInt(envValue) || 200;
+    return parseInt(envValue) || 300;
   }
 
-  test('defaults to 200 when env var is undefined', () => {
-    expect(parseThreshold(undefined)).toBe(200);
+  test('defaults to 300 when env var is undefined', () => {
+    expect(parseThreshold(undefined)).toBe(300);
   });
 
-  test('defaults to 200 when env var is empty string', () => {
-    expect(parseThreshold('')).toBe(200);
+  test('defaults to 300 when env var is empty string', () => {
+    expect(parseThreshold('')).toBe(300);
   });
 
   test('reads numeric string', () => {
@@ -58,14 +58,14 @@ describe('NATIVE_MEM_RESTART_THRESHOLD_MB config parsing', () => {
     expect(parseThreshold('50')).toBe(50);
   });
 
-  test('falls back to 200 on non-numeric value', () => {
-    expect(parseThreshold('abc')).toBe(200);
+  test('falls back to 300 on non-numeric value', () => {
+    expect(parseThreshold('abc')).toBe(300);
   });
 
-  test('falls back to 200 on zero (0 is falsy)', () => {
-    // parseInt('0') === 0 which is falsy, so || 200 kicks in.
+  test('falls back to 300 on zero (0 is falsy)', () => {
+    // parseInt('0') === 0 which is falsy, so || 300 kicks in.
     // This is expected behavior — 0 threshold makes no sense.
-    expect(parseThreshold('0')).toBe(200);
+    expect(parseThreshold('0')).toBe(300);
   });
 
   test('reads negative value (parseInt parses it)', () => {

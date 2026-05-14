@@ -91,7 +91,9 @@ Default port is `9377`. See [Environment Variables](#environment-variables) for 
 
 > **Note:** the postinstall script unsets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` for itself before fetching the Camoufox binary. Without that override, an exported `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` (common when Playwright is configured to use system Chrome) would silently skip the binary download and crash the server at runtime.
 >
-> **Air-gapped or custom binary management:** disable the auto-fetch with `npm install --ignore-scripts` (skips lifecycle scripts for *every* dependency — bluntest option) or, more surgically, `npm install --omit=optional` plus a manual `npx camoufox-js fetch` step against your mirror. Note that `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install` no longer skips the Camoufox download (the postinstall sanitizes the env locally); use `--ignore-scripts` for that.
+> **External Camoufox executable:** set `CAMOUFOX_EXECUTABLE=/path/to/camoufox-bin` before `npm install` and when starting the server to skip the bundled download and launch that executable. Compatibility aliases are `CAMOUFOX_EXECUTABLE_PATH` and `CAMOFOX_EXECUTABLE_PATH`. This is useful for NixOS paths such as `/nix/store/.../camoufox-bin`; the executable must come from a Camoufox bundle that includes `properties.json`, `version.json`, and `fontconfig/`.
+>
+> **Air-gapped or custom binary management:** prefer `CAMOUFOX_EXECUTABLE` when you already have a Camoufox bundle. Otherwise disable the auto-fetch with `npm install --ignore-scripts` (skips lifecycle scripts for *every* dependency -- bluntest option) or, more surgically, `npm install --omit=optional` plus a manual `npx camoufox-js fetch` step against your mirror. Note that `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install` no longer skips the Camoufox download (the postinstall sanitizes the env locally); use `--ignore-scripts` or `CAMOUFOX_EXECUTABLE` for that.
 
 ### Docker
 
@@ -569,6 +571,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
+| `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |
+| `CAMOUFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
+| `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
 | `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |

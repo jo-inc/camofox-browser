@@ -113,7 +113,7 @@ interface CrashReport {
   version?: string;
 }
 
-const MIN_VERSION = "1.8.10";
+const MIN_VERSION = "1.10.0";
 
 function isVersionAllowed(version?: string): boolean {
   if (!version) return false;

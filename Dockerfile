@@ -1,4 +1,4 @@
-FROM node:20-slim AS camofox-browser
+FROM node:22-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox

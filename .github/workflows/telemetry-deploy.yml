@@ -2,7 +2,7 @@ name: Deploy Telemetry Endpoint
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'workers/crash-reporter/**'
   workflow_dispatch: # manual trigger for initial deploy / redeploy
