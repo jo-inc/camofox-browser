@@ -198,7 +198,7 @@ describe('Snapshot with includeScreenshot', () => {
 
     try {
       await expect(
-        client.getSnapshot('non-existent-tab', { includeScreenshot: true })
+        client.getSnapshot('00000000-0000-0000-0000-000000000000', { includeScreenshot: true })
       ).rejects.toMatchObject({ status: 410 });
     } finally {
       await client.cleanup();

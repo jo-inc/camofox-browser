@@ -140,7 +140,7 @@ describe('Screenshot', () => {
 
     try {
       const res = await fetch(
-        `${serverUrl}/tabs/non-existent-tab/screenshot?userId=${client.userId}`
+        `${serverUrl}/tabs/00000000-0000-0000-0000-000000000000/screenshot?userId=${client.userId}`
       );
 
       expect(res.status).toBe(410);

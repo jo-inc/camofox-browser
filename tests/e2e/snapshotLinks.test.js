@@ -125,7 +125,7 @@ describe('Snapshot and Links', () => {
     const client = createClient(serverUrl);
     
     try {
-      await expect(client.getSnapshot('non-existent-tab-id')).rejects.toMatchObject({
+      await expect(client.getSnapshot('00000000-0000-0000-0000-000000000000')).rejects.toMatchObject({
         status: 410
       });
     } finally {
