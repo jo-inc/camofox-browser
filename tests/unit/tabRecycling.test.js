@@ -108,7 +108,7 @@ describe('Tab Recycling', () => {
     }
   }, 120000);
 
-  test('navigate auto-creates with recycling when tab not found and limit reached', async () => {
+  test('navigate returns 404 for unknown tab (no auto-create)', async () => {
     const client = createClient(serverUrl);
     try {
       const tabs = [];
@@ -117,10 +117,14 @@ describe('Tab Recycling', () => {
         tabs.push(result.tabId);
       }
 
-      // Navigate with a non-existent tabId -- should recycle and auto-create
+      // Navigate with a non-existent tabId -- should return stale-tab error
       const fakeTabId = 'nonexistent-tab-id';
-      const result = await client.navigate(fakeTabId, `${testSiteUrl}/pageC`);
-      expect(result.url).toContain('/pageC');
+      try {
+        await client.navigate(fakeTabId, `${testSiteUrl}/pageC`);
+        fail('Should have thrown 404');
+      } catch (err) {
+        expect(err.status).toBe(404);
+      }
     } finally {
       await client.cleanup();
     }

@@ -1469,6 +1469,33 @@ function createTabState(page) {
   };
 }
 
+/**
+ * Attach a popup handler to a managed page so that popups (target=_blank,
+ * window.open) become tracked tabs rather than orphaned pages. (JO-2456)
+ *
+ * The handler registers the popup in the same session's '__popups__' tab group
+ * and recursively attaches itself to the new page.
+ */
+function attachPopupHandler(page, userId, sessionKey) {
+  page.on('popup', (popupPage) => {
+    const key = normalizeUserId(userId);
+    const currentSession = sessions.get(key);
+    if (!currentSession || currentSession._closing) return;
+
+    const popupTabId = fly.makeTabId();
+    const popupTabState = createTabState(popupPage);
+    attachDownloadListener(popupTabState, popupTabId, log, pluginEvents, key);
+    const popupGroup = getTabGroup(currentSession, sessionKey || '__popups__');
+    popupGroup.set(popupTabId, popupTabState);
+    currentSession.lastAccess = Date.now();
+    refreshActiveTabsGauge();
+    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: popupPage.url() });
+    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: popupPage.url() });
+    // Recursively handle popups from the popup
+    attachPopupHandler(popupPage, userId, sessionKey);
+  });
+}
+
 function pressureHash(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
 }
@@ -1644,6 +1671,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
   attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
   group.set(tabId, tabState);
+  attachPopupHandler(page, userId, sessionKey);
   refreshActiveTabsGauge();
 
   log('warn', 'replaying google search on fresh context (per-context proxy rotation)', {
@@ -2580,6 +2608,7 @@ app.post('/tabs', async (req, res) => {
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      attachPopupHandler(page, userId, resolvedSessionKey);
       refreshActiveTabsGauge();
       
       if (url) {
@@ -2606,6 +2635,7 @@ app.post('/tabs', async (req, res) => {
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
             retryGroup.set(tabId, tabState);
+            attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
             await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
           } else {
@@ -2708,36 +2738,15 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
     const { userId, url, macro, query, sessionKey, listItemId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
+    let session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, tabId);
+    session.lastAccess = Date.now();
+
     const result = await withUserLimit(userId, () => withTimeout((async () => {
       await ensureBrowser();
-      const resolvedSessionKey = sessionKey || listItemId || 'default';
-      let session = sessions.get(normalizeUserId(userId));
-      let found = session && findTab(session, tabId);
-      
-      let tabState;
-      if (!found) {
-        session = await getSession(userId);
-        let sessionTabs = 0;
-        for (const g of session.tabGroups.values()) sessionTabs += g.size;
-        if (getTotalTabCount() >= MAX_TABS_GLOBAL || sessionTabs >= MAX_TABS_PER_SESSION) {
-          // Recycle oldest tab to free a slot, then create new page
-          const recycled = await recycleOldestTab(session, req.reqId, userId);
-          if (!recycled) {
-            throw new Error('Maximum tabs per session reached');
-          }
-        }
-        {
-          const page = await session.context.newPage();
-          tabState = createTabState(page);
-          attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
-          const group = getTabGroup(session, resolvedSessionKey);
-          group.set(tabId, tabState);
-          refreshActiveTabsGauge();
-          log('info', 'tab auto-created on navigate', { reqId: req.reqId, tabId, userId });
-        }
-      } else {
-        tabState = found.tabState;
-      }
+      const resolvedSessionKey = sessionKey || listItemId || found.listItemId || 'default';
+      let tabState = found.tabState;
       tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
       
       let targetUrl = url;
@@ -2797,6 +2806,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           tabState.googleRetryCount = previousRetryCount + 1;
           attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
           group.set(tabId, tabState);
+          attachPopupHandler(page, userId, currentSessionKey);
           refreshActiveTabsGauge();
         };
 
@@ -2951,6 +2961,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3132,6 +3143,7 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     const ready = await waitForPageReady(tabState.page, { timeout, waitForNetwork });
@@ -3211,6 +3223,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3437,6 +3450,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3561,6 +3575,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3629,14 +3644,17 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
-    const isVertical = direction === 'up' || direction === 'down';
-    const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
-    await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
-    await tabState.page.waitForTimeout(300);
+    await withTabLock(req.params.tabId, async () => {
+      const isVertical = direction === 'up' || direction === 'down';
+      const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
+      await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
+      await tabState.page.waitForTimeout(300);
+    });
     
     pluginEvents.emit('tab:scroll', { userId, tabId: req.params.tabId, direction, amount });
     res.json({ ok: true });
@@ -3713,6 +3731,7 @@ app.post('/tabs/:tabId/viewport', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return res.status(404).json({ error: 'Tab not found' });
+    session.lastAccess = Date.now();
 
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3778,6 +3797,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3855,6 +3875,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3922,6 +3943,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
@@ -3994,29 +4016,34 @@ app.get('/tabs/:tabId/links', async (req, res) => {
       log('warn', 'links: tab not found', { reqId: req.reqId, tabId: req.params.tabId, userId, hasSession: !!session });
       return tabNotFoundResponse(res, req.params.tabId);
     }
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
-    const allLinks = await tabState.page.evaluate(() => {
-      const links = [];
-      document.querySelectorAll('a[href]').forEach(a => {
-        const href = a.href;
-        const text = a.textContent?.trim().slice(0, 100) || '';
-        if (href && href.startsWith('http')) {
-          links.push({ url: href, text });
-        }
+    const result = await withTabLock(req.params.tabId, async () => {
+      const allLinks = await tabState.page.evaluate(() => {
+        const links = [];
+        document.querySelectorAll('a[href]').forEach(a => {
+          const href = a.href;
+          const text = a.textContent?.trim().slice(0, 100) || '';
+          if (href && href.startsWith('http')) {
+            links.push({ url: href, text });
+          }
+        });
+        return links;
       });
-      return links;
+      
+      const total = allLinks.length;
+      const paginated = allLinks.slice(offset, offset + limit);
+      
+      return {
+        links: paginated,
+        pagination: { total, offset, limit, hasMore: offset + limit < total }
+      };
     });
     
-    const total = allLinks.length;
-    const paginated = allLinks.slice(offset, offset + limit);
-    
-    res.json({
-      links: paginated,
-      pagination: { total, offset, limit, hasMore: offset + limit < total }
-    });
+    res.json(result);
   } catch (err) {
     log('error', 'links failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
@@ -4077,6 +4104,7 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
 
     const { tabState } = found;
     tabState.toolCalls++;
@@ -4152,6 +4180,7 @@ app.get('/tabs/:tabId/images', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
 
     const { tabState } = found;
     tabState.toolCalls++;
@@ -4214,6 +4243,7 @@ app.get('/tabs/:tabId/screenshot', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState } = found;
     const buffer = await tabState.page.screenshot({ type: 'png', fullPage });
@@ -4280,6 +4310,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
     
     const { tabState, listItemId } = found;
     res.json({
@@ -5264,6 +5295,7 @@ app.post('/tabs/open', async (req, res) => {
     let tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
     group.set(tabId, tabState);
+    attachPopupHandler(page, userId, listItemId);
     refreshActiveTabsGauge();
     
     try {
@@ -5285,6 +5317,7 @@ app.post('/tabs/open', async (req, res) => {
         tabState = createTabState(page);
         attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
         group.set(tabId, tabState);
+        attachPopupHandler(page, userId, listItemId);
         refreshActiveTabsGauge();
         await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
       } else {
