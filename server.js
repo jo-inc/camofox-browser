@@ -12,6 +12,7 @@ import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
+import { renderMarkdownFromAriaSnapshot, windowMarkdown } from './lib/markdown.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
   clearTabDownloads,
@@ -1449,12 +1450,19 @@ function createTabState(page) {
     failureJournal: [],
     healthTracker,
     lastSnapshot: null,
+    lastMarkdown: new Map(),
     lastRequestedUrl: null,
     googleRetryCount: 0,
     navigateAbort: null,
     pressureObservedAt: Date.now(),
     pressureObservedToolCalls: 0,
   };
+}
+
+function clearRenderedContentCaches(tabState) {
+  if (!tabState) return;
+  tabState.lastSnapshot = null;
+  tabState.lastMarkdown = new Map();
 }
 
 function pressureHash(value) {
@@ -1941,6 +1949,68 @@ async function extractGoogleSerp(page) {
 
 const REFRESH_READY_TIMEOUT_MS = 2500;
 
+function parseSnapshotDoubleQuotedName(rest) {
+  const source = String(rest || '');
+  if (!source.startsWith('"')) return { name: '', nameMatch: '', suffix: source.trim() };
+  let name = '';
+  let escaped = false;
+  for (let i = 1; i < source.length; i++) {
+    const ch = source[i];
+    if (escaped) {
+      name += ch === 'n' ? '\n' : ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      return { name, nameMatch: source.slice(0, i + 1), suffix: source.slice(i + 1).trim() };
+    }
+    name += ch;
+  }
+  return { name, nameMatch: source, suffix: '' };
+}
+
+function parseSnapshotSingleQuotedKey(rest) {
+  const source = String(rest || '');
+  if (!source.startsWith("'")) return { body: source, suffix: '' };
+  let body = '';
+  for (let i = 1; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "'") {
+      if (source[i + 1] === "'") {
+        body += "'";
+        i++;
+        continue;
+      }
+      return { body, suffix: source.slice(i + 1).trim() };
+    }
+    body += ch;
+  }
+  return { body, suffix: '' };
+}
+
+function parseSnapshotRoleLine(line) {
+  const lineMatch = String(line || '').match(/^(\s*-\s+)(.*)$/);
+  if (!lineMatch) return null;
+  const [, prefix, rawRest] = lineMatch;
+  let body = rawRest.trim();
+  let outerSuffix = '';
+  if (body.startsWith("'")) {
+    const parsed = parseSnapshotSingleQuotedKey(body);
+    body = parsed.body.trim();
+    outerSuffix = parsed.suffix.replace(/^:/, '').trim();
+  }
+  const roleMatch = body.match(/^(\w+)(.*)$/);
+  if (!roleMatch) return null;
+  const [, role, roleRestRaw] = roleMatch;
+  const parsedName = parseSnapshotDoubleQuotedName(roleRestRaw.trim());
+  const suffix = [parsedName.suffix, outerSuffix].filter(Boolean).join(' ').trim();
+  return { prefix, role, name: parsedName.name, nameMatch: parsedName.nameMatch ? ` ${parsedName.nameMatch}` : '', suffix };
+}
+
 async function buildRefs(page) {
   const refs = new Map();
   
@@ -2026,9 +2096,9 @@ async function _buildRefsInner(page, refs, start) {
   for (const line of lines) {
     if (refCounter > MAX_SNAPSHOT_NODES) break;
     
-    const match = line.match(/^\s*-\s+(\w+)(?:\s+"([^"]*)")?/);
-    if (match) {
-      const [, role, name] = match;
+    const parsed = parseSnapshotRoleLine(line);
+    if (parsed) {
+      const { role, name } = parsed;
       const normalizedRole = role.toLowerCase();
       
       if (normalizedRole === 'combobox') continue;
@@ -2087,9 +2157,9 @@ async function _buildRefsInner(page, refs, start) {
         for (const line of frameLines) {
           if (refCounter > MAX_SNAPSHOT_NODES) break;
           
-          const match = line.match(/^\s*-\s+(\w+)(?:\s+"([^"]*)")?/);
-          if (match) {
-            const [, role, name] = match;
+          const parsed = parseSnapshotRoleLine(line);
+          if (parsed) {
+            const { role, name } = parsed;
             const normalizedRole = role.toLowerCase();
             if (normalizedRole === 'combobox') continue;
             if (name && SKIP_PATTERNS.some(p => p.test(name))) continue;
@@ -2121,7 +2191,8 @@ async function _buildRefsInner(page, refs, start) {
   return refs;
 }
 
-async function getAriaSnapshot(page) {
+async function getAriaSnapshot(page, options = {}) {
+  const { mode = 'default' } = options;
   if (!page || page.isClosed()) {
     return null;
   }
@@ -2133,10 +2204,24 @@ async function getAriaSnapshot(page) {
   });
   let mainYaml;
   try {
-    mainYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
+    if (mode === 'ai' && typeof page.ariaSnapshot === 'function') {
+      mainYaml = await page.ariaSnapshot({ mode: 'ai', timeout: 5000 });
+    } else {
+      mainYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
+    }
   } catch (err) {
-    log('warn', 'getAriaSnapshot failed', { error: err.message });
-    return null;
+    if (mode === 'ai') {
+      log('warn', 'getAriaSnapshot ai mode failed, falling back to body ariaSnapshot', { error: err.message });
+      try {
+        mainYaml = await page.locator('body').ariaSnapshot({ timeout: 5000 });
+      } catch (fallbackErr) {
+        log('warn', 'getAriaSnapshot fallback failed', { error: fallbackErr.message });
+        return null;
+      }
+    } else {
+      log('warn', 'getAriaSnapshot failed', { error: err.message });
+      return null;
+    }
   }
   
   if (!mainYaml) return null;
@@ -2187,6 +2272,60 @@ async function getAriaSnapshot(page) {
     return mainYaml + '\n' + iframeYamls.join('\n');
   }
   return mainYaml;
+}
+
+function annotateAriaSnapshotWithRefs(ariaYaml, refs) {
+  let annotatedYaml = ariaYaml || '';
+  if (!annotatedYaml) return annotatedYaml;
+  if (!refs || refs.size === 0) {
+    return annotatedYaml.replace(/\s*\[(?:ref=)?e\d+\]/g, '').replace(/\s+:/g, ':');
+  }
+
+  const refsByKey = new Map();
+  for (const [refId, info] of refs) {
+    const key = `${info.role}:${info.name}:${info.nth}`;
+    refsByKey.set(key, refId);
+  }
+
+  const annotationCounts = new Map();
+  const lines = annotatedYaml.split('\n');
+  return lines.map(line => {
+    const parsed = parseSnapshotRoleLine(line);
+    const lineWithoutRawRefs = line.replace(/\s*\[(?:ref=)?e\d+\]/g, '').replace(/\s+:/g, ':');
+    if (!parsed) return lineWithoutRawRefs;
+    const { prefix, role, nameMatch, name, suffix } = parsed;
+    const normalizedRole = role.toLowerCase();
+    if (normalizedRole === 'combobox') return lineWithoutRawRefs;
+    if (name && SKIP_PATTERNS.some(p => p.test(name))) return lineWithoutRawRefs;
+    if (!INTERACTIVE_ROLES.includes(normalizedRole)) return lineWithoutRawRefs;
+
+    const normalizedName = name || '';
+    const countKey = `${normalizedRole}:${normalizedName}`;
+    const nth = annotationCounts.get(countKey) || 0;
+    annotationCounts.set(countKey, nth + 1);
+    const key = `${normalizedRole}:${normalizedName}:${nth}`;
+    const refId = refsByKey.get(key);
+    if (!refId) return lineWithoutRawRefs;
+
+    const suffixWithoutRefs = (suffix || '').replace(/\s*\[(?:ref=)?e\d+\]\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    const cleanSuffix = suffixWithoutRefs ? ` ${suffixWithoutRefs}` : '';
+    return `${prefix}${role}${nameMatch || ''} [${refId}]${cleanSuffix}`;
+  }).join('\n');
+}
+
+async function buildAnnotatedAriaSnapshot(tabState, options = {}) {
+  const { reason = 'snapshot', preferAi = false } = options;
+  tabState.refs = await refreshTabRefs(tabState, { reason });
+  const ariaYaml = await getAriaSnapshot(tabState.page, { mode: preferAi ? 'ai' : 'default' });
+  return annotateAriaSnapshotWithRefs(ariaYaml || '', tabState.refs);
+}
+
+async function currentPageTitle(page) {
+  try {
+    return await page.title();
+  } catch {
+    return '';
+  }
 }
 
 function refToLocator(page, ref, refs) {
@@ -2752,7 +2891,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
               new Promise((_, reject) => ac.signal.addEventListener('abort', () => reject(new Error('Navigation aborted: tab deleted')), { once: true })),
             ]);
             tabState.visitedUrls.add(targetUrl);
-            tabState.lastSnapshot = null;
+            clearRenderedContentCaches(tabState);
           } catch (err) {
             gotoP.catch(() => {}); // suppress unhandled rejection from still-pending goto
             throw err;
@@ -3001,42 +3140,7 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         return response;
       }
       
-      tabState.refs = await refreshTabRefs(tabState, { reason: 'snapshot' });
-      const ariaYaml = await getAriaSnapshot(tabState.page);
-      
-      let annotatedYaml = ariaYaml || '';
-      if (annotatedYaml && tabState.refs.size > 0) {
-        const refsByKey = new Map();
-        for (const [refId, info] of tabState.refs) {
-          const key = `${info.role}:${info.name}:${info.nth}`;
-          refsByKey.set(key, refId);
-        }
-        
-        const annotationCounts = new Map();
-        const lines = annotatedYaml.split('\n');
-        
-        annotatedYaml = lines.map(line => {
-          const match = line.match(/^(\s*-\s+)(\w+)(\s+"([^"]*)")?(.*)$/);
-          if (match) {
-            const [, prefix, role, nameMatch, name, suffix] = match;
-            const normalizedRole = role.toLowerCase();
-            if (normalizedRole === 'combobox') return line;
-            if (name && SKIP_PATTERNS.some(p => p.test(name))) return line;
-            if (INTERACTIVE_ROLES.includes(normalizedRole)) {
-              const normalizedName = name || '';
-              const countKey = `${normalizedRole}:${normalizedName}`;
-              const nth = annotationCounts.get(countKey) || 0;
-              annotationCounts.set(countKey, nth + 1);
-              const key = `${normalizedRole}:${normalizedName}:${nth}`;
-              const refId = refsByKey.get(key);
-              if (refId) {
-                return `${prefix}${role}${nameMatch || ''} [${refId}]${suffix}`;
-              }
-            }
-          }
-          return line;
-        }).join('\n');
-      }
+      const annotatedYaml = await buildAnnotatedAriaSnapshot(tabState, { reason: 'snapshot' });
       
       tabState.lastSnapshot = annotatedYaml;
       if (annotatedYaml) snapshotBytes.labels('full').observe(Buffer.byteLength(annotatedYaml, 'utf8'));
@@ -3065,6 +3169,174 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'snapshot failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Markdown
+/**
+ * @openapi
+ * /tabs/{tabId}/markdown:
+ *   get:
+ *     tags: [Content]
+ *     summary: Deterministic Markdown snapshot
+ *     description: Renders the current tab accessibility snapshot as deterministic Markdown. The default document view is readable Markdown without refs; the agent view preserves actionable refs and controls.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: view
+ *         in: query
+ *         schema:
+ *           type: string
+ *           enum: [document, agent]
+ *           default: document
+ *         description: Markdown rendering mode. document strips refs and controls; agent preserves refs, controls, states, and values.
+ *       - name: offset
+ *         in: query
+ *         schema:
+ *           type: integer
+ *         description: Character offset for paginated retrieval.
+ *     responses:
+ *       200:
+ *         description: Markdown rendering.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 url:
+ *                   type: string
+ *                 view:
+ *                   type: string
+ *                   enum: [document, agent]
+ *                 markdown:
+ *                   type: string
+ *                 refsCount:
+ *                   type: integer
+ *                 truncated:
+ *                   type: boolean
+ *                 totalChars:
+ *                   type: integer
+ *                 offset:
+ *                   type: integer
+ *                 hasMore:
+ *                   type: boolean
+ *                 nextOffset:
+ *                   type: integer
+ *                   nullable: true
+ *       400:
+ *         description: Invalid request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/tabs/:tabId/markdown', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const view = req.query.view || 'document';
+    if (!['document', 'agent'].includes(view)) {
+      return res.status(400).json({ error: "view must be one of: document, agent", code: 'invalid_view' });
+    }
+    const offset = parseInt(req.query.offset) || 0;
+    if (offset < 0) return res.status(400).json({ error: 'offset must be non-negative', code: 'invalid_offset' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+    if (!(tabState.lastMarkdown instanceof Map)) tabState.lastMarkdown = new Map();
+
+    const cachedMarkdown = tabState.lastMarkdown.get(view);
+    if (offset > 0 && cachedMarkdown) {
+      const win = windowMarkdown(cachedMarkdown, offset);
+      const response = {
+        url: tabState.page.url(),
+        view,
+        markdown: win.text,
+        refsCount: tabState.refs.size,
+        truncated: win.truncated,
+        totalChars: win.totalChars,
+        offset: win.offset,
+        hasMore: win.hasMore,
+        nextOffset: win.nextOffset,
+      };
+      log('info', 'markdown (cached offset)', { reqId: req.reqId, tabId: req.params.tabId, view, offset, totalChars: win.totalChars });
+      return res.json(response);
+    }
+
+    const result = await withUserLimit(userId, () => withTimeout((async () => {
+      if (proxyPool?.canRotateSessions && isGoogleSearchUrl(tabState.lastRequestedUrl || '')) {
+        const blocked = await isGoogleSearchBlocked(tabState.page);
+        const unavailable = !blocked && await isGoogleUnavailable(tabState.page);
+        if (blocked || unavailable) {
+          const rotated = await rotateGoogleTab(userId, found.listItemId, req.params.tabId, tabState, blocked ? 'google_search_block_markdown' : 'google_search_unavailable_markdown', req.reqId);
+          if (rotated) {
+            tabState.page = rotated.tabState.page;
+            tabState.refs = rotated.tabState.refs;
+            tabState.visitedUrls = rotated.tabState.visitedUrls;
+            tabState.downloads = rotated.tabState.downloads;
+            tabState.toolCalls = rotated.tabState.toolCalls;
+            tabState.consecutiveTimeouts = rotated.tabState.consecutiveTimeouts;
+            tabState.lastSnapshot = rotated.tabState.lastSnapshot;
+            tabState.lastMarkdown = rotated.tabState.lastMarkdown instanceof Map ? rotated.tabState.lastMarkdown : new Map();
+            tabState.lastRequestedUrl = rotated.tabState.lastRequestedUrl;
+            tabState.googleRetryCount = rotated.tabState.googleRetryCount;
+          }
+        }
+      }
+
+      const pageUrl = tabState.page.url();
+      let annotatedYaml = '';
+      if (isGoogleSerp(pageUrl)) {
+        const { refs: googleRefs, snapshot: googleSnapshot } = await extractGoogleSerp(tabState.page);
+        tabState.refs = googleRefs;
+        annotatedYaml = googleSnapshot;
+        snapshotBytes.labels('google_serp').observe(Buffer.byteLength(googleSnapshot, 'utf8'));
+      } else {
+        annotatedYaml = await buildAnnotatedAriaSnapshot(tabState, { reason: 'markdown', preferAi: true });
+        if (annotatedYaml) snapshotBytes.labels('full').observe(Buffer.byteLength(annotatedYaml, 'utf8'));
+      }
+
+      const title = await currentPageTitle(tabState.page);
+      const fullMarkdown = renderMarkdownFromAriaSnapshot(annotatedYaml, { view, title, assumeAriaSnapshot: true });
+      tabState.lastMarkdown.set(view, fullMarkdown);
+      const win = windowMarkdown(fullMarkdown, offset);
+      return {
+        url: tabState.page.url(),
+        view,
+        markdown: win.text,
+        refsCount: tabState.refs.size,
+        truncated: win.truncated,
+        totalChars: win.totalChars,
+        offset: win.offset,
+        hasMore: win.hasMore,
+        nextOffset: win.nextOffset,
+      };
+    })(), requestTimeoutMs(), 'markdown'));
+
+    pluginEvents.emit('tab:markdown', { userId: req.query.userId, tabId: req.params.tabId, view, markdown: result.markdown });
+    log('info', 'markdown', { reqId: req.reqId, tabId: req.params.tabId, view, url: result.url, markdownLen: result.markdown?.length, refsCount: result.refsCount, truncated: result.truncated });
+    res.json(result);
+  } catch (err) {
+    log('error', 'markdown failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
@@ -3306,7 +3578,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         await tabState.page.waitForTimeout(200);
         // Skip buildRefs here -- SERP clicks typically navigate to a new page,
         // and the caller always requests /snapshot next which rebuilds refs.
-        tabState.lastSnapshot = null;
+        clearRenderedContentCaches(tabState);
         tabState.refs = new Map();
         const newUrl = tabState.page.url();
         tabState.visitedUrls.add(newUrl);
@@ -3314,7 +3586,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       } else {
         await tabState.page.waitForTimeout(500);
       }
-      tabState.lastSnapshot = null;
+      clearRenderedContentCaches(tabState);
       // buildRefs after click -- use remaining budget (min 2s) so we don't blow the handler timeout.
       // If it times out, return without refs (caller's next /snapshot will rebuild them).
       const postClickBudget = Math.max(2000, remainingBudget());
@@ -3345,7 +3617,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         const found = session && findTab(session, tabId);
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'click_timeout' });
-          found.tabState.lastSnapshot = null;
+          clearRenderedContentCaches(found.tabState);
           return res.status(500).json({
             error: safeError(err),
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
@@ -3471,6 +3743,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
       }
       if (shouldSubmit) await tabState.page.keyboard.press('Enter');
     });
+    clearRenderedContentCaches(tabState);
     
     pluginEvents.emit('tab:type', { userId: req.body.userId, tabId, text: req.body.text, ref: req.body.ref, mode: req.body.mode || 'fill' });
     res.json({ ok: true });
@@ -3482,7 +3755,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         const found = session && findTab(session, tabId);
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'type_timeout' });
-          found.tabState.lastSnapshot = null;
+          clearRenderedContentCaches(found.tabState);
           return res.status(500).json({
             error: safeError(err),
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
@@ -3556,6 +3829,7 @@ app.post('/tabs/:tabId/press', async (req, res) => {
     await withTabLock(tabId, async () => {
       await tabState.page.keyboard.press(key);
     });
+    clearRenderedContentCaches(tabState);
     
     pluginEvents.emit('tab:press', { userId, tabId, key });
     res.json({ ok: true });
@@ -3625,6 +3899,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
     await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
     await tabState.page.waitForTimeout(300);
+    clearRenderedContentCaches(tabState);
     
     pluginEvents.emit('tab:scroll', { userId, tabId: req.params.tabId, direction, amount });
     res.json({ ok: true });
@@ -3707,6 +3982,7 @@ app.post('/tabs/:tabId/viewport', async (req, res) => {
 
     await tabState.page.setViewportSize({ width: Math.round(width), height: Math.round(height) });
     await tabState.page.waitForTimeout(150);
+    clearRenderedContentCaches(tabState);
 
     pluginEvents.emit('tab:viewport', { userId, tabId: req.params.tabId, width, height });
     res.json({ ok: true, width: Math.round(width), height: Math.round(height) });
@@ -3783,6 +4059,7 @@ app.post('/tabs/:tabId/back', async (req, res) => {
         }
       }
       tabState.refs = await buildRefs(tabState.page);
+      clearRenderedContentCaches(tabState);
       return { ok: true, url: tabState.page.url() };
     });
     
@@ -3850,6 +4127,7 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
     const result = await withTabLock(tabId, async () => {
       await tabState.page.goForward({ timeout: 10000 });
       tabState.refs = await buildRefs(tabState.page);
+      clearRenderedContentCaches(tabState);
       return { ok: true, url: tabState.page.url() };
     });
     
@@ -3917,6 +4195,7 @@ app.post('/tabs/:tabId/refresh', async (req, res) => {
     const result = await withTabLock(tabId, async () => {
       await tabState.page.reload({ timeout: 30000 });
       tabState.refs = await buildRefs(tabState.page);
+      clearRenderedContentCaches(tabState);
       return { ok: true, url: tabState.page.url() };
     });
     
@@ -5445,7 +5724,7 @@ app.post('/navigate', async (req, res) => {
     const result = await withTabLock(targetId, async () => {
       await withPageLoadDuration('navigate', () => tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
       tabState.visitedUrls.add(url);
-      tabState.lastSnapshot = null;
+      clearRenderedContentCaches(tabState);
       
       // Google SERP: defer extraction to snapshot call
       if (isGoogleSerp(tabState.page.url())) {
