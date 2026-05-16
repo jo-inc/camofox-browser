@@ -95,6 +95,13 @@ class BrowserClient {
     if (options.offset) params.append('offset', String(options.offset));
     return this.request('GET', `/tabs/${tabId}/snapshot?${params}`);
   }
+
+  async getMarkdown(tabId, options = {}) {
+    const params = new URLSearchParams({ userId: this.userId });
+    if (options.view) params.append('view', options.view);
+    if (options.offset) params.append('offset', String(options.offset));
+    return this.request('GET', `/tabs/${tabId}/markdown?${params}`);
+  }
   
   async click(tabId, options) {
     return this.request('POST', `/tabs/${tabId}/click`, { userId: this.userId, ...options });

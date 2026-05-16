@@ -270,6 +270,75 @@ function createTestApp() {
     `);
   });
 
+  // Page with rich semantic content for /markdown endpoint tests
+  app.get('/markdown-fixture', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Markdown Fixture</title></head>
+      <body>
+        <header>
+          <a href="/pageA">Home</a>
+          <nav aria-label="Primary"><a href="/links?utm_source=noise&keep=yes">Docs Portal</a></nav>
+        </header>
+        <main>
+          <article aria-label="Release notes">
+            <h1>Release notes</h1>
+            <p>Read the <a href="/guide?utm_campaign=noise&keep=yes">migration guide</a> before upgrading.</p>
+            <ul>
+              <li>Build parser</li>
+              <li><label><input type="checkbox" checked /> Ship renderer</label></li>
+            </ul>
+            <table aria-label="Financial summary">
+              <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+              <tbody><tr><td>Revenue</td><td>€10M</td></tr></tbody>
+            </table>
+            <pre><code>npm install @askjo/camofox-browser</code></pre>
+            <img alt="Architecture diagram" src="data:image/png;base64,${samplePngBase64}" />
+            <label for="emailInput">Email</label>
+            <input id="emailInput" type="email" value="agent@example.test" />
+            <label for="countrySelect">Country</label>
+            <select id="countrySelect">
+              <option selected>France</option>
+              <option>Japan</option>
+            </select>
+            <button id="submitBtn" type="button">Submit order</button>
+            <p id="clickedResult"></p>
+          </article>
+        </main>
+        <script>
+          document.getElementById('submitBtn').addEventListener('click', () => {
+            document.getElementById('clickedResult').textContent = 'Submit order clicked';
+          });
+        </script>
+      </body></html>
+    `);
+  });
+
+  app.get('/large-markdown-page', (req, res) => {
+    const count = parseInt(req.query.count) || 700;
+    const items = Array.from({ length: count }, (_, i) =>
+      `<article aria-label="Article ${i}">
+        <h2>Article ${i}</h2>
+        <p>Markdown endpoint long-form paragraph ${i}. This sentence makes each article large enough to force deterministic pagination.</p>
+        <a href="/article/${i}">Read article ${i}</a>
+      </article>`
+    ).join('\n');
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Large Markdown</title></head>
+      <body>
+        <main>
+          <h1>Large Markdown Page</h1>
+          ${items}
+        </main>
+        <nav aria-label="Pagination">
+          <a href="/large-markdown-page?page=1">Previous</a>
+          <a href="/large-markdown-page?page=2">Next</a>
+        </nav>
+      </body></html>
+    `);
+  });
+
   // Page with scrollable content
   app.get('/scroll', (req, res) => {
     const items = Array.from({ length: 100 }, (_, i) => `<p id="item${i}">Item ${i}</p>`).join('\n');
