@@ -50,6 +50,7 @@ This project wraps that engine in a REST API built for agents: accessibility sna
 - **YouTube Transcripts** - extract captions from any YouTube video via yt-dlp, no API key needed
 - **Search Macros** - `@google_search`, `@youtube_search`, `@amazon_search`, `@reddit_subreddit`, and 10 more
 - **Snapshot Screenshots** - include a base64 PNG screenshot alongside the accessibility snapshot
+- **Deterministic Markdown** - render tabs as readable Markdown (`view=document`) or agent-friendly Markdown with refs (`view=agent`)
 - **Large Page Handling** - automatic snapshot truncation with offset-based pagination
 - **Download Capture** - capture browser downloads and fetch them via API (optional inline base64)
 - **DOM Image Extraction** - list `<img>` src/alt and optionally return inline data URLs
@@ -476,6 +477,10 @@ curl -X POST http://localhost:9377/tabs \
 curl "http://localhost:9377/tabs/TAB_ID/snapshot?userId=agent1"
 # -> { "snapshot": "[button e1] Submit  [link e2] Learn more", ... }
 
+# Get deterministic Markdown
+curl "http://localhost:9377/tabs/TAB_ID/markdown?userId=agent1&view=document"
+curl "http://localhost:9377/tabs/TAB_ID/markdown?userId=agent1&view=agent"
+
 # Click by ref
 curl -X POST http://localhost:9377/tabs/TAB_ID/click \
   -H 'Content-Type: application/json' \
@@ -510,6 +515,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots) |
+| `GET` | `/tabs/:id/markdown` | Deterministic Markdown rendering. Query params: `view=document` (default, readable/no refs), `view=agent` (refs/controls preserved), `offset=N` (paginate large output) |
 | `POST` | `/tabs/:id/click` | Click element by ref or CSS selector |
 | `POST` | `/tabs/:id/type` | Type text into element |
 | `POST` | `/tabs/:id/press` | Press a keyboard key |
@@ -664,10 +670,10 @@ Two subprocesses may be spawned: (1) the Camoufox browser engine (core functiona
 ## Testing
 
 ```bash
-npm test              # all tests
-npm run test:e2e      # e2e tests only
+npm test              # unit/non-e2e tests
+npm run test:e2e      # e2e tests only (starts shared test server/browser)
 npm run test:live     # live site tests (Google, macros)
-npm run test:debug    # with server output
+npm run test:debug    # unit/non-e2e tests with server output
 ```
 
 ## npm

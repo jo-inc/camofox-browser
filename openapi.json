@@ -741,6 +741,120 @@
         }
       }
     },
+    "/tabs/{tabId}/markdown": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Deterministic Markdown snapshot",
+        "description": "Renders the current tab accessibility snapshot as deterministic Markdown. The default document view is readable Markdown without refs; the agent view preserves actionable refs and controls.",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "document",
+                "agent"
+              ],
+              "default": "document"
+            },
+            "description": "Markdown rendering mode. document strips refs and controls; agent preserves refs, controls, states, and values."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Character offset for paginated retrieval."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown rendering.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "view": {
+                      "type": "string",
+                      "enum": [
+                        "document",
+                        "agent"
+                      ]
+                    },
+                    "markdown": {
+                      "type": "string"
+                    },
+                    "refsCount": {
+                      "type": "integer"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    },
+                    "totalChars": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    },
+                    "nextOffset": {
+                      "type": "integer",
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/wait": {
       "post": {
         "tags": [
