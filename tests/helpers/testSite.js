@@ -174,6 +174,31 @@ function createTestApp() {
       </body></html>
     `);
   });
+
+  // Page with fixed coordinate target for mouse endpoint tests
+  app.get('/mouse', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Mouse Test</title>
+      <style>
+        body { margin: 0; padding: 0; }
+        #target { position: absolute; left: 100px; top: 80px; width: 120px; height: 80px; }
+      </style>
+      </head>
+      <body>
+        <button id="target">Mouse Target</button>
+        <div id="result"></div>
+        <script>
+          const result = document.getElementById('result');
+          const target = document.getElementById('target');
+          target.addEventListener('mousemove', () => { result.textContent = 'Mouse moved!'; });
+          target.addEventListener('mousedown', () => { result.textContent = 'Mouse down!'; });
+          target.addEventListener('mouseup', () => { result.textContent = 'Mouse up!'; });
+          target.addEventListener('click', () => { result.textContent = 'Mouse clicked!'; });
+        </script>
+      </body></html>
+    `);
+  });
   
   // Echo endpoint for macro expansion testing - echoes the full request URL
   app.get('/echo-url', (req, res) => {
