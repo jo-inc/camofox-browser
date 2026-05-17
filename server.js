@@ -3161,10 +3161,17 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *               selector:
  *                 type: string
  *                 description: CSS selector fallback.
+ *               x:
+ *                 type: number
+ *                 description: Viewport x coordinate for raw mouse clicks.
+ *               y:
+ *                 type: number
+ *                 description: Viewport y coordinate for raw mouse clicks.
  *               doubleClick:
  *                 type: boolean
  *               coordinates:
  *                 type: object
+ *                 description: Viewport coordinates for raw mouse clicks.
  *                 properties:
  *                   x:
  *                     type: number
@@ -3194,8 +3201,18 @@ app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
   
   try {
-    const { userId, ref, selector } = req.body;
+    const { userId, ref, selector, doubleClick } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
+    const rawCoordinates = req.body.coordinates ?? ((req.body.x !== undefined || req.body.y !== undefined) ? { x: req.body.x, y: req.body.y } : null);
+    const useCoordinates = !ref && !selector && rawCoordinates;
+    let coordinates = null;
+    if (useCoordinates) {
+      const { x, y } = rawCoordinates;
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+        return res.status(400).json({ error: 'coordinates require finite numeric x and y' });
+      }
+      coordinates = { x, y };
+    }
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
@@ -3203,8 +3220,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
-    if (!ref && !selector) {
-      return res.status(400).json({ error: 'ref or selector required' });
+    if (!ref && !selector && !coordinates) {
+      return res.status(400).json({ error: 'ref, selector, or coordinates required' });
     }
     
     const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
@@ -3294,8 +3311,11 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           throw new StaleRefsError(ref, maxRef, tabState.refs.size);
         }
         await doClick(locator, true);
-      } else {
+      } else if (selector) {
         await doClick(selector, false);
+      } else {
+        await tabState.page.mouse.click(coordinates.x, coordinates.y, { clickCount: doubleClick ? 2 : 1 });
+        log('info', 'coordinate click dispatched', { x: coordinates.x.toFixed(0), y: coordinates.y.toFixed(0), doubleClick: !!doubleClick });
       }
       
       // If clicking on a Google SERP, wait for potential navigation to complete
@@ -3335,7 +3355,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     }));
     
     log('info', 'clicked', { reqId: req.reqId, tabId, url: result.url });
-    pluginEvents.emit('tab:click', { userId: req.body.userId, tabId, ref: req.body.ref, selector: req.body.selector });
+    pluginEvents.emit('tab:click', { userId: req.body.userId, tabId, ref: req.body.ref, selector: req.body.selector, coordinates: req.body.coordinates });
     res.json(result);
   } catch (err) {
     log('error', 'click failed', { reqId: req.reqId, tabId, error: err.message });

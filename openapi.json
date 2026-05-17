@@ -849,11 +849,20 @@
                     "type": "string",
                     "description": "CSS selector fallback."
                   },
+                  "x": {
+                    "type": "number",
+                    "description": "Viewport x coordinate for raw mouse clicks."
+                  },
+                  "y": {
+                    "type": "number",
+                    "description": "Viewport y coordinate for raw mouse clicks."
+                  },
                   "doubleClick": {
                     "type": "boolean"
                   },
                   "coordinates": {
                     "type": "object",
+                    "description": "Viewport coordinates for raw mouse clicks.",
                     "properties": {
                       "x": {
                         "type": "number"
