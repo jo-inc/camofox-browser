@@ -178,9 +178,25 @@
     "camofox_scroll",
     "camofox_screenshot",
     "camofox_close_tab",
+    "camofox_evaluate",
     "camofox_list_tabs",
     "camofox_import_cookies"
   ],
+  "contracts": {
+    "tools": [
+      "camofox_create_tab",
+      "camofox_snapshot",
+      "camofox_click",
+      "camofox_type",
+      "camofox_navigate",
+      "camofox_scroll",
+      "camofox_screenshot",
+      "camofox_close_tab",
+      "camofox_evaluate",
+      "camofox_list_tabs",
+      "camofox_import_cookies"
+    ]
+  },
   "runtimeDependencies": {
     "camoufox": {
       "description": "Camoufox anti-detection browser (Firefox fork). Downloaded at install time by camoufox-js unless CAMOUFOX_EXECUTABLE points to an external bundle.",

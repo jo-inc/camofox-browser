@@ -101,6 +101,10 @@
         "description": "Close a browser tab"
       },
       {
+        "name": "camofox_evaluate",
+        "description": "Execute JavaScript in a Camoufox tab page context"
+      },
+      {
         "name": "camofox_list_tabs",
         "description": "List open tabs for a user"
       },
