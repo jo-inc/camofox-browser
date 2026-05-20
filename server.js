@@ -8,6 +8,7 @@ import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
+import { resolveRequestProxy, requestProxiesEqual, redactProxy } from './lib/request-proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
@@ -1096,9 +1097,11 @@ async function closeAllSessions(reason, { clearDownloads = true, clearLocks = tr
   }
 }
 
-async function getSession(userId, { trace = false } = {}) {
+async function getSession(userId, { trace = false, requestProxy = undefined } = {}) {
   const key = normalizeUserId(userId);
+  const hasRequestProxy = requestProxy !== undefined;
   let session = sessions.get(key);
+  let normalizedRequestProxy = null;
   
   // Check if existing session's context is still alive
   if (session) {
@@ -1115,6 +1118,13 @@ async function getSession(userId, { trace = false } = {}) {
         session = null;
       }
     }
+  }
+  if (hasRequestProxy) {
+    normalizedRequestProxy = resolveRequestProxy({
+      requestedProxy: requestProxy,
+      existingSession: session,
+      globalProxyActive: !!proxyPool,
+    });
   }
   
   if (!session) {
@@ -1147,15 +1157,19 @@ async function getSession(userId, { trace = false } = {}) {
         viewport: { width: 1280, height: 720 },
         permissions: ['geolocation'],
       };
-      // When geoip is active (proxy configured), camoufox auto-configures
-      // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
-      if (!CONFIG.proxy.host) {
+      // When geoip is active (global proxy configured), camoufox auto-configures
+      // locale/timezone/geolocation from the proxy IP. Request-level proxies only
+      // route the BrowserContext and do not automatically provide GeoIP parity.
+      if (!CONFIG.proxy.host && !normalizedRequestProxy) {
         contextOptions.locale = 'en-US';
         contextOptions.timezoneId = 'America/Los_Angeles';
         contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
       }
       let sessionProxy = null;
-      if (proxyPool?.canRotateSessions) {
+      if (normalizedRequestProxy) {
+        contextOptions.proxy = normalizePlaywrightProxy(normalizedRequestProxy);
+        log('info', 'request proxy assigned', { userId: key, proxy: redactProxy(normalizedRequestProxy) });
+      } else if (proxyPool?.canRotateSessions) {
         sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
@@ -1180,17 +1194,30 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
 
-      const created = { context, tabGroups: new Map(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
+      const created = {
+        context,
+        tabGroups: new Map(),
+        lastAccess: Date.now(),
+        proxySessionId: sessionProxy?.sessionId || null,
+        requestProxy: normalizedRequestProxy,
+        tracePath,
+      };
       sessions.set(key, created);
       await pluginEvents.emitAsync('session:created', { userId: key, context });
       log('info', 'session created', {
         userId: key,
-        proxyMode: proxyPool?.mode || null,
-        proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
+        proxyMode: normalizedRequestProxy ? 'request' : (proxyPool?.mode || null),
+        proxyServer: normalizedRequestProxy?.server || sessionProxy?.server || browserLaunchProxy?.server || null,
         proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
       });
       return created;
     });
+    if (hasRequestProxy && !requestProxiesEqual(normalizedRequestProxy, session.requestProxy || null)) {
+      throw Object.assign(
+        new Error('proxy can only be set when creating a new user session; existing session uses a different proxy'),
+        { statusCode: 409 }
+      );
+    }
   }
   session.lastAccess = Date.now();
   return session;
@@ -2484,6 +2511,21 @@ app.post('/pressure/cleanup', async (req, res) => {
  *               trace:
  *                 type: boolean
  *                 description: Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session.
+ *               proxy:
+ *                 type: object
+ *                 description: Optional Playwright proxy for the user BrowserContext. Accepted only when creating a new userId session; all tabs for that userId across sessionKey groups share it. Cannot be used with global PROXY_* configuration.
+ *                 properties:
+ *                   server:
+ *                     type: string
+ *                     description: Proxy server URL with http, https, socks4, or socks5 scheme. Do not embed credentials in this URL.
+ *                     example: http://gw.example.com:10000
+ *                   username:
+ *                     type: string
+ *                     description: Optional proxy username.
+ *                   password:
+ *                     type: string
+ *                     description: Optional proxy password.
+ *       description: Request-level proxies are applied at BrowserContext creation time and do not automatically configure GeoIP-matching locale, timezone, or geolocation.
  *     responses:
  *       200:
  *         description: Tab created.
@@ -2509,7 +2551,7 @@ app.post('/pressure/cleanup', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: Cannot enable tracing on an existing session.
+ *         description: Cannot enable tracing on an existing session, or request proxy conflicts with an existing/global proxy session.
  *         content:
  *           application/json:
  *             schema:
@@ -2517,7 +2559,7 @@ app.post('/pressure/cleanup', async (req, res) => {
  */
 app.post('/tabs', async (req, res) => {
   try {
-    const { userId, sessionKey, listItemId, url, trace } = req.body;
+    const { userId, sessionKey, listItemId, url, trace, proxy } = req.body;
     // Accept both sessionKey (preferred) and listItemId (legacy) for backward compatibility
     const resolvedSessionKey = sessionKey || listItemId;
     if (!userId || !resolvedSessionKey) {
@@ -2548,7 +2590,7 @@ app.post('/tabs', async (req, res) => {
           { statusCode: 409 },
         );
       }
-      let session = await getSession(userId, { trace: !!trace });
+      let session = await getSession(userId, { trace: !!trace, requestProxy: proxy });
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
@@ -2587,7 +2629,7 @@ app.post('/tabs', async (req, res) => {
             if (oldSession) {
               await closeSession(key, oldSession, { reason: 'proxy_retry_rotate', clearDownloads: true, clearLocks: true });
             }
-            session = await getSession(userId, { trace: !!trace });
+            session = await getSession(userId, { trace: !!trace, requestProxy: proxy });
             const retryGroup = getTabGroup(session, resolvedSessionKey);
             const retryPage = await session.context.newPage();
             tabState = createTabState(retryPage);

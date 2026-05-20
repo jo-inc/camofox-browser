@@ -338,6 +338,34 @@ When a proxy is configured:
 - Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
 - Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
 
+**Per-session request proxy:**
+
+`POST /tabs` also accepts a narrow Playwright proxy object for deployments that need proxy choice per API caller:
+
+```json
+{
+  "userId": "agent1-proxy-a",
+  "sessionKey": "task1",
+  "url": "https://example.com",
+  "proxy": {
+    "server": "http://gw.example.com:10000",
+    "username": "myuser",
+    "password": "mypass"
+  }
+}
+```
+
+Request-level proxies are session creation options:
+
+- The proxy is accepted only when creating a new `userId` BrowserContext.
+- If that `userId` already has a session, the same proxy may be supplied again, but a different proxy returns `409`.
+- All tabs for the same `userId` share the same proxy across all `sessionKey` tab groups.
+- Proxy changes are not supported on `/tabs/:tabId/navigate` because Playwright proxy settings belong to the BrowserContext, not a single navigation.
+- Request-level proxy is rejected while global `PROXY_*` configuration is active, because global proxy pools include rotation/retry semantics that raw request proxies do not.
+- Request-level proxy routes traffic but does not automatically provide the same GeoIP-derived locale/timezone/geolocation parity as the global proxy path.
+
+If you need one proxy per independent task, use a distinct `userId` per task.
+
 ### Telemetry
 
 Browser automation fails in ways that are hard to predict -- Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."
@@ -609,7 +637,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 
 ```
 Browser Instance (Camoufox)
-\-- User Session (BrowserContext) - isolated cookies/storage
+\-- User Session (BrowserContext) - isolated cookies/storage; optional request proxy is fixed at creation
     |-- Tab Group (sessionKey: "conv1")
     |   |-- Tab (google.com)
     |   \-- Tab (github.com)
