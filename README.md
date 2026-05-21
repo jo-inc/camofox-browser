@@ -117,6 +117,39 @@ make up ARCH=x86_64
 make up VERSION=135.0.1 RELEASE=beta.24
 ```
 
+#### Windows
+
+On Windows, `make` is not available. Use the included `build.ps1` PowerShell script instead:
+
+```powershell
+# Build and start
+.\build.ps1 up
+
+# Stop and remove the container
+.\build.ps1 down
+
+# Build image only
+.\build.ps1 build
+
+# Force a clean rebuild
+.\build.ps1 reset
+
+# Download binaries only (without building)
+.\build.ps1 fetch
+
+# Override architecture
+.\build.ps1 up -Arch x86_64
+.\build.ps1 up -Arch aarch64
+```
+
+> **Note:** PowerShell 7+ (`pwsh`) is recommended but `powershell.exe` (Windows PowerShell 5.1) also works. The script requires Docker Desktop for Windows with the WSL2 backend.
+>
+> **Line endings:** This project includes a `.gitattributes` file that forces Unix (`LF`) line endings for `.sh` files. If you've already cloned the repo and get `sh: not found` or `set: Illegal option -` errors during `docker build`, run:
+> ```powershell
+> Get-ChildItem -Recurse *.sh | ForEach-Object { (Get-Content $_) -join "`n" + "`n" | Set-Content $_ -NoNewline }
+> ```
+> This converts shell scripts to LF line endings. Future clones will handle this automatically thanks to `.gitattributes`.
+
 > **WARNING: Do not run `docker build` directly.** The Dockerfile uses bind mounts to pull pre-downloaded binaries from `dist/`. Always use `make up` (or `make fetch` then `make build`) -- it downloads the binaries first.
 
 ### Fly.io

@@ -68,7 +68,7 @@ COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 
 # Install default plugin dependencies (apt packages + post-install hooks)
-RUN scripts/install-plugin-deps.sh
+RUN sh scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377

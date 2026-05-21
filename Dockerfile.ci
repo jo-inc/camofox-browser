@@ -74,7 +74,9 @@ COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 
 # Install default plugin dependencies
-RUN scripts/install-plugin-deps.sh
+# Note: sh is used explicitly (./scripts/) because COPY from Windows
+# does not preserve +x permission bits in Docker build contexts.
+RUN sh scripts/install-plugin-deps.sh
 
 ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377

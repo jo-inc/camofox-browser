@@ -1,0 +1,12 @@
+# Shell scripts must always use LF line endings
+# CRLF breaks shebang lines in Linux containers (e.g. Docker builds)
+*.sh text eol=lf
+
+# JS/TS and other text files use native line endings
+*.js text
+*.ts text
+*.json text
+*.yml text
+*.yaml text
+*.md text
+*.toml text
