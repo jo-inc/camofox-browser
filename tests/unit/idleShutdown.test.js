@@ -29,6 +29,23 @@ function createIdleShutdownScheduler({ getSessionsSize, hasBrowser, closeBrowser
   return { scheduleBrowserIdleShutdown, clearBrowserIdleTimer, get hasTimer() { return !!browserIdleTimer; } };
 }
 
+function evaluateHealth({ isRecovering, browserRunning, warming, machineId }) {
+  if (isRecovering) {
+    return { status: 503, body: { ok: false, engine: 'camoufox', recovering: true } };
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      engine: 'camoufox',
+      browserConnected: browserRunning,
+      browserRunning,
+      ...(warming ? { warming: true } : {}),
+      ...(machineId ? { machineId } : {}),
+    },
+  };
+}
+
 describe('idle browser shutdown scheduler', () => {
   test('repeated idle cleanup ticks do not reset the existing shutdown timer', () => {
     let sessionsSize = 0;
@@ -102,5 +119,25 @@ describe('idle browser shutdown scheduler', () => {
     expect(scheduler.hasTimer).toBe(false);
     scheduler.scheduleBrowserIdleShutdown(300_000);
     expect(timerCount).toBe(2);
+  });
+});
+
+describe('health during idle browser shutdown', () => {
+  test('idle shutdown does not make the Fly health check fail', () => {
+    const health = evaluateHealth({ isRecovering: false, browserRunning: false, warming: false, machineId: 'machine-1' });
+    expect(health.status).toBe(200);
+    expect(health.body).toMatchObject({
+      ok: true,
+      engine: 'camoufox',
+      browserConnected: false,
+      browserRunning: false,
+      machineId: 'machine-1',
+    });
+  });
+
+  test('recovering browser still fails health check', () => {
+    const health = evaluateHealth({ isRecovering: true, browserRunning: false, warming: false });
+    expect(health.status).toBe(503);
+    expect(health.body).toEqual({ ok: false, engine: 'camoufox', recovering: true });
   });
 });

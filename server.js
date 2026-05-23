@@ -2347,17 +2347,6 @@ app.get('/health', (req, res) => {
     return res.status(503).json({ ok: false, engine: 'camoufox', recovering: true });
   }
   const running = browser !== null && (browser.isConnected?.() ?? false);
-  if (proxyPool?.canRotateSessions && !running) {
-    scheduleBrowserWarmRetry();
-    return res.status(503).json({
-      ok: false,
-      engine: 'camoufox',
-      browserConnected: false,
-      browserRunning: false,
-      warming: true,
-      ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
-    });
-  }
   const mem = process.memoryUsage();
   const rssMb = Math.round(mem.rss / 1048576);
   const heapUsedMb = Math.round(mem.heapUsed / 1048576);
