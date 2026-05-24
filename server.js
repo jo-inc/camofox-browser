@@ -37,6 +37,7 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { snapshotBrowserProcessPids, killProcessIds } from './lib/browser-processes.js';
 
 const CONFIG = loadConfig();
 
@@ -776,8 +777,14 @@ async function _closeBrowserFullyImpl(reason) {
   if (!b) return;
   clearBrowserIdleTimer();
 
-  // Capture PID before nulling browser ref -- we need it for force-kill
+  // Capture PID/process snapshot before nulling browser ref.
   const pid = _lastBrowserPid;
+  let preCloseBrowserPids = [];
+  try {
+    preCloseBrowserPids = snapshotBrowserProcessPids({ excludePid: pid });
+  } catch (err) {
+    log('warn', 'failed to snapshot browser processes before close', { reason, error: err.message });
+  }
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
 
@@ -798,12 +805,11 @@ async function _closeBrowserFullyImpl(reason) {
     clearTimeout(closeTimer);
   }
 
-  // Force-kill browser survivors. Playwright's Firefox launcher can return no
-  // process PID, so fall back to scanning the container for Camoufox/Xvfb.
+  // Force-kill only survivors captured before this close began.
   if (pid) {
     await _forceKillProcessTree(pid, reason);
   }
-  await _forceKillBrowserProcesses(reason, pid);
+  await _forceKillBrowserProcesses(reason, preCloseBrowserPids);
 
   // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
   try {
@@ -906,33 +912,11 @@ async function _forceKillProcessTree(pid, reason) {
   await new Promise(r => setTimeout(r, 300));
 }
 
-async function _forceKillBrowserProcesses(reason, excludePid = null) {
-  if (process.platform !== 'linux') return;
-  const myPid = process.pid;
-  const victims = [];
-  try {
-    const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
-    for (const procPid of procDirs) {
-      const numPid = parseInt(procPid);
-      if (numPid === myPid || numPid === excludePid) continue;
-      try {
-        const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
-        if (/camoufox-bin|\/usr\/bin\/Xvfb\b/.test(cmdline)) {
-          victims.push(numPid);
-        }
-      } catch { /* process vanished or permission denied */ }
-    }
-  } catch (err) {
-    log('warn', 'failed to scan for browser survivor processes', { reason, error: err.message });
-    return;
-  }
-
+async function _forceKillBrowserProcesses(reason, candidatePids = []) {
+  const victims = candidatePids.filter((pid) => pid && pid !== process.pid);
   if (victims.length > 0) {
     log('warn', 'killing browser survivor processes', { reason, victims });
-    for (const victimPid of victims) {
-      try { process.kill(victimPid, 'SIGKILL'); } catch { /* already dead */ }
-    }
-    await new Promise(r => setTimeout(r, 300));
+    await killProcessIds(victims, { signal: 'SIGKILL', delayMs: 300 });
   }
 }
 
@@ -1060,6 +1044,9 @@ async function launchBrowserInstance() {
 
 async function ensureBrowser() {
   clearBrowserIdleTimer();
+  if (_browserClosePromise) {
+    await _browserClosePromise;
+  }
   if (browser && !browser.isConnected()) {
     failuresTotal.labels('browser_disconnected', 'internal').inc();
     log('warn', 'browser disconnected, clearing dead sessions and relaunching', {
