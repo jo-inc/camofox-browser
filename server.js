@@ -3786,6 +3786,79 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
   }
 });
 
+// Network response capture: attaches a Playwright page.on("response") listener for the
+// requested duration and returns all matching responses. Operates at the browser network
+// layer, bypassing any in-page JS, Service Worker, or closure-cached fetch references.
+app.post('/tabs/:tabId/capture-network', authMiddleware(), express.json({ limit: '64kb' }), async (req, res) => {
+  try {
+    const { userId, urlPattern = 'graphql', durationMs = 15000, maxBodyBytes = 1000000, maxCaptures = 100 } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const re = new RegExp(urlPattern, 'i');
+    const captures = [];
+    const handler = async (response) => {
+      try {
+        const url = response.url();
+        if (!re.test(url)) return;
+        if (captures.length >= maxCaptures) return;
+        const status = response.status();
+        let body = '';
+        try { body = await response.text(); } catch (e) { body = `__BODY_ERROR__:${e.message}`; }
+        if (body.length > maxBodyBytes) body = body.slice(0, maxBodyBytes) + '__TRUNCATED__';
+        captures.push({ url, status, len: body.length, body });
+      } catch (e) {
+        captures.push({ err: e.message });
+      }
+    };
+    tabState.page.on('response', handler);
+    await new Promise(r => setTimeout(r, Math.min(durationMs, 60000)));
+    tabState.page.off('response', handler);
+
+    pluginEvents.emit('tab:capture-network', { userId, tabId: req.params.tabId, captureCount: captures.length });
+    res.json({ ok: true, captureCount: captures.length, captures });
+  } catch (err) {
+    log('error', 'capture-network failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Persistent init script that runs before every navigation in the tab's page context.
+// Useful for installing fetch/XHR hooks that must catch the very first request after
+// a full-page reload, where evaluate() injection arrives too late.
+app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const { userId, script } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (typeof script !== 'string' || !script.trim()) return res.status(400).json({ error: 'script (string) required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    await withTabLock(req.params.tabId, async () => {
+      await tabState.page.addInitScript({ content: script });
+    });
+
+    pluginEvents.emit('tab:init-script', { userId, tabId: req.params.tabId, scriptLen: script.length });
+    res.json({ ok: true, scriptLen: script.length });
+  } catch (err) {
+    log('error', 'init-script failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Viewport
 /**
  * @openapi
