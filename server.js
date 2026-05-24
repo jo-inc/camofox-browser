@@ -3669,6 +3669,118 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
   }
 });
 
+// Element-scoped mouse wheel (real Playwright wheel event at specific coordinates).
+// Use this when page-level /scroll doesn't reach a nested scrollable container
+// (e.g. virtualised feeds with anti-automation guards).
+/**
+ * @openapi
+ * /tabs/{tabId}/mouse-wheel:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Dispatch a real wheel event at element or coordinate
+ *     description: >
+ *       Moves the mouse to a target (resolved from a ref's bounding-box centre,
+ *       an explicit (x, y) pair, or the viewport centre) and dispatches a real
+ *       Playwright wheel event. Useful for nested scrollable containers that
+ *       ignore programmatic scrollTop or JS-dispatched WheelEvents.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               ref:
+ *                 type: string
+ *                 description: Element ref (e.g. "e22"). Wheel is dispatched at its bounding-box centre.
+ *               x:
+ *                 type: number
+ *                 description: Explicit x coordinate (ignored if ref is set).
+ *               y:
+ *                 type: number
+ *                 description: Explicit y coordinate (ignored if ref is set).
+ *               deltaX:
+ *                 type: number
+ *                 default: 0
+ *               deltaY:
+ *                 type: number
+ *                 default: 0
+ *     responses:
+ *       200:
+ *         description: Wheel dispatched.
+ *       400:
+ *         description: Missing userId or both deltas are zero.
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
+  try {
+    const { userId, ref, x, y, deltaX = 0, deltaY = 0 } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!deltaX && !deltaY) return res.status(400).json({ error: 'deltaX or deltaY required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withTabLock(req.params.tabId, async () => {
+      let targetX, targetY;
+      if (ref) {
+        let locator = refToLocator(tabState.page, ref, tabState.refs);
+        if (!locator) {
+          try {
+            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_wheel', timeoutMs: 4000 });
+          } catch (e) {
+            if (e.message !== 'pre_click_refs_timeout' && e.message !== 'buildRefs_timeout') throw e;
+          }
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+        }
+        if (!locator) {
+          const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+          throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+        }
+        const box = await locator.boundingBox();
+        if (!box) throw new Error('Element not visible (no bounding box)');
+        targetX = box.x + box.width / 2;
+        targetY = box.y + box.height / 2;
+      } else if (typeof x === 'number' && typeof y === 'number') {
+        targetX = x;
+        targetY = y;
+      } else {
+        const vs = tabState.page.viewportSize();
+        targetX = vs.width / 2;
+        targetY = vs.height / 2;
+      }
+
+      await tabState.page.mouse.move(targetX, targetY);
+      await tabState.page.waitForTimeout(50);
+      await tabState.page.mouse.wheel(deltaX, deltaY);
+      await tabState.page.waitForTimeout(300);
+
+      return { x: Math.round(targetX), y: Math.round(targetY) };
+    });
+
+    pluginEvents.emit('tab:mouse-wheel', { userId, tabId: req.params.tabId, ref, deltaX, deltaY, ...result });
+    res.json({ ok: true, ...result, deltaX, deltaY });
+  } catch (err) {
+    log('error', 'mouse-wheel failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Viewport
 /**
  * @openapi
