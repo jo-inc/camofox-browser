@@ -3825,6 +3825,52 @@ app.post('/tabs/:tabId/capture-network', authMiddleware(), express.json({ limit:
   }
 });
 
+// Network request capture: attaches a Playwright page.on("request") listener for the
+// requested duration and returns matching requests with their POST body + headers.
+// Operates at the browser network layer, so it sees requests even when in-page hooks
+// on window.fetch / XMLHttpRequest are bypassed (e.g. when the bundle captured the
+// original references in a closure before any user JS could run).
+app.post('/tabs/:tabId/capture-requests', authMiddleware(), express.json({ limit: '64kb' }), async (req, res) => {
+  try {
+    const { userId, urlPattern = 'graphql', durationMs = 15000, maxBodyBytes = 200000, maxCaptures = 100, includeHeaders = true } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const re = new RegExp(urlPattern, 'i');
+    const captures = [];
+    const handler = (request) => {
+      try {
+        const url = request.url();
+        if (!re.test(url)) return;
+        if (captures.length >= maxCaptures) return;
+        const method = request.method();
+        let body = request.postData() || '';
+        if (body.length > maxBodyBytes) body = body.slice(0, maxBodyBytes) + '__TRUNCATED__';
+        const headers = includeHeaders ? request.headers() : {};
+        captures.push({ url, method, len: body.length, body, headers });
+      } catch (e) {
+        captures.push({ err: e.message });
+      }
+    };
+    tabState.page.on('request', handler);
+    await new Promise(r => setTimeout(r, Math.min(durationMs, 60000)));
+    tabState.page.off('request', handler);
+
+    pluginEvents.emit('tab:capture-requests', { userId, tabId: req.params.tabId, captureCount: captures.length });
+    res.json({ ok: true, captureCount: captures.length, captures });
+  } catch (err) {
+    log('error', 'capture-requests failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Persistent init script that runs before every navigation in the tab's page context.
 // Useful for installing fetch/XHR hooks that must catch the very first request after
 // a full-page reload, where evaluate() injection arrives too late.
