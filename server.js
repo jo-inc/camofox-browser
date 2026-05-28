@@ -5960,7 +5960,8 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
 
 const PORT = CONFIG.port;
-pluginEvents.emit('server:starting', { port: PORT });
+const HOST = CONFIG.host;
+pluginEvents.emit('server:starting', { port: PORT, host: HOST });
 
 // Load plugins before starting the server
 const pluginCtx = {
@@ -5993,15 +5994,18 @@ const loadedPlugins = await loadPlugins(app, pluginCtx);
 // --- OpenAPI docs (after all routes are registered) ---
 mountDocs(app);
 
-const server = app.listen(PORT, async () => {
+// Bind to CONFIG.host (default 127.0.0.1 -- loopback-only). When running on
+// Fly.io / Docker the orchestrator sets CAMOFOX_HOST=0.0.0.0 explicitly and is
+// expected to also set CAMOFOX_ACCESS_KEY so non-loopback callers are gated.
+const server = app.listen(PORT, HOST, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
+  pluginEvents.emit('server:started', { port: PORT, host: HOST, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+    log('info', 'server started (fly)', { port: PORT, host: HOST, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
-    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+    log('info', 'server started', { port: PORT, host: HOST, pid: process.pid, nodeVersion: process.version });
   }
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {
@@ -6051,9 +6055,9 @@ const server = app.listen(PORT, async () => {
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    log('error', 'port in use', { port: PORT });
+    log('error', 'port in use', { port: PORT, host: HOST });
     process.exit(1);
   }
-  log('error', 'server error', { error: err.message });
+  log('error', 'server error', { error: err.message, host: HOST, port: PORT });
   process.exit(1);
 });

@@ -29,4 +29,31 @@ describe('loadConfig', () => {
     process.env.CAMOFOX_EXECUTABLE_PATH = '/legacy/camoufox';
     expect(loadConfig().camoufoxExecutablePath).toBe('/legacy/camoufox');
   });
+
+  describe('host binding', () => {
+    test('defaults to 127.0.0.1 (loopback-only) when CAMOFOX_HOST unset', () => {
+      delete process.env.CAMOFOX_HOST;
+      expect(loadConfig().host).toBe('127.0.0.1');
+    });
+
+    test('honors explicit CAMOFOX_HOST value', () => {
+      process.env.CAMOFOX_HOST = '0.0.0.0';
+      expect(loadConfig().host).toBe('0.0.0.0');
+    });
+
+    test('trims surrounding whitespace from CAMOFOX_HOST', () => {
+      process.env.CAMOFOX_HOST = '  127.0.0.1\n';
+      expect(loadConfig().host).toBe('127.0.0.1');
+    });
+
+    test('falls back to 127.0.0.1 when CAMOFOX_HOST is empty string', () => {
+      process.env.CAMOFOX_HOST = '';
+      expect(loadConfig().host).toBe('127.0.0.1');
+    });
+
+    test('forwards CAMOFOX_HOST through serverEnv for subprocess inheritance', () => {
+      process.env.CAMOFOX_HOST = '127.0.0.1';
+      expect(loadConfig().serverEnv.CAMOFOX_HOST).toBe('127.0.0.1');
+    });
+  });
 });
