@@ -114,6 +114,8 @@ function log(level, msg, fields = {}) {
 // the persistent context itself as the default for any newContext()
 // call — agent code that asks for context isolation gets the same
 // context back, with a one-shot warning logged.
+// Arguments passed to newContext (e.g. { viewport, permissions, … })
+// are IGNORED — the default persistent context's settings stand.
 //
 // Also stub .contexts() to return [self] so downstream iteration works.
 function shimNewContext(browser) {
@@ -121,7 +123,7 @@ function shimNewContext(browser) {
     let warned = false;
     browser.newContext = async () => {
       if (!warned) {
-        log('warn', 'borrow mode: newContext aliased to default context (Playwright forbids multiple contexts on persistent launch)');
+        log('warn', 'borrow mode: newContext aliased to default context, options ignored (Playwright forbids multiple contexts on persistent launch)');
         warned = true;
       }
       return browser;
