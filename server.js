@@ -37,6 +37,7 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { chooseLaunch } from './lib/launch-branch.js';
 
 const CONFIG = loadConfig();
 
@@ -105,6 +106,32 @@ function log(level, msg, fields = {}) {
   } else {
     process.stdout.write(line + '\n');
   }
+}
+
+// In persistent mode, firefox.launchPersistentContext returns a
+// BrowserContext (not a Browser). Playwright forbids creating additional
+// contexts on a persistent launch, so newContext() would throw. We use
+// the persistent context itself as the default for any newContext()
+// call — agent code that asks for context isolation gets the same
+// context back, with a one-shot warning logged.
+//
+// Also stub .contexts() to return [self] so downstream iteration works.
+function shimNewContext(browser) {
+  if (typeof browser.newContext !== 'function') {
+    let warned = false;
+    browser.newContext = async () => {
+      if (!warned) {
+        log('warn', 'borrow mode: newContext aliased to default context (Playwright forbids multiple contexts on persistent launch)');
+        warned = true;
+      }
+      return browser;
+    };
+    // BrowserContext has no .contexts(); return [self] so iteration works.
+    if (typeof browser.contexts !== 'function') {
+      browser.contexts = () => [browser];
+    }
+  }
+  return browser;
 }
 
 const app = express();
@@ -982,7 +1009,19 @@ async function launchBrowserInstance() {
       options.proxy = normalizePlaywrightProxy(options.proxy);
       await pluginEvents.emitAsync('browser:launching', { options });
 
-      candidateBrowser = await firefox.launch(options);
+      const launchMode = chooseLaunch(process.env);
+      if (launchMode === 'persistent') {
+        // borrow mode: persistent context against cloned user profile.
+        // Playwright forbids multiple contexts on a persistent launch, so the
+        // returned object behaves as both browser and default context. Downstream
+        // newContext() calls land on shimNewContext() (see shimNewContext above).
+        const userDataDir = process.env.CAMOFOX_USER_DATA_DIR;
+        log('info', 'borrow mode: launching persistent context', { userDataDir });
+        candidateBrowser = await firefox.launchPersistentContext(userDataDir, options);
+      } else {
+        candidateBrowser = await firefox.launch(options);
+      }
+      candidateBrowser = shimNewContext(candidateBrowser);
 
       if (proxyPool?.canRotateSessions) {
         const probe = await probeGoogleSearch(candidateBrowser);

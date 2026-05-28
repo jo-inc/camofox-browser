@@ -120,6 +120,7 @@
     "prepublishOnly": "npm run build",
     "start": "node server.js",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
+    "test:unit": "node --test test/*.test.js",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/e2e",
     "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
     "test:live": "RUN_LIVE_TESTS=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/live",
