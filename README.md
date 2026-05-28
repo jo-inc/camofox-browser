@@ -612,6 +612,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
+| `CAMOFOX_HOST` | Bind interface. Defaults to `127.0.0.1` (loopback-only) so the browser-control API is not reachable from other machines or containers. Set to `0.0.0.0` only on Docker/Fly/Railway where the orchestrator handles ingress, and only together with `CAMOFOX_ACCESS_KEY`. | `127.0.0.1` |
 | `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |
 | `CAMOUFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
