@@ -132,6 +132,16 @@ function shimNewContext(browser) {
     if (typeof browser.contexts !== 'function') {
       browser.contexts = () => [browser];
     }
+    // BrowserContext has no .isConnected(); proxy to the underlying browser
+    // via .browser() if available, otherwise assume connected (the context
+    // throws on use if the underlying browser is gone, so true here is a
+    // safe optimistic default).
+    if (typeof browser.isConnected !== 'function') {
+      browser.isConnected = () => {
+        const b = typeof browser.browser === 'function' ? browser.browser() : null;
+        return b ? b.isConnected() : true;
+      };
+    }
   }
   return browser;
 }
