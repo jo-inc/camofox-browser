@@ -45,6 +45,11 @@ websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/va
 log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
 while true; do
+  if [ -n "$X11VNC_PID" ] && ! kill -0 "$X11VNC_PID" 2>/dev/null; then
+    CURRENT_DISPLAY=""
+    X11VNC_PID=""
+  fi
+
   # Find Xvfb with our patched resolution
   FOUND=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
     /\/Xvfb :[0-9]+/ && index($0, res) {
