@@ -37,6 +37,7 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { quarantinePersistedStorageState } from './lib/persistence.js';
 
 const CONFIG = loadConfig();
 
@@ -230,6 +231,35 @@ function validateUrl(url) {
     return null;
   } catch {
     return `Invalid URL: ${url}`;
+  }
+}
+
+function isStorageStateRestoreError(err) {
+  const message = err?.message || '';
+  return message.includes('Error setting storage state') || message.includes('storageState');
+}
+
+async function newContextWithStorageFallback(browserInstance, contextOptions, userId) {
+  try {
+    return await browserInstance.newContext(contextOptions);
+  } catch (err) {
+    if (!contextOptions.storageState || !isStorageStateRestoreError(err)) throw err;
+
+    await quarantinePersistedStorageState({
+      profileDir: CONFIG.profileDir,
+      userId,
+      storageStatePath: contextOptions.storageState,
+      reason: 'restore_failed',
+      logger: { warn: (msg, data) => log('warn', msg, data) },
+    });
+
+    const retryOptions = { ...contextOptions };
+    delete retryOptions.storageState;
+    log('warn', 'retrying session without persisted storage state', {
+      userId,
+      error: err.message,
+    });
+    return browserInstance.newContext(retryOptions);
   }
 }
 
@@ -1198,7 +1228,7 @@ async function getSession(userId, { trace = false } = {}) {
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
       await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
-      const context = await b.newContext(contextOptions);
+      const context = await newContextWithStorageFallback(b, contextOptions, key);
 
       let tracePath = null;
       if (trace) {

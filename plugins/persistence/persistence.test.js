@@ -6,6 +6,7 @@ import {
   getUserPersistencePaths,
   loadPersistedStorageState,
   persistStorageState,
+  quarantinePersistedStorageState,
 } from '../../lib/persistence.js';
 
 describe('profile persistence helpers', () => {
@@ -113,5 +114,24 @@ describe('profile persistence helpers', () => {
 
     const leftovers = (await fs.readdir(userDir)).filter((name) => name.includes('.tmp-'));
     expect(leftovers).toEqual([]);
+  });
+
+  test('quarantines a storage state that Playwright cannot restore', async () => {
+    const { userDir, storageStatePath } = getUserPersistencePaths(tmpDir, 'user-4');
+    await fs.mkdir(userDir, { recursive: true });
+    await fs.writeFile(storageStatePath, JSON.stringify({ cookies: [], origins: [] }));
+
+    const result = await quarantinePersistedStorageState({
+      profileDir: tmpDir,
+      userId: 'user-4',
+      reason: 'restore_failed',
+      logger: { warn: jest.fn() },
+    });
+
+    expect(result.quarantined).toBe(true);
+    await expect(fs.stat(storageStatePath)).rejects.toHaveProperty('code', 'ENOENT');
+    expect(path.basename(result.quarantinePath)).toMatch(/^storage-state\.invalid-\d+\.json$/);
+    const quarantined = JSON.parse(await fs.readFile(result.quarantinePath, 'utf8'));
+    expect(quarantined).toEqual({ cookies: [], origins: [] });
   });
 });
