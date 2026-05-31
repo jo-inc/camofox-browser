@@ -1,5 +1,6 @@
 import {
   normalizePlaywrightProxy,
+  LOCAL_PROXY_BYPASS_HOSTS,
   createProxyPool,
   buildDecodoBackconnectUsername,
   buildProxyUrl,
@@ -19,6 +20,7 @@ describe('normalizePlaywrightProxy', () => {
       server: 'http://proxy.example.com:10001',
       username: 'sp6incny2a',
       password: 'u4q4iklLj3Jof0=IuT',
+      bypass: LOCAL_PROXY_BYPASS_HOSTS,
     });
   });
 
@@ -31,6 +33,7 @@ describe('normalizePlaywrightProxy', () => {
       server: 'http://gate.proxy.com:7000',
       username: 'sp6incny2a',
       password: 'u4q4iklLj3Jof0=IuT',
+      bypass: LOCAL_PROXY_BYPASS_HOSTS,
     });
   });
 
@@ -43,11 +46,22 @@ describe('normalizePlaywrightProxy', () => {
       server: 'http://proxy:1234',
       username: 'user%ZZ',
       password: 'pass%ZZ',
+      bypass: LOCAL_PROXY_BYPASS_HOSTS,
     });
   });
 
   test('passes through null proxy', () => {
     expect(normalizePlaywrightProxy(null)).toBeNull();
+  });
+
+  test('preserves an explicit proxy bypass list', () => {
+    expect(normalizePlaywrightProxy({
+      server: 'http://proxy:1234',
+      bypass: 'internal.example.com',
+    })).toEqual({
+      server: 'http://proxy:1234',
+      bypass: 'internal.example.com',
+    });
   });
 });
 
