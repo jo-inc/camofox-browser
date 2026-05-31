@@ -946,9 +946,14 @@ async function launchBrowserInstance() {
 
     try {
       if (os.platform() === 'linux') {
-        localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
-        log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
+        if (process.env.DISPLAY) {
+          vdDisplay = process.env.DISPLAY;
+          log('info', 'using existing display', { display: vdDisplay, attempt });
+        } else {
+          localVirtualDisplay = pluginCtx.createVirtualDisplay();
+          vdDisplay = localVirtualDisplay.get();
+          log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
+        }
       }
     } catch (err) {
       log('warn', 'xvfb not available, falling back to headless', { error: err.message, attempt });
