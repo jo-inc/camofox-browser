@@ -3273,6 +3273,12 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page changed during the click; caller should take a fresh snapshot and retry with current refs.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
@@ -3431,8 +3437,9 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'click_timeout' });
           found.tabState.lastSnapshot = null;
-          return res.status(500).json({
-            error: safeError(err),
+          return res.status(409).json({
+            error: 'Page changed during click. Call snapshot to see the current state and retry with current refs.',
+            code: 'page_changed',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
             url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
@@ -3497,6 +3504,12 @@ app.post('/tabs/:tabId/click', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  *       404:
  *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page changed or target became invalid; caller should take a fresh snapshot and retry.
  *         content:
  *           application/json:
  *             schema:
@@ -3569,8 +3582,9 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'type_timeout' });
           found.tabState.lastSnapshot = null;
-          return res.status(500).json({
-            error: safeError(err),
+          return res.status(409).json({
+            error: 'Page changed during type. Call snapshot to see the current state and retry with current refs.',
+            code: 'page_changed',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
             url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
