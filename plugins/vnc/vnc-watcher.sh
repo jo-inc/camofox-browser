@@ -20,6 +20,7 @@ log() { printf '[vnc-watcher] %s\n' "$*" >&2; }
 
 CURRENT_DISPLAY=""
 X11VNC_PID=""
+WM_PID=""
 
 # Prepare password file if requested
 PASSFILE=""
@@ -57,6 +58,8 @@ while true; do
     if [ -n "$X11VNC_PID" ] && kill -0 "$X11VNC_PID" 2>/dev/null; then
       log "Camoufox display changed ($CURRENT_DISPLAY -> $FOUND), restarting x11vnc"
       kill "$X11VNC_PID" 2>/dev/null || true
+      [ -n "$WM_PID" ] && kill "$WM_PID" 2>/dev/null || true
+      WM_PID=""
       sleep 0.5
     fi
 
@@ -76,6 +79,16 @@ while true; do
     sleep 1
     X11VNC_PID=$(pgrep -f "x11vnc.*-display $CURRENT_DISPLAY" | head -1)
     log "x11vnc running (pid=$X11VNC_PID) on DISPLAY=$CURRENT_DISPLAY"
+
+    # Start a minimal window manager on this display so the browser window is
+    # maximized to fill the Xvfb root. Without a WM, Camoufox windows sit at
+    # their spawn size and leave a black border around them in the VNC view.
+    # matchbox auto-maximizes top-level windows; -use_titlebar no = borderless.
+    if command -v matchbox-window-manager >/dev/null 2>&1; then
+      DISPLAY="$CURRENT_DISPLAY" matchbox-window-manager -use_titlebar no -use_cursor no >/var/log/matchbox.log 2>&1 &
+      WM_PID=$!
+      log "window manager started (pid=$WM_PID) on DISPLAY=$CURRENT_DISPLAY"
+    fi
   fi
 
   sleep 2
