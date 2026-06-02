@@ -6,6 +6,8 @@ import {
   isDeadContextError,
   browserErrorStatus,
   browserErrorCode,
+  browserErrorRecovery,
+  isRetryableBrowserError,
 } from '../../lib/browser-errors.js';
 
 describe('browser error normalization', () => {
@@ -39,5 +41,39 @@ describe('browser error normalization', () => {
     expect(isDeadContextError(err)).toBe(true);
     expect(browserErrorStatus(err)).toBe(503);
     expect(browserErrorCode(err)).toBe('session_expired');
+    expect(isRetryableBrowserError(err)).toBe(true);
+    expect(browserErrorRecovery(err)).toBe('retry');
+  });
+
+  test('stale refs normalize to structured snapshot retry', () => {
+    const err = Object.assign(new Error('Unknown ref: e9'), { name: 'StaleRefsError', code: 'stale_refs' });
+    expect(browserErrorStatus(err)).toBe(422);
+    expect(browserErrorCode(err)).toBe('stale_refs');
+    expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
+  });
+
+  test('navigation races normalize to 409 retryable', () => {
+    const err = new Error('Execution context was destroyed, most likely because of a navigation');
+    expect(browserErrorStatus(err)).toBe(409);
+    expect(browserErrorCode(err)).toBe('navigation_race');
+    expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
+  });
+
+  test('invalid selector syntax normalizes to non-retryable 400', () => {
+    const err = new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"');
+    expect(browserErrorStatus(err)).toBe(400);
+    expect(browserErrorCode(err)).toBe('invalid_selector');
+    expect(isRetryableBrowserError(err)).toBe(false);
+  });
+
+  test('launch and user concurrency timeouts normalize to 503 retry', () => {
+    const launch = new Error('Browser launch timeout (60s)');
+    const concurrency = new Error('User concurrency limit reached, try again');
+    expect(browserErrorStatus(launch)).toBe(503);
+    expect(browserErrorCode(launch)).toBe('browser_launch_timeout');
+    expect(browserErrorRecovery(launch)).toBe('retry');
+    expect(browserErrorStatus(concurrency)).toBe(503);
+    expect(browserErrorCode(concurrency)).toBe('concurrency_timeout');
+    expect(browserErrorRecovery(concurrency)).toBe('retry');
   });
 });

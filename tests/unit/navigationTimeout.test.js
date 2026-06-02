@@ -187,4 +187,14 @@ describe('classifyError categorizes timeout vs proxy', () => {
   test('dead context → "dead_context"', () => {
     expect(classifyError(new Error('Target page, context or browser has been closed'))).toBe('dead_context');
   });
+
+  test('operational browser failures classify without unknown', () => {
+    expect(classifyError(Object.assign(new Error('Unknown ref: e999'), { code: 'stale_refs' }))).toBe('stale_refs');
+    expect(classifyError(new Error('Execution context was destroyed, most likely because of a navigation'))).toBe('navigation_race');
+    expect(classifyError(new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"'))).toBe('invalid_selector');
+    expect(classifyError(new Error('User concurrency limit reached, try again'))).toBe('concurrency_timeout');
+    expect(classifyError(new Error('Browser launch timeout (60s)'))).toBe('browser_launch');
+    expect(classifyError(new Error('Element is not attached to the DOM'))).toBe('element_error');
+    expect(classifyError(new Error('Target crashed'))).toBe('page_crashed');
+  });
 });

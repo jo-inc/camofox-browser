@@ -42,7 +42,7 @@ import {
   safePageUrl, urlDomain, hashIdentifier,
   isDeadContextError, isPageCrashedError, isTimeoutError,
   isTabLockQueueTimeout, isTabDestroyedError,
-  browserErrorStatus, browserErrorCode,
+  browserErrorStatus, browserErrorCode, browserErrorRecovery, isRetryableBrowserError,
 } from './lib/browser-errors.js';
 
 const CONFIG = loadConfig();
@@ -200,6 +200,35 @@ class StaleRefsError extends Error {
   }
 }
 
+function selectorValidationError(selector) {
+  if (selector === undefined || selector === null) return null;
+  if (typeof selector !== 'string' || selector.trim() === '') return 'selector must be a non-empty string';
+  if (/^text\s*\(/i.test(selector)) return 'Invalid text selector syntax. Use text=... or a valid CSS selector.';
+  const stack = [];
+  let quote = null;
+  let escaped = false;
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  for (const ch of selector) {
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch);
+    if (ch === ')' || ch === ']' || ch === '}') {
+      if (stack.pop() !== pairs[ch]) return `Invalid selector syntax: ${selector}`;
+    }
+  }
+  if (quote || stack.length) return `Invalid selector syntax: ${selector}`;
+  return null;
+}
+
+function invalidSelectorError(message) {
+  return Object.assign(new Error(message), { code: 'invalid_selector', statusCode: 400 });
+}
+
 function safeError(err) {
   if (CONFIG.nodeEnv === 'production') {
     log('error', 'internal error', { error: err.message, stack: err.stack });
@@ -208,16 +237,19 @@ function safeError(err) {
   return err.message;
 }
 
-// Send error response with appropriate status code (422 for stale refs, 500 otherwise)
 function sendError(res, err, extraFields = {}) {
-  const status = err instanceof StaleRefsError ? 422 : (browserErrorStatus(err) || 500);
-  const body = { error: safeError(err), ...extraFields };
-  const code = err instanceof StaleRefsError ? 'stale_refs' : browserErrorCode(err);
+  const status = browserErrorStatus(err) || 500;
+  const code = browserErrorCode(err);
+  const recovery = browserErrorRecovery(err);
+  const body = {
+    error: safeError(err),
+    retryable: isRetryableBrowserError(err),
+    ...extraFields,
+  };
   if (code) body.code = code;
+  if (recovery) body.recovery = recovery;
   if (err instanceof StaleRefsError) body.ref = err.ref;
-  // Report unexpected 500s to Sentry. Operational 410/503 states are logged with
-  // structured context by handleRouteError but not captured as defects.
-  if (status >= 500 && !err.statusCode) {
+  if (status >= 500 && !err.statusCode && !recovery) {
     const req = res.req;
     const userId = req?.query?.userId || req?.body?.userId;
     sentryCaptureException(err, {
@@ -1301,8 +1333,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
   }
   if (isPageCrashedError(err)) {
     if (foundForContext) destroyTab(sessions.get(normalizeUserId(userId)), tabId, 'page_crashed', userId);
-    sentryCaptureException(err, sentryContext);
-    return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', ...extraFields });
+    return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
@@ -1350,17 +1381,17 @@ function handleRouteError(err, req, res, extraFields = {}) {
     if (session && tabId) {
       destroyTab(session, tabId, 'lock_queue', userId);
     }
-    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_unresponsive', ...extraFields });
+    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_unresponsive', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
-    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', ...extraFields });
+    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', code: 'tab_destroyed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   // Dead context = session torn down (by proxy error, timeout, or reaper) while this op
   // was in flight. The ROOT CAUSE was already reported — this is a cascade error.
   // Return 503 (retriable) so the client retries with a fresh session.
   if (isDeadContextError(err)) {
-    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', ...extraFields });
+    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', retryable: true, recovery: 'retry', ...extraFields });
   }
   // --- Frustration detection: report when a tab hits a streak of failures ---
   // Individual failures are noise. 3+ consecutive = the site is persistently broken.
@@ -2844,9 +2875,14 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const prewarmGoogleHome = async () => {
           if (!isGoogleSearch || tabState.visitedUrls.has('https://www.google.com/')) return;
-          await withPageLoadDuration('navigate', () => tabState.page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
-          tabState.visitedUrls.add('https://www.google.com/');
-          await tabState.page.waitForTimeout(1200);
+          const prewarmPage = await session.context.newPage();
+          try {
+            await withPageLoadDuration('navigate', () => prewarmPage.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+            tabState.visitedUrls.add('https://www.google.com/');
+            await prewarmPage.waitForTimeout(1200);
+          } finally {
+            await safePageClose(prewarmPage);
+          }
         };
 
         const recreateTabOnFreshContext = async () => {
@@ -3297,6 +3333,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     if (!ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required' });
     }
+    const selectorErr = selectorValidationError(selector);
+    if (selectorErr) throw invalidSelectorError(selectorErr);
     
     const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
       const clickStart = Date.now();
@@ -3440,6 +3478,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           return res.status(409).json({
             error: 'Page changed during click. Call snapshot to see the current state and retry with current refs.',
             code: 'page_changed',
+            retryable: true,
+            recovery: 'snapshot_then_retry',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
             url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
@@ -3538,6 +3578,8 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     if (mode === 'fill' && !ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required for mode=fill' });
     }
+    const selectorErr = selectorValidationError(selector);
+    if (selectorErr) throw invalidSelectorError(selectorErr);
     const shouldSubmit = submit || pressEnter;
     
     await withTabLock(tabId, async () => {
@@ -3585,6 +3627,8 @@ app.post('/tabs/:tabId/type', async (req, res) => {
           return res.status(409).json({
             error: 'Page changed during type. Call snapshot to see the current state and retry with current refs.',
             code: 'page_changed',
+            retryable: true,
+            recovery: 'snapshot_then_retry',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
             url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
