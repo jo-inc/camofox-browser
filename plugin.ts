@@ -46,16 +46,16 @@ interface HealthCheckResult {
   details?: Record<string, unknown>;
 }
 
+interface CliCommand {
+  description: (desc: string) => CliCommand;
+  option: (flags: string, desc: string, defaultValue?: string) => CliCommand;
+  argument: (name: string, desc: string) => CliCommand;
+  action: (handler: (...args: unknown[]) => void | Promise<void>) => CliCommand;
+  command: (name: string) => CliCommand;
+}
+
 interface CliContext {
-  program: {
-    command: (name: string) => {
-      description: (desc: string) => CliContext["program"];
-      option: (flags: string, desc: string, defaultValue?: string) => CliContext["program"];
-      argument: (name: string, desc: string) => CliContext["program"];
-      action: (handler: (...args: unknown[]) => void | Promise<void>) => CliContext["program"];
-      command: (name: string) => CliContext["program"];
-    };
-  };
+  program: CliCommand;
   config: PluginConfig;
   logger: {
     info: (msg: string) => void;
@@ -611,7 +611,7 @@ export default function register(api: PluginApi) {
   if (api.registerRpc) {
     api.registerRpc("camofox.health", async () => {
       try {
-        const health = await fetchApi(baseUrl, "/health");
+        const health = (await fetchApi(baseUrl, "/health")) as Record<string, unknown>;
         return { status: "ok", ...health };
       } catch (err) {
         return { status: "error", error: (err as Error).message };
