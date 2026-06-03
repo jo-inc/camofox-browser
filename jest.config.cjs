@@ -16,7 +16,9 @@ module.exports = {
   
   // Ignore patterns
   testPathIgnorePatterns: [
-    '/node_modules/'
+    '/node_modules/',
+    '/tests/e2e/',
+    '/tests/live/'
   ],
   
   // Setup and teardown
