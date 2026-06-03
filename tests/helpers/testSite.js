@@ -307,7 +307,25 @@ function createTestApp() {
       </body></html>
     `);
   });
-  
+
+  app.get('/file-upload', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>File Upload Test</title></head>
+      <body>
+        <h1>File Upload Test</h1>
+        <input type="file" id="fileInput" />
+        <p id="fileName">No file selected</p>
+        <script>
+          document.getElementById('fileInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            document.getElementById('fileName').textContent = file ? 'Selected: ' + file.name : 'No file selected';
+          });
+        </script>
+      </body></html>
+    `);
+  });
+
   return app;
 }
 

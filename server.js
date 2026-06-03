@@ -5,6 +5,7 @@ import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
+import path from 'path';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
@@ -3530,6 +3531,135 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
+    handleRouteError(err, req, res);
+  }
+});
+
+// Set input files (upload)
+/**
+ * @openapi
+ * /tabs/{tabId}/set_input_files:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Attach files to a file input element
+ *     description: |
+ *       Programmatically selects files on an `<input type="file">` element via
+ *       Playwright's privileged setInputFiles channel (browsers forbid this
+ *       from page JS for security). File paths must resolve inside the
+ *       configured uploads directory (env `CAMOFOX_UPLOADS_DIR`, defaults to
+ *       `/home/node/cv-uploads`). Pass `ref` from a snapshot (preferred) or a
+ *       CSS `selector` targeting the file input.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, files]
+ *             properties:
+ *               userId: { type: string }
+ *               ref:
+ *                 type: string
+ *                 description: Stable element ref from a snapshot.
+ *               selector:
+ *                 type: string
+ *                 description: CSS selector targeting the file input.
+ *               files:
+ *                 type: array
+ *                 items: { type: string }
+ *                 description: Absolute container paths inside the uploads dir.
+ *     responses:
+ *       200:
+ *         description: Files attached.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok: { type: boolean }
+ *                 files:
+ *                   type: array
+ *                   items: { type: string }
+ *       400:
+ *         description: Bad request (missing fields, path outside uploads dir, unreadable file).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/set_input_files', async (req, res) => {
+  const tabId = req.params.tabId;
+
+  try {
+    const { userId, ref, selector, files } = req.body;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    if (!ref && !selector) {
+      return res.status(400).json({ error: 'ref or selector required' });
+    }
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'files must be a non-empty array of paths' });
+    }
+
+    // Restrict to a single allowlisted directory so this endpoint can't be
+    // turned into an arbitrary-file-exfiltration channel via the browser.
+    const ALLOWED_ROOT = path.resolve(process.env.CAMOFOX_UPLOADS_DIR || '/home/node/cv-uploads');
+    const resolved = [];
+    for (const f of files) {
+      if (typeof f !== 'string') {
+        return res.status(400).json({ error: 'each file must be a string path' });
+      }
+      const abs = path.resolve(f);
+      if (abs !== ALLOWED_ROOT && !abs.startsWith(ALLOWED_ROOT + path.sep)) {
+        return res.status(400).json({ error: `path outside allowed uploads dir (${ALLOWED_ROOT}): ${abs}` });
+      }
+      try {
+        await fs.promises.access(abs, fs.constants.R_OK);
+      } catch {
+        return res.status(400).json({ error: `file not readable: ${abs}` });
+      }
+      resolved.push(abs);
+    }
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    await withTabLock(tabId, async () => {
+      let locator = null;
+      if (ref) {
+        locator = refToLocator(tabState.page, ref, tabState.refs);
+        if (!locator) {
+          log('info', 'auto-refreshing refs before set_input_files', { ref, hadRefs: tabState.refs.size });
+          tabState.refs = await refreshTabRefs(tabState, { reason: 'set_input_files' });
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+        }
+        if (!locator) {
+          const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+          throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+        }
+        await locator.setInputFiles(resolved, { timeout: 10000 });
+      } else {
+        await tabState.page.setInputFiles(selector, resolved, { timeout: 10000 });
+      }
+    });
+
+    pluginEvents.emit('tab:set_input_files', { userId, tabId, files: resolved, ref, selector });
+    res.json({ ok: true, files: resolved });
+  } catch (err) {
+    log('error', 'set_input_files failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
