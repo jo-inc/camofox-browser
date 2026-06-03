@@ -974,6 +974,11 @@ async function launchBrowserInstance() {
     });
 
     try {
+      if (CONFIG.disableDefaultAddons) {
+        log('info', 'excluding default UBO addon from launch', {
+          excludeAddons: ['UBO'],
+        });
+      }
       const options = await launchOptions({
         executable_path: externalCamoufox?.executablePath,
         headless: useVirtualDisplay ? false : true,
@@ -983,6 +988,7 @@ async function launchBrowserInstance() {
         proxy: launchProxy,
         geoip: !!launchProxy,
         virtual_display: vdDisplay,
+        exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
       await pluginEvents.emitAsync('browser:launching', { options });

@@ -49,6 +49,22 @@ describe('loadConfig', () => {
     expect(loadConfig().browserIdleTimeoutMs).toBe(0);
   });
 
+  test('disables default addons when CAMOFOX_DISABLE_DEFAULT_ADDONS is set', () => {
+    delete process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS;
+    expect(loadConfig().disableDefaultAddons).toBe(false);
+
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = '0';
+    expect(loadConfig().disableDefaultAddons).toBe(false);
+
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = '1';
+    expect(loadConfig().disableDefaultAddons).toBe(true);
+
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = 'true';
+    const config = loadConfig();
+    expect(config.disableDefaultAddons).toBe(true);
+    expect(config.serverEnv.CAMOFOX_DISABLE_DEFAULT_ADDONS).toBe('true');
+  });
+
   test('forwards VNC env vars to server subprocess whitelist', () => {
     process.env.ENABLE_VNC = '1';
     process.env.VNC_RESOLUTION = '1280x720';

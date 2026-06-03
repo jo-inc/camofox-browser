@@ -615,6 +615,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |
 | `CAMOUFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
+| `CAMOFOX_DISABLE_DEFAULT_ADDONS` | Set to `1`/`true` to skip downloading and launching the default uBlock Origin (UBO) addon. Useful for deployments where the addons.mozilla.org download is unreliable or unwanted (a failed download otherwise leaves a broken addon cache that blocks startup). | `0` |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
 | `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
