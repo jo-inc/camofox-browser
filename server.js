@@ -1090,6 +1090,7 @@ async function closeSession(userId, session, {
   reason = 'session_closed',
   clearDownloads = true,
   clearLocks = true,
+  exemptLockTabId = null,
 } = {}) {
   if (!session) return;
 
@@ -1098,7 +1099,7 @@ async function closeSession(userId, session, {
   // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
   // (410) instead of messy "Target page closed" (500) errors.
   if (clearLocks) {
-    clearSessionLocks(session);
+    clearSessionLocks(session, exemptLockTabId);
   }
 
   if (clearDownloads) {
@@ -1682,7 +1683,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   const key = normalizeUserId(userId);
   const oldSession = sessions.get(key);
   if (oldSession) {
-    await closeSession(key, oldSession, { reason: 'google_rotate_context', clearDownloads: true, clearLocks: true });
+    await closeSession(key, oldSession, { reason: 'google_rotate_context', clearDownloads: true, clearLocks: true, exemptLockTabId: tabId });
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
@@ -2521,7 +2522,6 @@ app.post('/pressure/cleanup', authMiddleware(), async (req, res) => {
  *             properties:
  *               userId:
  *                 type: string
- *                 description: Session owner.
  *               sessionKey:
  *                 type: string
  *                 description: Tab group identifier.
@@ -2807,7 +2807,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           const key = normalizeUserId(userId);
           const oldSession = sessions.get(key);
           if (oldSession) {
-            await closeSession(key, oldSession, { reason: 'google_blocked_context_rotate', clearDownloads: true, clearLocks: true });
+            await closeSession(key, oldSession, { reason: 'google_blocked_context_rotate', clearDownloads: true, clearLocks: true, exemptLockTabId: tabId });
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
@@ -3356,7 +3356,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       try {
         tabState.refs = await refreshTabRefs(tabState, { reason: 'post_click', timeoutMs: postClickBudget });
       } catch (e) {
-        if (e.message === 'post_click_refs_timeout' || e.message === 'buildRefs_timeout') {
+        if (e.message === 'post_click_timeout' || e.message === 'buildRefs_timeout') {
           log('warn', 'post-click buildRefs timed out, returning without refs', { budget: postClickBudget, elapsed: Date.now() - clickStart });
           tabState.refs = new Map();
         } else {
