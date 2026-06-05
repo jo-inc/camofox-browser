@@ -10,8 +10,6 @@
 #   VNC_PORT        VNC port (default: 5900)
 #   NOVNC_PORT      noVNC websocket port (default: 6080)
 
-# No set -e: the loop must survive transient x11vnc failures (e.g. Xvfb not ready)
-
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_RESOLUTION="${VNC_RESOLUTION:-1920x1080x24}"
@@ -98,6 +96,10 @@ while true; do
     x11vnc $X11VNC_ARGS || true
     sleep 1
     X11VNC_PID=$(pgrep -f "x11vnc.*-display $CURRENT_DISPLAY" | head -1)
+    if [ -z "$X11VNC_PID" ]; then
+      log "x11vnc failed to connect, clearing display for retry"
+      CURRENT_DISPLAY=""
+    fi
     log "x11vnc running (pid=$X11VNC_PID) on DISPLAY=$CURRENT_DISPLAY"
   fi
 
