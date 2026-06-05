@@ -95,7 +95,7 @@ while true; do
     fi
 
     # shellcheck disable=SC2086
-    x11vnc $X11VNC_ARGS
+    x11vnc $X11VNC_ARGS || true
     sleep 1
     X11VNC_PID=$(pgrep -f "x11vnc.*-display $CURRENT_DISPLAY" | head -1)
     log "x11vnc running (pid=$X11VNC_PID) on DISPLAY=$CURRENT_DISPLAY"
