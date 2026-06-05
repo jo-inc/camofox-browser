@@ -10,7 +10,7 @@
 #   VNC_PORT        VNC port (default: 5900)
 #   NOVNC_PORT      noVNC websocket port (default: 6080)
 
-set -e
+# No set -e: the loop must survive transient x11vnc failures (e.g. Xvfb not ready)
 
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
