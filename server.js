@@ -952,7 +952,11 @@ async function launchBrowserInstance() {
     try {
       if (os.platform() === 'linux') {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
+        // camoufox-js >=0.11 made VirtualDisplay.get() async (it resolves to ":<n>").
+        // Without await, vdDisplay is a Promise -> DISPLAY becomes "[object Promise]"
+        // and the browser dies with "cannot open display". Awaiting also lets the
+        // catch below correctly fall back to headless if Xvfb genuinely fails.
+        vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
     } catch (err) {
