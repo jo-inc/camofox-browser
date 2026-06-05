@@ -44,13 +44,36 @@ websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/va
 
 log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
-while true; do
-  # Find Xvfb with our patched resolution
-  FOUND=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
-    /\/Xvfb :[0-9]+/ && index($0, res) {
+# Detect Xvfb display number from /tmp/.X*-lock or ps args
+detect_display() {
+  # First try: Xvfb with hardcoded :N in command line
+  local disp
+  disp=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
+    /\/Xvfb / && index($0, res) {
       for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; exit }
     }
   ' | head -1)
+  [ -n "$disp" ] && echo "$disp" && return
+
+  # Second try: Xvfb in -displayfd mode, detect from lock files
+  local lockfile
+  lockfile=$(ls /tmp/.X*-lock 2>/dev/null | head -1)
+  if [ -n "$lockfile" ]; then
+    local num
+    num=$(echo "$lockfile" | grep -o 'X[0-9]*' | tr -d 'X')
+    [ -n "$num" ] && echo ":$num" && return
+  fi
+
+  # Third try: any /tmp/.X* socket or file
+  local xsock
+  xsock=$(ls /tmp/.X* 2>/dev/null | grep -o 'X[0-9]*$' | head -1 | tr -d 'X')
+  [ -n "$xsock" ] && echo ":$xsock" && return
+
+  echo ""
+}
+
+while true; do
+  FOUND=$(detect_display)
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
     # New or changed display -- (re)attach x11vnc
