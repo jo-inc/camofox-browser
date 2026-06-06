@@ -5,3 +5,6 @@ python3-websockify
 # Utilities for display detection
 net-tools
 procps
+# Minimal window manager: maximizes the browser window to fill the Xvfb root
+# (no WM => windows sit at Camoufox's spawn size and leave a black border in VNC)
+matchbox-window-manager
