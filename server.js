@@ -1147,6 +1147,17 @@ async function getSession(userId, { trace = false } = {}) {
         await closeSession(key, session, { reason: 'dead_context', clearDownloads: true, clearLocks: true });
         session = null;
       }
+      // Detect zombie CDP connections — sync pages() may pass even when
+      // newPage() would hang. If no successful navigation in 120s, the
+      // context is likely stale and should be recreated proactively.
+      if (session && Date.now() - healthState.lastSuccessfulNav > 120_000) {
+        log('warn', 'session context possibly stale, recreating', {
+          userId: key,
+          lastNavAgeMs: Date.now() - healthState.lastSuccessfulNav,
+        });
+        await closeSession(key, session, { reason: 'stale_context', clearDownloads: true, clearLocks: true });
+        session = null;
+      }
     }
   }
   
