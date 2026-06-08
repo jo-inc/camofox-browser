@@ -114,16 +114,39 @@ make up
 # Stop and remove the container
 make down
 
-# Force a clean rebuild (e.g. after upgrading VERSION/RELEASE)
+# Force a clean rebuild (e.g. after switching CHANNEL)
 make reset
 
 # Just download binaries (without building)
 make fetch
 
-# Override arch or version explicitly
+# Override arch explicitly
 make up ARCH=x86_64
-make up VERSION=135.0.1 RELEASE=beta.24
 ```
+
+#### Camoufox release channel
+
+The exact Camoufox version is no longer pinned in the build files — it's resolved
+at fetch time (`scripts/resolve-camoufox.js`) by picking the newest upstream asset
+for the selected **channel** and architecture. The resolved version is recorded in
+the image's `version.json` for traceability.
+
+```bash
+make up                 # CHANNEL=beta  (default, stable)
+make up CHANNEL=alpha   # latest alpha line (e.g. v150)
+```
+
+`CHANNEL` can also be set via a `CHANNEL=` line in a local `.env` file (a command-line
+or environment value takes precedence). Artifacts and image tags are namespaced by
+channel (`camofox-browser:beta-x86_64`, `camofox-browser:alpha-x86_64`), so switching
+channels never reuses the wrong cached binary.
+
+> **Caveat — alpha is for testing.** The bundled `camoufox-js` driver enforces a
+> supported release range (`>=beta.19, <1`) and sorts `alpha.*` below it. The alpha
+> channel works around this by declaring a passing `beta.N` string in `version.json`
+> while shipping the real alpha binary. This bypasses the version guard, so the
+> anti-detection config baked into `camoufox-js` may apply incompletely against a much
+> newer browser. Keep production on `beta`.
 
 #### Windows
 
@@ -148,6 +171,9 @@ On Windows, `make` is not available. Use the included `build.ps1` PowerShell scr
 # Override architecture
 .\build.ps1 up -Arch x86_64
 .\build.ps1 up -Arch aarch64
+
+# Select the Camoufox release channel (default: beta; also reads CHANNEL= from .env)
+.\build.ps1 up -Channel alpha
 ```
 
 > **Note:** PowerShell 7+ (`pwsh`) is recommended but `powershell.exe` (Windows PowerShell 5.1) also works. The script requires Docker Desktop for Windows with the WSL2 backend.

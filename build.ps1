@@ -18,11 +18,10 @@
 .PARAMETER Arch
     Target architecture: x86_64 or aarch64 (default: x86_64).
 
-.PARAMETER CamoufoxVersion
-    Camoufox version (default: 135.0.1).
-
-.PARAMETER CamoufoxRelease
-    Camoufox release channel (default: beta.24).
+.PARAMETER Channel
+    Camoufox release channel: beta (stable) or alpha (latest, e.g. v150).
+    The exact version/release is resolved at fetch time from the GitHub
+    releases API by scripts/resolve-camoufox.js (default: beta).
 
 .PARAMETER ContainerName
     Docker container name (default: camofox-browser).
@@ -43,8 +42,9 @@ param(
     [ValidateSet('x86_64', 'aarch64')]
     [string]$Arch = 'x86_64',
 
-    [string]$CamoufoxVersion = '135.0.1',
-    [string]$CamoufoxRelease = 'beta.24',
+    [ValidateSet('beta', 'alpha')]
+    [string]$Channel = 'beta',
+
     [string]$ContainerName = 'camofox-browser',
     [int]$HostPort = 9377
 )
@@ -52,9 +52,20 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSCommandPath
 $DistDir = Join-Path $ProjectRoot 'dist'
-$CamoufoxZip = Join-Path $DistDir "camoufox-$Arch.zip"
+
+# If -Channel wasn't passed explicitly, allow a `CHANNEL=` line in .env to set it.
+if (-not $PSBoundParameters.ContainsKey('Channel')) {
+    $envFile = Join-Path $ProjectRoot '.env'
+    if (Test-Path $envFile) {
+        $match = Select-String -Path $envFile -Pattern '^CHANNEL=(.+)$' | Select-Object -Last 1
+        if ($match) { $Channel = $match.Matches[0].Groups[1].Value.Trim() }
+    }
+}
+
+# Artifacts namespaced by channel so switching channels never reuses the wrong cache.
+$CamoufoxZip = Join-Path $DistDir "camoufox-$Channel-$Arch.zip"
 $YtDlpBin = Join-Path $DistDir "yt-dlp-$Arch"
-$ImageTag = "camofox-browser:$CamoufoxVersion-$Arch"
+$ImageTag = "camofox-browser:$Channel-$Arch"
 $ContainerPort = 9377
 
 # Map architecture to upstream release filenames
@@ -66,8 +77,23 @@ if ($Arch -eq 'aarch64') {
     $YtDlpSuffix = ''
 }
 
-$CamoufoxUrl = "https://github.com/daijro/camoufox/releases/download/v$CamoufoxVersion-$CamoufoxRelease/camoufox-$CamoufoxVersion-$CamoufoxRelease-lin.$CamoufoxArch.zip"
 $YtDlpUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux$YtDlpSuffix"
+
+# Resolve the latest Camoufox release for this channel + arch. Populates the
+# script-scoped $CamoufoxVersion / $CamoufoxRelease / $CamoufoxDeclaredRelease /
+# $CamoufoxUrl used by fetch + build. Network call (GitHub API).
+function Resolve-Camoufox {
+    Write-Step "Resolving latest Camoufox ($Channel, $CamoufoxArch)..."
+    $resolverPath = Join-Path $ProjectRoot 'scripts/resolve-camoufox.js'
+    $json = node $resolverPath --channel $Channel --arch $CamoufoxArch --json
+    if ($LASTEXITCODE -ne 0) { throw "resolve-camoufox.js failed" }
+    $info = $json | ConvertFrom-Json
+    $script:CamoufoxVersion = $info.version
+    $script:CamoufoxRelease = $info.release
+    $script:CamoufoxDeclaredRelease = $info.declaredRelease
+    $script:CamoufoxUrl = $info.url
+    Write-Host "  Resolved $($info.version)-$($info.release) (declared $($info.declaredRelease))"
+}
 
 function Write-Step {
     param([string]$Message)
@@ -77,6 +103,9 @@ function Write-Step {
 function Invoke-Fetch {
     Write-Step "Creating dist directory..."
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
+
+    # Resolve version/release/url for this channel + arch (sets script vars).
+    Resolve-Camoufox
 
     if (-not (Test-Path $CamoufoxZip)) {
         Write-Step "Downloading Camoufox browser ($CamoufoxArch)..."
@@ -103,8 +132,10 @@ function Invoke-Build {
     Write-Step "Building Docker image: $ImageTag"
     docker build `
         --build-arg "ARCH=$Arch" `
+        --build-arg "CHANNEL=$Channel" `
         --build-arg "CAMOUFOX_VERSION=$CamoufoxVersion" `
         --build-arg "CAMOUFOX_RELEASE=$CamoufoxRelease" `
+        --build-arg "CAMOUFOX_DECLARED_RELEASE=$CamoufoxDeclaredRelease" `
         -t $ImageTag `
         -f (Join-Path $ProjectRoot 'Dockerfile') `
         $ProjectRoot

@@ -3,8 +3,9 @@
 
 FROM node:20-slim
 
-ARG CAMOUFOX_VERSION=135.0.1
-ARG CAMOUFOX_RELEASE=beta.24
+# Release channel: beta (stable) or alpha (latest, e.g. v150). The exact
+# version/release is resolved during build by scripts/resolve-camoufox.js.
+ARG CHANNEL=beta
 ARG TARGETARCH
 
 # Install dependencies for Camoufox (Firefox-based)
@@ -42,6 +43,13 @@ RUN apt-get update && apt-get install -y \
     python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /app
+
+# Resolver is needed before npm install so we can pick the latest Camoufox asset
+# for this channel + arch. (Unauthenticated GitHub API: ~1 call per platform —
+# well under the 60/hr limit. Set GITHUB_TOKEN in the build env to raise it.)
+COPY scripts/resolve-camoufox.js ./scripts/resolve-camoufox.js
+
 # Download and install Camoufox
 RUN set -eux; \
     case "${TARGETARCH}" in \
@@ -49,19 +57,18 @@ RUN set -eux; \
       arm64) CAMOUFOX_ARCH="arm64";   YTDLP_SUFFIX="_aarch64" ;; \
       *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac; \
+    eval "$(node scripts/resolve-camoufox.js --channel "${CHANNEL}" --arch "${CAMOUFOX_ARCH}")"; \
+    echo "Resolved Camoufox ${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE} (declared ${CAMOUFOX_DECLARED_RELEASE}) for ${CAMOUFOX_ARCH}"; \
     mkdir -p /root/.cache/camoufox; \
-    curl -fSL "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
-      -o /tmp/camoufox.zip; \
+    curl -fSL "${CAMOUFOX_URL}" -o /tmp/camoufox.zip; \
     (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true); \
     chmod -R 755 /root/.cache/camoufox; \
-    echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json; \
+    echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_DECLARED_RELEASE}\"}" > /root/.cache/camoufox/version.json; \
     test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"; \
     rm /tmp/camoufox.zip; \
     curl -fSL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux${YTDLP_SUFFIX}" \
       -o /usr/local/bin/yt-dlp; \
     chmod 755 /usr/local/bin/yt-dlp
-
-WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/

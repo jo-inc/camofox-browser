@@ -1,9 +1,15 @@
 FROM node:22-slim AS camofox-browser
 
-# Pinned Camoufox version for reproducible builds
-# Update these when upgrading Camoufox
+# Camoufox version/release are resolved at fetch time by the Makefile/build.ps1
+# (scripts/resolve-camoufox.js) and passed in as build-args. Defaults match the
+# stable beta channel so a bare `docker build` still works.
+# CAMOUFOX_DECLARED_RELEASE is what gets written to version.json for camoufox-js's
+# launch guard; for the alpha channel it differs from the real CAMOUFOX_RELEASE
+# (alpha builds are declared as a passing beta.N — see scripts/resolve-camoufox.js).
+ARG CHANNEL=beta
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
+ARG CAMOUFOX_DECLARED_RELEASE=beta.24
 ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
@@ -46,9 +52,9 @@ RUN apt-get update && apt-get install -y \
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
 RUN --mount=type=bind,source=dist,target=/dist \
     mkdir -p /root/.cache/camoufox \
-    && (unzip -q /dist/camoufox-${ARCH}.zip -d /root/.cache/camoufox || true) \
+    && (unzip -q /dist/camoufox-${CHANNEL}-${ARCH}.zip -d /root/.cache/camoufox || true) \
     && chmod -R 755 /root/.cache/camoufox \
-    && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
+    && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_DECLARED_RELEASE}\"}" > /root/.cache/camoufox/version.json \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
 
 # Install yt-dlp for YouTube transcript extraction (no browser needed)

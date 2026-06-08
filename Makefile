@@ -1,5 +1,10 @@
-VERSION  ?= 135.0.1
-RELEASE  ?= beta.24
+# Release channel: beta (stable, matches camoufox-js) or alpha (latest, e.g. v150).
+# The exact version/release is resolved at fetch time by scripts/resolve-camoufox.js,
+# which picks the newest upstream asset for this channel + arch — no manual pin.
+# Resolution order: `CHANNEL=...` on the command line / environment wins, else a
+# `CHANNEL=` line in a local .env file, else the default below.
+DOTENV_CHANNEL := $(shell [ -f .env ] && grep -E '^CHANNEL=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+CHANNEL  ?= $(if $(DOTENV_CHANNEL),$(DOTENV_CHANNEL),beta)
 
 # Auto-detect host architecture; map arm64 (macOS) → aarch64
 UNAME_ARCH := $(shell uname -m)
@@ -18,21 +23,26 @@ else
   YTDLP_ARCH    :=
 endif
 
-IMAGE        := camofox-browser:$(VERSION)-$(ARCH)
-CAMOUFOX_ZIP := dist/camoufox-$(ARCH).zip
-YTDLP_BIN    := dist/yt-dlp-$(ARCH)
+# Artifacts are namespaced by channel so switching channels never reuses the
+# wrong cached binary.
+IMAGE         := camofox-browser:$(CHANNEL)-$(ARCH)
+CAMOUFOX_ZIP  := dist/camoufox-$(CHANNEL)-$(ARCH).zip
+CAMOUFOX_META := dist/camoufox-$(CHANNEL)-$(ARCH).env
+YTDLP_BIN     := dist/yt-dlp-$(ARCH)
 
-CAMOUFOX_URL := https://github.com/daijro/camoufox/releases/download/v$(VERSION)-$(RELEASE)/camoufox-$(VERSION)-$(RELEASE)-lin.$(CAMOUFOX_ARCH).zip
 YTDLP_URL    := https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux$(YTDLP_ARCH)
 
 .PHONY: build build-arm64 build-x86 fetch fetch-arm64 fetch-x86 up down reset clean
 
 ## Build the Docker image for the current ARCH (default: x86_64)
 build: fetch
+	. ./$(CAMOUFOX_META); \
 	docker build --no-cache \
 	  --build-arg ARCH=$(ARCH) \
-	  --build-arg CAMOUFOX_VERSION=$(VERSION) \
-	  --build-arg CAMOUFOX_RELEASE=$(RELEASE) \
+	  --build-arg CHANNEL=$(CHANNEL) \
+	  --build-arg CAMOUFOX_VERSION=$$CAMOUFOX_VERSION \
+	  --build-arg CAMOUFOX_RELEASE=$$CAMOUFOX_RELEASE \
+	  --build-arg CAMOUFOX_DECLARED_RELEASE=$$CAMOUFOX_DECLARED_RELEASE \
 	  -t $(IMAGE) .
 
 ## Convenience targets
@@ -51,9 +61,17 @@ fetch-arm64:
 fetch-x86:
 	$(MAKE) fetch ARCH=x86_64
 
-$(CAMOUFOX_ZIP):
+# Resolve the latest Camoufox release for this channel + arch into a sidecar
+# .env file (CAMOUFOX_VERSION / CAMOUFOX_RELEASE / CAMOUFOX_DECLARED_RELEASE /
+# CAMOUFOX_URL) that the zip download and `build` build-args both consume.
+$(CAMOUFOX_META):
 	mkdir -p dist
-	curl -fSL "$(CAMOUFOX_URL)" -o $@
+	node scripts/resolve-camoufox.js --channel $(CHANNEL) --arch $(CAMOUFOX_ARCH) > $@
+
+$(CAMOUFOX_ZIP): $(CAMOUFOX_META)
+	. ./$(CAMOUFOX_META); \
+	echo "Resolved Camoufox $$CAMOUFOX_VERSION-$$CAMOUFOX_RELEASE (declared $$CAMOUFOX_DECLARED_RELEASE) for $(CAMOUFOX_ARCH)"; \
+	curl -fSL "$$CAMOUFOX_URL" -o $@
 
 $(YTDLP_BIN):
 	mkdir -p dist

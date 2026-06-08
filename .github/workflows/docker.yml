@@ -8,6 +8,14 @@ on:
       version:
         description: 'Version tag (e.g. 1.8.0)'
         required: true
+      channel:
+        description: 'Camoufox release channel'
+        required: false
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - alpha
 
 concurrency:
   group: docker-publish
@@ -46,6 +54,8 @@ jobs:
           file: Dockerfile.ci
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            CHANNEL=${{ github.event.inputs.channel || 'beta' }}
           tags: |
             ghcr.io/jo-inc/camofox-browser:${{ env.VERSION }}
             ghcr.io/jo-inc/camofox-browser:latest
