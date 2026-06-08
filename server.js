@@ -952,7 +952,11 @@ async function launchBrowserInstance() {
     try {
       if (os.platform() === 'linux') {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
+        // camoufox-js >=0.x uses -displayfd + Promise-based get() so the kernel
+        // picks a free display number atomically. We MUST await it; otherwise
+        // vdDisplay becomes a Promise object, JSON.stringify renders it as "{}"
+        // and the camoufox launch fails with "Error: cannot open display".
+        vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
     } catch (err) {
