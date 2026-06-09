@@ -3228,7 +3228,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
   
   try {
-    const { userId, ref, selector } = req.body;
+    const { userId, ref, selector, coordinates } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
@@ -3238,7 +3238,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
-    if (!ref && !selector) {
+    if (!ref && !selector && !coordinates) {
       return res.status(400).json({ error: 'ref or selector required' });
     }
     
@@ -3307,7 +3307,19 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         }
       };
       
-      if (ref) {
+      if (coordinates) {
+        const x = Number(coordinates.x);
+        const y = Number(coordinates.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return res.status(400).json({ error: 'valid coordinates required' });
+        }
+        await tabState.page.mouse.move(x, y);
+        await tabState.page.waitForTimeout(50);
+        await tabState.page.mouse.down();
+        await tabState.page.waitForTimeout(50);
+        await tabState.page.mouse.up();
+        log('info', 'coordinate mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0) });
+      } else if (ref) {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
           // Use tight timeout (4s max) to leave budget for click + post-click buildRefs
@@ -3392,6 +3404,167 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
+    handleRouteError(err, req, res);
+  }
+});
+
+// Upload file into an input[type=file] or trigger a file chooser from a ref/selector.
+/**
+ * @openapi
+ * /tabs/{tabId}/upload:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Upload files through a file input or file chooser
+ *     description: Sets files on an input[type=file] or triggers a file chooser from an element ref, CSS selector, or coordinates.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               filePath:
+ *                 type: string
+ *                 description: Single local file path to upload.
+ *               files:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: One or more local file paths to upload.
+ *               ref:
+ *                 type: string
+ *                 description: Element ref ID that opens a file chooser or identifies a file input.
+ *               selector:
+ *                 type: string
+ *                 description: CSS selector that opens a file chooser or identifies a file input.
+ *               coordinates:
+ *                 type: object
+ *                 properties:
+ *                   x:
+ *                     type: number
+ *                   y:
+ *                     type: number
+ *     responses:
+ *       200:
+ *         description: Upload result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Bad request.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/upload', async (req, res) => {
+  const tabId = req.params.tabId;
+
+  try {
+    const { userId, ref, selector, coordinates, filePath, files } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const fileList = Array.isArray(files) ? files : filePath ? [filePath] : [];
+    if (fileList.length === 0) return res.status(400).json({ error: 'filePath or files required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      let fileSet = false;
+
+      if (ref || selector || coordinates) {
+        let locator = null;
+        if (coordinates) {
+          const x = Number(coordinates.x);
+          const y = Number(coordinates.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return res.status(400).json({ error: 'valid coordinates required' });
+          }
+          const chooserPromise = tabState.page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+          await tabState.page.mouse.move(x, y);
+          await tabState.page.waitForTimeout(50);
+          await tabState.page.mouse.down();
+          await tabState.page.waitForTimeout(50);
+          await tabState.page.mouse.up();
+          const chooser = await chooserPromise;
+          if (chooser) {
+            await chooser.setFiles(fileList);
+            fileSet = true;
+          }
+        } else if (ref) {
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+          if (!locator) {
+            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_upload' });
+            locator = refToLocator(tabState.page, ref, tabState.refs);
+          }
+          if (!locator) {
+            const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+            throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+          }
+        } else {
+          locator = tabState.page.locator(selector);
+        }
+
+        if (locator) {
+          const chooserPromise = tabState.page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+          await locator.click({ timeout: 5000 }).catch(async (err) => {
+            if (err.message?.includes('intercepts pointer events') || err.message?.toLowerCase().includes('timeout')) {
+              await locator.click({ timeout: 5000, force: true });
+            } else {
+              throw err;
+            }
+          });
+          const chooser = await chooserPromise;
+          if (chooser) {
+            await chooser.setFiles(fileList);
+            fileSet = true;
+          }
+        }
+      }
+
+      if (!fileSet) {
+        const inputs = tabState.page.locator('input[type="file"]');
+        const count = await inputs.count().catch(() => 0);
+        if (count > 0) {
+          await inputs.nth(count - 1).setInputFiles(fileList);
+          fileSet = true;
+        }
+      }
+
+      if (!fileSet) {
+        throw new Error('file input or file chooser not available');
+      }
+
+      await tabState.page.waitForTimeout(700);
+      tabState.lastSnapshot = null;
+      tabState.refs = new Map();
+      return { ok: true, files: fileList.length, url: tabState.page.url() };
+    }));
+
+    log('info', 'uploaded file', { reqId: req.reqId, tabId, files: result.files, url: result.url });
+    pluginEvents.emit('tab:upload', { userId: req.body.userId, tabId, ref: req.body.ref, selector: req.body.selector, files: result.files });
+    res.json(result);
+  } catch (err) {
+    log('error', 'upload failed', { reqId: req.reqId, tabId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
