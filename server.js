@@ -175,6 +175,14 @@ const IFRAME_SKIP_PATTERNS = [
   /web-pixel/i, /analytics/i, /tracking/i, /gtm/i, /facebook/i,
   /doubleclick/i, /google.*tag/i, /hotjar/i, /segment/i, /sentry/i,
   /recaptcha/i, /gstatic/i, /app-bridge/i, /extensions\.shopifycdn/i,
+  // Bot-detection / anti-automation frames. These are short-lived and frequently
+  // DETACH mid-ariaSnapshot, which hangs buildRefs until the handler timeout (30s)
+  // and surfaces as a spurious 500 on the click/snapshot that triggered the rebuild.
+  // e.g. LinkedIn injects PerimeterX (px-iframe-*/px-captcha) on authenticated
+  // actions such as the connection-invite modal, so skipping these is required for
+  // those write flows to work.
+  /px-iframe/i, /px-captcha/i, /perimeterx/i, /\bcaptcha\b/i, /hcaptcha/i,
+  /arkose/i, /funcaptcha/i, /datadome/i,
 ];
 const MAX_IFRAMES_TO_PROCESS = 8;
 const IFRAME_SNAPSHOT_TIMEOUT_MS = 3000;
