@@ -3248,7 +3248,23 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
       // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
       const dispatchMouseSequence = async (locator) => {
-        const box = await locator.boundingBox();
+        // boundingBox() with no timeout inherits Playwright's 30s default, which
+        // silently eats the entire handler budget when the element detached after
+        // the failed click attempt (the page changed under us). Bound it to the
+        // remaining budget (capped at 3s) so the route fails fast with an
+        // actionable 422 instead of blowing HANDLER_TIMEOUT_MS into a 500.
+        // NOTE: the message deliberately avoids the 'timed out after' phrase so
+        // isTimeoutError() doesn't classify a detached element as a navigation
+        // timeout and destroy the whole session in handleRouteError().
+        const bboxTimeout = Math.max(500, Math.min(3000, remainingBudget()));
+        let box;
+        try {
+          box = await locator.boundingBox({ timeout: bboxTimeout });
+        } catch (e) {
+          const detachedErr = new Error(`Element not actionable: no bounding box within ${bboxTimeout}ms (element likely detached after page change). Call snapshot to refresh refs and retry.`);
+          detachedErr.statusCode = 422;
+          throw detachedErr;
+        }
         if (!box) throw new Error('Element not visible (no bounding box)');
         
         const x = box.x + box.width / 2;
