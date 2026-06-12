@@ -3674,6 +3674,237 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
   }
 });
 
+// Element-scoped mouse wheel (real Playwright wheel event at specific coordinates).
+// Use this when page-level /scroll doesn't reach a nested scrollable container
+// (e.g. virtualised feeds with anti-automation guards).
+/**
+ * @openapi
+ * /tabs/{tabId}/mouse-wheel:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Dispatch a real wheel event at element or coordinate
+ *     description: >
+ *       Moves the mouse to a target (resolved from a ref's bounding-box centre,
+ *       an explicit (x, y) pair, or the viewport centre) and dispatches a real
+ *       Playwright wheel event. Useful for nested scrollable containers that
+ *       ignore programmatic scrollTop or JS-dispatched WheelEvents.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               ref:
+ *                 type: string
+ *                 description: Element ref (e.g. "e22"). Wheel is dispatched at its bounding-box centre.
+ *               x:
+ *                 type: number
+ *                 description: Explicit x coordinate (ignored if ref is set).
+ *               y:
+ *                 type: number
+ *                 description: Explicit y coordinate (ignored if ref is set).
+ *               deltaX:
+ *                 type: number
+ *                 default: 0
+ *               deltaY:
+ *                 type: number
+ *                 default: 0
+ *     responses:
+ *       200:
+ *         description: Wheel dispatched.
+ *       400:
+ *         description: Missing userId or both deltas are zero.
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
+  try {
+    const { userId, ref, x, y, deltaX = 0, deltaY = 0 } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!deltaX && !deltaY) return res.status(400).json({ error: 'deltaX or deltaY required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withTabLock(req.params.tabId, async () => {
+      let targetX, targetY;
+      if (ref) {
+        let locator = refToLocator(tabState.page, ref, tabState.refs);
+        if (!locator) {
+          try {
+            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_wheel', timeoutMs: 4000 });
+          } catch (e) {
+            if (e.message !== 'pre_click_refs_timeout' && e.message !== 'buildRefs_timeout') throw e;
+          }
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+        }
+        if (!locator) {
+          const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+          throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+        }
+        const box = await locator.boundingBox();
+        if (!box) throw new Error('Element not visible (no bounding box)');
+        targetX = box.x + box.width / 2;
+        targetY = box.y + box.height / 2;
+      } else if (typeof x === 'number' && typeof y === 'number') {
+        targetX = x;
+        targetY = y;
+      } else {
+        const vs = tabState.page.viewportSize();
+        targetX = vs.width / 2;
+        targetY = vs.height / 2;
+      }
+
+      await tabState.page.mouse.move(targetX, targetY);
+      await tabState.page.waitForTimeout(50);
+      await tabState.page.mouse.wheel(deltaX, deltaY);
+      await tabState.page.waitForTimeout(300);
+
+      return { x: Math.round(targetX), y: Math.round(targetY) };
+    });
+
+    pluginEvents.emit('tab:mouse-wheel', { userId, tabId: req.params.tabId, ref, deltaX, deltaY, ...result });
+    res.json({ ok: true, ...result, deltaX, deltaY });
+  } catch (err) {
+    log('error', 'mouse-wheel failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Network response capture: attaches a Playwright page.on("response") listener for the
+// requested duration and returns all matching responses. Operates at the browser network
+// layer, bypassing any in-page JS, Service Worker, or closure-cached fetch references.
+app.post('/tabs/:tabId/capture-network', authMiddleware(), express.json({ limit: '64kb' }), async (req, res) => {
+  try {
+    const { userId, urlPattern = 'graphql', durationMs = 15000, maxBodyBytes = 1000000, maxCaptures = 100 } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const re = new RegExp(urlPattern, 'i');
+    const captures = [];
+    const handler = async (response) => {
+      try {
+        const url = response.url();
+        if (!re.test(url)) return;
+        if (captures.length >= maxCaptures) return;
+        const status = response.status();
+        let body = '';
+        try { body = await response.text(); } catch (e) { body = `__BODY_ERROR__:${e.message}`; }
+        if (body.length > maxBodyBytes) body = body.slice(0, maxBodyBytes) + '__TRUNCATED__';
+        captures.push({ url, status, len: body.length, body });
+      } catch (e) {
+        captures.push({ err: e.message });
+      }
+    };
+    tabState.page.on('response', handler);
+    await new Promise(r => setTimeout(r, Math.min(durationMs, 60000)));
+    tabState.page.off('response', handler);
+
+    pluginEvents.emit('tab:capture-network', { userId, tabId: req.params.tabId, captureCount: captures.length });
+    res.json({ ok: true, captureCount: captures.length, captures });
+  } catch (err) {
+    log('error', 'capture-network failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Network request capture: attaches a Playwright page.on("request") listener for the
+// requested duration and returns matching requests with their POST body + headers.
+// Operates at the browser network layer, so it sees requests even when in-page hooks
+// on window.fetch / XMLHttpRequest are bypassed (e.g. when the bundle captured the
+// original references in a closure before any user JS could run).
+app.post('/tabs/:tabId/capture-requests', authMiddleware(), express.json({ limit: '64kb' }), async (req, res) => {
+  try {
+    const { userId, urlPattern = 'graphql', durationMs = 15000, maxBodyBytes = 200000, maxCaptures = 100, includeHeaders = true } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const re = new RegExp(urlPattern, 'i');
+    const captures = [];
+    const handler = (request) => {
+      try {
+        const url = request.url();
+        if (!re.test(url)) return;
+        if (captures.length >= maxCaptures) return;
+        const method = request.method();
+        let body = request.postData() || '';
+        if (body.length > maxBodyBytes) body = body.slice(0, maxBodyBytes) + '__TRUNCATED__';
+        const headers = includeHeaders ? request.headers() : {};
+        captures.push({ url, method, len: body.length, body, headers });
+      } catch (e) {
+        captures.push({ err: e.message });
+      }
+    };
+    tabState.page.on('request', handler);
+    await new Promise(r => setTimeout(r, Math.min(durationMs, 60000)));
+    tabState.page.off('request', handler);
+
+    pluginEvents.emit('tab:capture-requests', { userId, tabId: req.params.tabId, captureCount: captures.length });
+    res.json({ ok: true, captureCount: captures.length, captures });
+  } catch (err) {
+    log('error', 'capture-requests failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Persistent init script that runs before every navigation in the tab's page context.
+// Useful for installing fetch/XHR hooks that must catch the very first request after
+// a full-page reload, where evaluate() injection arrives too late.
+app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const { userId, script } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (typeof script !== 'string' || !script.trim()) return res.status(400).json({ error: 'script (string) required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    await withTabLock(req.params.tabId, async () => {
+      await tabState.page.addInitScript({ content: script });
+    });
+
+    pluginEvents.emit('tab:init-script', { userId, tabId: req.params.tabId, scriptLen: script.length });
+    res.json({ ok: true, scriptLen: script.length });
+  } catch (err) {
+    log('error', 'init-script failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Viewport
 /**
  * @openapi
