@@ -137,6 +137,16 @@ describe('OpenAPI spec', () => {
     expect(createTab.requestBody.content['application/json']).toBeDefined();
   });
 
+  test('click route documents viewport coordinate clicks', () => {
+    const click = spec.paths['/tabs/{tabId}/click']?.post;
+    const properties = click.requestBody.content['application/json'].schema.properties;
+
+    expect(properties.x.type).toBe('number');
+    expect(properties.y.type).toBe('number');
+    expect(properties.coordinates.properties.x.type).toBe('number');
+    expect(properties.coordinates.properties.y.type).toBe('number');
+  });
+
   test('legacy routes are marked deprecated', () => {
     const legacyPaths = {
       '/act': 'post',

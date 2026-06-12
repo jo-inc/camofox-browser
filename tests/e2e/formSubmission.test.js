@@ -73,6 +73,28 @@ describe('Form Submission', () => {
       await client.cleanup();
     }
   });
+
+  test('click button by viewport coordinates', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const { tabId } = await client.createTab(`${testSiteUrl}/click`);
+      const { result } = await client.request('POST', `/tabs/${tabId}/evaluate`, {
+        userId: client.userId,
+        expression: `(() => {
+          const rect = document.getElementById('clickMe').getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        })()`,
+      });
+
+      await client.click(tabId, { x: result.x, y: result.y });
+
+      const snapshot = await client.waitForSnapshotContains(tabId, 'Button was clicked!');
+      expect(snapshot.snapshot).toContain('Button was clicked!');
+    } finally {
+      await client.cleanup();
+    }
+  });
   
   test('click using ref', async () => {
     const client = createClient(serverUrl);

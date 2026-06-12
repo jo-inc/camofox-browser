@@ -268,13 +268,16 @@ export default function register(api: PluginApi) {
 
   api.registerTool((ctx: ToolContext) => ({
     name: "camofox_click",
-    description: "Click an element in a Camoufox tab by ref (e.g., e1) or CSS selector.",
+    description: "Click an element in a Camoufox tab by ref, CSS selector, or viewport coordinates.",
     parameters: {
       type: "object",
       properties: {
         tabId: { type: "string", description: "Tab identifier" },
         ref: { type: "string", description: "Element ref from snapshot (e.g., e1)" },
         selector: { type: "string", description: "CSS selector (alternative to ref)" },
+        x: { type: "number", description: "Viewport x coordinate for raw mouse clicks" },
+        y: { type: "number", description: "Viewport y coordinate for raw mouse clicks" },
+        doubleClick: { type: "boolean", description: "Click twice instead of once" },
       },
       required: ["tabId"],
     },
