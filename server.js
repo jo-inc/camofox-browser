@@ -2284,6 +2284,38 @@ function refToLocator(page, ref, refs) {
   return locator;
 }
 
+/**
+ * Resolve each ref to its bounding box on the page.
+ * Returns an array of { refId, role, name, x, y, width, height } objects.
+ * Skips refs whose elements are not currently visible.
+ */
+async function getRefAnnotations(page, refs) {
+  const annotations = [];
+  if (!page || page.isClosed() || !refs || refs.size === 0) return annotations;
+
+  for (const [refId, info] of refs) {
+    try {
+      const locator = refToLocator(page, refId, refs);
+      if (!locator) continue;
+      const box = await locator.boundingBox();
+      if (box && box.width > 0 && box.height > 0) {
+        annotations.push({
+          refId,
+          role: info.role,
+          name: info.name,
+          x: Math.round(box.x),
+          y: Math.round(box.y),
+          width: Math.round(box.width),
+          height: Math.round(box.height),
+        });
+      }
+    } catch {
+      // Element may have disappeared — skip silently
+    }
+  }
+  return annotations;
+}
+
 async function refreshTabRefs(tabState, options = {}) {
   const {
     reason = 'refresh',
@@ -2984,6 +3016,9 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         const pngBuffer = await tabState.page.screenshot({ type: 'png' });
         response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
       }
+      if (req.query.annotateScreenshot === 'true') {
+        response.screenshotAnnotations = await getRefAnnotations(tabState.page, tabState.refs);
+      }
       log('info', 'snapshot (cached offset)', { reqId: req.reqId, tabId: req.params.tabId, offset, totalChars: win.totalChars });
       return res.json(response);
     }
@@ -3030,6 +3065,9 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         if (req.query.includeScreenshot === 'true') {
           const pngBuffer = await tabState.page.screenshot({ type: 'png' });
           response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
+        }
+        if (req.query.annotateScreenshot === 'true') {
+          response.screenshotAnnotations = await getRefAnnotations(tabState.page, tabState.refs);
         }
         return response;
       }
@@ -3089,12 +3127,15 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
         const pngBuffer = await tabState.page.screenshot({ type: 'png' });
         response.screenshot = { data: pngBuffer.toString('base64'), mimeType: 'image/png' };
       }
+      if (req.query.annotateScreenshot === 'true') {
+        response.screenshotAnnotations = await getRefAnnotations(tabState.page, tabState.refs);
+      }
 
       return response;
     })(), requestTimeoutMs(), 'snapshot'));
 
     pluginEvents.emit('tab:snapshot', { userId: req.query.userId, tabId: req.params.tabId, snapshot: result.snapshot });
-    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot, truncated: result.truncated });
+    log('info', 'snapshot', { reqId: req.reqId, tabId: req.params.tabId, url: result.url, snapshotLen: result.snapshot?.length, refsCount: result.refsCount, hasScreenshot: !!result.screenshot, hasAnnotations: !!result.screenshotAnnotations, truncated: result.truncated });
     res.json(result);
   } catch (err) {
     log('error', 'snapshot failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
