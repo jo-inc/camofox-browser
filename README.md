@@ -25,6 +25,9 @@
 git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
 npm install && npm start
 # -> http://localhost:9377
+
+[![Listed on TakoAPI](https://img.shields.io/badge/Listed%20on-TakoAPI-7c3aed)](https://takoapi.com/agents/jo-inc-camofox-browser)
+
 ```
 
 ---
