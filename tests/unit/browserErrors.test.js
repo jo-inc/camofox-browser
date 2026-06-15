@@ -59,6 +59,28 @@ describe('browser error normalization', () => {
     expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
   });
 
+  test('Firefox interrupted navigations normalize to retryable navigation races', () => {
+    for (const message of ['page.goto: NS_ERROR_NET_INTERRUPT', 'page.reload: NS_BINDING_ABORTED']) {
+      const err = new Error(message);
+      expect(browserErrorStatus(err)).toBe(409);
+      expect(browserErrorCode(err)).toBe('navigation_race');
+      expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
+    }
+  });
+
+  test('ambiguous selectors normalize to structured snapshot retry', () => {
+    const err = new Error("locator.click: Error: strict mode violation: locator('td') resolved to 62 elements:");
+    expect(browserErrorStatus(err)).toBe(422);
+    expect(browserErrorCode(err)).toBe('ambiguous_selector');
+    expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
+  });
+
+  test('malformed fill values normalize to element actionability errors', () => {
+    const err = new Error('locator.fill: Error: Malformed value');
+    expect(browserErrorStatus(err)).toBe(422);
+    expect(browserErrorCode(err)).toBe('element_not_actionable');
+  });
+
   test('invalid selector syntax normalizes to non-retryable 400', () => {
     const err = new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"');
     expect(browserErrorStatus(err)).toBe(400);

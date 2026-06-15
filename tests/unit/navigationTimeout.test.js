@@ -191,6 +191,10 @@ describe('classifyError categorizes timeout vs proxy', () => {
   test('operational browser failures classify without unknown', () => {
     expect(classifyError(Object.assign(new Error('Unknown ref: e999'), { code: 'stale_refs' }))).toBe('stale_refs');
     expect(classifyError(new Error('Execution context was destroyed, most likely because of a navigation'))).toBe('navigation_race');
+    expect(classifyError(new Error('page.goto: NS_ERROR_NET_INTERRUPT'))).toBe('navigation_race');
+    expect(classifyError(new Error('page.reload: NS_BINDING_ABORTED'))).toBe('navigation_race');
+    expect(classifyError(new Error("locator.click: Error: strict mode violation: locator('td') resolved to 62 elements:"))).toBe('ambiguous_selector');
+    expect(classifyError(new Error('locator.fill: Error: Malformed value'))).toBe('element_error');
     expect(classifyError(new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"'))).toBe('invalid_selector');
     expect(classifyError(new Error('User concurrency limit reached, try again'))).toBe('concurrency_timeout');
     expect(classifyError(new Error('Browser launch timeout (60s)'))).toBe('browser_launch');
