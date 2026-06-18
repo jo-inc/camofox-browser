@@ -195,6 +195,7 @@ describe('classifyError categorizes timeout vs proxy', () => {
     expect(classifyError(new Error('page.reload: NS_BINDING_ABORTED'))).toBe('navigation_race');
     expect(classifyError(new Error("locator.click: Error: strict mode violation: locator('td') resolved to 62 elements:"))).toBe('ambiguous_selector');
     expect(classifyError(new Error('locator.fill: Error: Malformed value'))).toBe('element_error');
+    expect(classifyError(new Error('Element input[type=submit] is not fillable. Use click for buttons and other controls.'))).toBe('element_error');
     expect(classifyError(new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"'))).toBe('invalid_selector');
     expect(classifyError(new Error('User concurrency limit reached, try again'))).toBe('concurrency_timeout');
     expect(classifyError(new Error('Browser launch timeout (60s)'))).toBe('browser_launch');

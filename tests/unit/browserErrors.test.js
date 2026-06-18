@@ -81,6 +81,16 @@ describe('browser error normalization', () => {
     expect(browserErrorCode(err)).toBe('element_not_actionable');
   });
 
+  test('non-fillable submit inputs normalize to element actionability errors', () => {
+    const err = Object.assign(
+      new Error('Element input[type=submit] is not fillable. Use click for buttons and other controls.'),
+      { code: 'element_not_actionable', statusCode: 422 }
+    );
+    expect(browserErrorStatus(err)).toBe(422);
+    expect(browserErrorCode(err)).toBe('element_not_actionable');
+    expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
+  });
+
   test('invalid selector syntax normalizes to non-retryable 400', () => {
     const err = new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"');
     expect(browserErrorStatus(err)).toBe(400);

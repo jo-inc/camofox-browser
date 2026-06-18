@@ -235,6 +235,31 @@ function invalidSelectorError(message) {
   return Object.assign(new Error(message), { code: 'invalid_selector', statusCode: 400 });
 }
 
+const NON_FILLABLE_INPUT_TYPES = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+
+async function assertLocatorFillable(locator) {
+  const info = await locator.evaluate((el) => {
+    const tagName = el.tagName?.toLowerCase?.() || '';
+    const type = tagName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+    const role = el.getAttribute?.('role') || '';
+    const contentEditable = el.isContentEditable;
+    return { tagName, type, role, contentEditable };
+  });
+  if (info.contentEditable || info.tagName === 'textarea') return;
+  if (info.tagName === 'input' && !NON_FILLABLE_INPUT_TYPES.has(info.type)) return;
+  if (info.role === 'textbox' || info.role === 'searchbox') return;
+  const target = info.type ? `${info.tagName}[type=${info.type}]` : (info.role ? `${info.tagName}[role=${info.role}]` : info.tagName || 'element');
+  throw Object.assign(new Error(`Element ${target} is not fillable. Use click for buttons and other controls.`), {
+    code: 'element_not_actionable',
+    statusCode: 422,
+  });
+}
+
+async function fillLocator(locator, text) {
+  await assertLocatorFillable(locator);
+  await locator.fill(text, { timeout: 10000 });
+}
+
 function safeError(err) {
   if (CONFIG.nodeEnv === 'production') {
     log('error', 'internal error', { error: err.message, stack: err.stack });
@@ -3777,9 +3802,9 @@ app.post('/tabs/:tabId/type', async (req, res) => {
       
       if (mode === 'fill') {
         if (locator) {
-          await locator.fill(text, { timeout: 10000 });
+          await fillLocator(locator, text);
         } else {
-          await tabState.page.fill(selector, text, { timeout: 10000 });
+          await fillLocator(tabState.page.locator(selector), text);
         }
       } else {
         // keyboard mode -- char-by-char real key events (required for Ember/contenteditable)
@@ -6123,9 +6148,9 @@ app.post('/act', async (req, res) => {
           
           if (mode === 'fill') {
             if (locator) {
-              await locator.fill(text, { timeout: 10000 });
+              await fillLocator(locator, text);
             } else {
-              await tabState.page.fill(selector, text, { timeout: 10000 });
+              await fillLocator(tabState.page.locator(selector), text);
             }
           } else {
             if (locator) {
