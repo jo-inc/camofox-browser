@@ -235,3 +235,87 @@ But does NOT cover:
 - ❌ Container startup sequence and initialization order
 
 This guide fills those gaps.
+
+---
+
+## Integration with Unified Agent Memory System
+
+Camofox integrates with the **Honcho agent memory system** to enable seamless context sharing across all your AI tools.
+
+### How It Works
+
+1. **Camofox Deployment Context** — Stored in Neo4j graph database
+2. **Agent Memory Auto-Injection** — Claude Code, Cursor IDE, CLI tools all access same memory
+3. **No Re-explaining** — Ask about Camofox once, all tools remember it
+
+### Memory Files
+
+Memory locations for agent context:
+
+```
+~/.claude/projects/-home-keith/memory/
+├── MEMORY.md (index)
+├── camofox_critical_fixes_session.md
+├── camofox_setup_guide.md
+└── camofox_agent_workload_guide.md
+```
+
+### Using with Agent Memory
+
+**In Claude Code or Cursor IDE**:
+- Session starts → Memory auto-injects Camofox context
+- Ask: "What's the Camofox anti-detection setup?" 
+- Response: Auto-loads SETUP_GUIDE.md + critical fixes
+
+**Example Query**:
+```
+Q: "What are the 5 critical Camofox bugs we fixed?"
+A: [Memory injects SETUP_GUIDE.md context]
+"1. Display initialization (await on line 955)
+ 2. CDP viewport schema (isMobile property issue)
+ 3. VNC plugin disabled by default
+ 4. VNC port binding (127.0.0.1 issue)
+ 5. Docker port exposure"
+```
+
+### Updating Memory When You Change Camofox
+
+When making changes to Camofox deployment:
+
+1. Update this SETUP_GUIDE.md
+2. Update memory files in ~/.claude/projects/-home-keith/memory/
+3. Neo4j automatically picks up changes
+4. Next session: All tools have updated context
+
+### Neo4j Connection
+
+The memory system connects to Neo4j:
+- **HTTP API**: http://localhost:7474
+- **Bolt**: bolt://localhost:7687
+- **Configuration**: ~/.claude/.env.agent-memory
+
+Verify Neo4j is running:
+```bash
+~/.claude/scripts/check-memory-health.sh
+```
+
+### Memory Health Check
+
+```bash
+# Verify Camofox memories are indexed
+curl -s http://localhost:7474/db/neo4j/tx \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"statements":[{"statement":"MATCH (m:Memory) WHERE m.path CONTAINS \"camofox\" RETURN count(m)"}]}' \
+  | jq '.results[0].data[0].row[0]'
+```
+
+### Benefits
+
+- ✅ **No re-explaining** — Work in Claude Code, switch to Cursor, context auto-loads
+- ✅ **Persistent across sessions** — Memory survives tool restarts
+- ✅ **Multi-tool access** — All AI tools query same Neo4j backend
+- ✅ **Version tracking** — Each update logged with timestamp
+- ✅ **Full-text search** — "Find where we discussed anti-detection"
+
+---
