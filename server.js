@@ -1096,6 +1096,35 @@ async function closeAllSessions(reason, { clearDownloads = true, clearLocks = tr
   }
 }
 
+// --- Persistent profiles (opt-in: CAMOFOX_PERSISTENT_PROFILES=1) ---
+// A persistent context keeps the FULL on-disk Firefox profile (IndexedDB,
+// Service Workers, Cache Storage) — which storageState (cookies+localStorage)
+// cannot capture. Required for sites that store auth in IndexedDB (e.g. Telegram
+// Web). Each persistent identity is its own camoufox process (heavier), so this
+// is opt-in; non-persistent sessions keep the shared-browser/ephemeral-context model.
+function persistentProfileDir(key) {
+  const safe = crypto.createHash('sha256').update(String(key)).digest('hex').slice(0, 32);
+  return `${CONFIG.userDataDir}/${safe}`;
+}
+
+async function buildPersistentLaunchOptions(launchProxy) {
+  const externalCamoufox = getExternalCamoufoxLaunch();
+  const vdDisplay = virtualDisplay?.get?.();
+  const useVirtualDisplay = !!vdDisplay;
+  const options = await launchOptions({
+    executable_path: externalCamoufox?.executablePath,
+    headless: useVirtualDisplay ? false : true,
+    os: getHostOS(),
+    humanize: true,
+    enable_cache: true,
+    proxy: launchProxy || undefined,
+    geoip: !!launchProxy,
+    virtual_display: vdDisplay,
+  });
+  options.proxy = normalizePlaywrightProxy(options.proxy);
+  return options;
+}
+
 async function getSession(userId, { trace = false } = {}) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
@@ -1165,7 +1194,17 @@ async function getSession(userId, { trace = false } = {}) {
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
       await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
-      const context = await b.newContext(contextOptions);
+      let context;
+      if (CONFIG.persistentProfiles) {
+        delete contextOptions.storageState; // persistent context owns its own on-disk state
+        const launchProxy = sessionProxy || browserLaunchProxy || null;
+        const persistentOpts = await buildPersistentLaunchOptions(launchProxy);
+        delete contextOptions.proxy; // proxy handled in launch options for persistent contexts
+        context = await firefox.launchPersistentContext(persistentProfileDir(key), { ...persistentOpts, ...contextOptions });
+        log('info', 'persistent context launched', { userId: key, userDataDir: persistentProfileDir(key) });
+      } else {
+        context = await b.newContext(contextOptions);
+      }
 
       let tracePath = null;
       if (trace) {
