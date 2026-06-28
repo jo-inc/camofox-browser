@@ -1,9 +1,12 @@
 FROM node:22-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
-# Update these when upgrading Camoufox
-ARG CAMOUFOX_VERSION=135.0.1
-ARG CAMOUFOX_RELEASE=beta.24
+# Update these when upgrading Camoufox. NOTE: the GitHub release-tag suffix
+# (CAMOUFOX_RELEASE, e.g. beta.25) can DIFFER from the asset-filename suffix
+# (e.g. alpha.25/alpha.26) — the Makefile handles the filename; this arg is only
+# recorded into version.json for provenance.
+ARG CAMOUFOX_VERSION=150.0.2
+ARG CAMOUFOX_RELEASE=beta.25
 ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
