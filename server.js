@@ -707,7 +707,7 @@ async function probeGoogleSearch(candidateBrowser) {
   let context = null;
   try {
     context = await candidateBrowser.newContext({
-      viewport: { width: 1280, height: 720 },
+      viewport: null,
       permissions: ['geolocation'],
     });
     const page = await context.newPage();
@@ -952,7 +952,7 @@ async function launchBrowserInstance() {
     try {
       if (os.platform() === 'linux') {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
+        vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
     } catch (err) {
@@ -1177,7 +1177,7 @@ async function getSession(userId, { trace = false } = {}) {
       }
       const b = await ensureBrowser();
       const contextOptions = {
-        viewport: { width: 1280, height: 720 },
+        viewport: null,
         permissions: ['geolocation'],
       };
       // When geoip is active (proxy configured), camoufox auto-configures
@@ -5965,7 +5965,7 @@ setInterval(async () => {
   
   let testContext;
   try {
-    testContext = await browser.newContext();
+    testContext = await browser.newContext({ viewport: null });
     const page = await testContext.newPage();
     await page.goto('about:blank', { timeout: 5000 });
     await page.close();
