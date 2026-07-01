@@ -11,11 +11,14 @@ describe('persistence plugin', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'camofox-persist-plugin-'));
     events = createPluginEvents();
-    mockApp = {};
+    mockApp = { delete: jest.fn() };
     ctx = {
       events,
       config: { cookiesDir: path.join(tmpDir, 'cookies') },
       log: jest.fn(),
+      auth: () => (req, res, next) => next(),
+      normalizeUserId: (u) => String(u),
+      safeError: (err) => err.message,
     };
   });
 
@@ -81,6 +84,48 @@ describe('persistence plugin', () => {
     await events.emitAsync('session:destroying', { userId: 'user-3', reason: 'test' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
+  });
+
+  test('DELETE /sessions/:userId/cookies clears live cookies and removes persisted state', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir });
+
+    const call = mockApp.delete.mock.calls.find(c => c[0] === '/sessions/:userId/cookies');
+    expect(call).toBeTruthy();
+    const handler = call[call.length - 1];
+
+    const { getUserPersistencePaths } = await import('../../lib/persistence.js');
+    const { userDir, storageStatePath, metaPath } = getUserPersistencePaths(tmpDir, 'user-4');
+    await fs.mkdir(userDir, { recursive: true });
+    await fs.writeFile(storageStatePath, JSON.stringify({
+      cookies: [{ name: 'sid', value: 'a', domain: '.x.com', path: '/' }],
+      origins: [],
+    }));
+    await fs.writeFile(metaPath, JSON.stringify({ userId: 'user-4' }));
+
+    const mockContext = { clearCookies: jest.fn(async () => {}) };
+    await events.emitAsync('session:created', { userId: 'user-4', context: mockContext });
+
+    const res = { json: jest.fn(), status: jest.fn(function () { return this; }) };
+    await handler({ params: { userId: 'user-4' } }, res);
+
+    expect(mockContext.clearCookies).toHaveBeenCalled();
+    await expect(fs.access(storageStatePath)).rejects.toBeTruthy();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, clearedLive: true, removedPersisted: true })
+    );
+  });
+
+  test('DELETE cookies route is a no-op without a live session or persisted file', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir });
+    const call = mockApp.delete.mock.calls.find(c => c[0] === '/sessions/:userId/cookies');
+    const handler = call[call.length - 1];
+
+    const res = { json: jest.fn(), status: jest.fn(function () { return this; }) };
+    await handler({ params: { userId: 'nobody' } }, res);
+
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, clearedLive: false, removedPersisted: false })
+    );
   });
 
   test('env var CAMOFOX_PROFILE_DIR overrides pluginConfig', async () => {

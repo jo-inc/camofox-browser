@@ -23,12 +23,23 @@
  * via the session:creating hook (mutates contextOptions.storageState).
  */
 
+import fs from 'node:fs/promises';
 import {
   getUserPersistencePaths,
   loadPersistedStorageState,
   persistStorageState,
 } from '../../lib/persistence.js';
 import { importBootstrapCookies } from '../../lib/cookies.js';
+
+async function removeIfExists(p) {
+  try {
+    await fs.unlink(p);
+    return true;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+}
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log } = ctx;
@@ -121,4 +132,25 @@ export async function register(app, ctx, pluginConfig = {}) {
     }
     activeSessions.clear();
   });
+
+  app.delete('/sessions/:userId/cookies', ctx.auth(), async (req, res) => {
+    const userId = ctx.normalizeUserId(req.params.userId);
+    try {
+      const context = activeSessions.get(userId);
+      const clearedLive = Boolean(context);
+      if (context) await context.clearCookies();
+
+      const { storageStatePath, metaPath } = getUserPersistencePaths(profileDir, userId);
+      const removedPersisted = await removeIfExists(storageStatePath);
+      await removeIfExists(metaPath);
+
+      log('info', 'session cookies cleared', { reqId: req.reqId, userId, clearedLive, removedPersisted });
+      res.json({ ok: true, userId, clearedLive, removedPersisted });
+    } catch (err) {
+      log('error', 'clear cookies failed', { reqId: req.reqId, userId, error: err.message });
+      res.status(500).json({ error: ctx.safeError(err) });
+    }
+  });
+
+  log('info', 'persistence plugin: registered DELETE /sessions/:userId/cookies');
 }
