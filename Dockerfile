@@ -66,6 +66,7 @@ COPY camofox.config.json ./
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
+COPY patch-firefox-cdp.sh ./
 
 # Install default plugin dependencies (apt packages + post-install hooks)
 RUN sh scripts/install-plugin-deps.sh
@@ -75,7 +76,7 @@ ENV CAMOFOX_PORT=9377
 
 EXPOSE 9377
 
-CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+CMD ["sh", "-c", "sh patch-firefox-cdp.sh && node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
 
 # Optional: rebuild plugin deps after adding third-party plugins
 # Usage: docker build --target with-plugins -t camofox-browser .
