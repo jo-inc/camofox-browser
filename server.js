@@ -985,6 +985,15 @@ async function launchBrowserInstance() {
         virtual_display: vdDisplay,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
+      // Playwright's launcher defaults handleSIGTERM/SIGINT/SIGHUP to true,
+      // registering its own process signal handlers that send Browser.close
+      // straight to Firefox over its debug transport the instant a signal
+      // arrives -- independent of and racing ahead of our own gracefulShutdown()
+      // sequencing (including the persistence plugin's shutdown checkpoint).
+      // Disable them so gracefulShutdown() is the sole authority over shutdown.
+      options.handleSIGTERM = false;
+      options.handleSIGINT = false;
+      options.handleSIGHUP = false;
       await pluginEvents.emitAsync('browser:launching', { options });
 
       candidateBrowser = await firefox.launch(options);
