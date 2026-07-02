@@ -6001,8 +6001,11 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
-  await pluginEvents.emitAsync('server:shutdown', { signal });
 
+  // Arm the watchdog and stop accepting new connections before anything
+  // that can block or reject -- a hung or failing server:shutdown listener
+  // must not disable the force-exit safety net or widen the window where
+  // the server still accepts new sessions.
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
@@ -6011,6 +6014,10 @@ async function gracefulShutdown(signal) {
 
   server.close();
   stopMemoryReporter();
+
+  await pluginEvents.emitAsync('server:shutdown', { signal }).catch((err) => {
+    log('error', 'server:shutdown listener failed', { error: err.message });
+  });
 
   await closeAllSessions(`shutdown:${signal}`, {
     clearDownloads: false,
