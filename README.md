@@ -263,6 +263,10 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
 
+Opt-in periodic checkpointing (default-off):
+
+- `checkpointIntervalMs` / `CAMOFOX_CHECKPOINT_INTERVAL_MS` -- periodically checkpoint all active sessions on this interval, in addition to the existing checkpoint-on-close/shutdown, so an ungraceful crash (OOM/SIGKILL) only loses state since the last periodic checkpoint.
+
 ### Session Tracing
 
 Capture a Playwright trace of every action in a session: page screenshots, DOM snapshots, network requests, and console output. Output is a single `.zip` file you can open in Playwright's built-in Trace Viewer.
@@ -617,6 +621,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
+| `CAMOFOX_CHECKPOINT_INTERVAL_MS` | Periodic storage-state checkpoint interval, in ms (0/unset = off) | `0` |
 | `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
 | `CAMOFOX_TRACES_MAX_BYTES` | Max size per trace, removed on next startup if exceeded | `52428800` (50MB) |
 | `CAMOFOX_TRACES_TTL_HOURS` | Traces older than this are swept on startup | `24` |

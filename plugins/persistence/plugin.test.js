@@ -89,10 +89,48 @@ describe('persistence plugin', () => {
     process.env.CAMOFOX_PROFILE_DIR = envDir;
     try {
       await register(mockApp, ctx, { profileDir: '/should/not/use' });
-      expect(ctx.log).toHaveBeenCalledWith('info', 'persistence plugin enabled', { profileDir: envDir });
+      expect(ctx.log).toHaveBeenCalledWith(
+        'info',
+        'persistence plugin enabled',
+        expect.objectContaining({ profileDir: envDir })
+      );
     } finally {
       if (orig === undefined) delete process.env.CAMOFOX_PROFILE_DIR;
       else process.env.CAMOFOX_PROFILE_DIR = orig;
     }
   });
+
+  test('periodic checkpointIntervalMs is off by default (no timer set)', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir });
+    expect(ctx.log).toHaveBeenCalledWith(
+      'info',
+      'persistence plugin enabled',
+      expect.objectContaining({ checkpointIntervalMs: 0 })
+    );
+    expect(ctx.log).not.toHaveBeenCalledWith(
+      'info',
+      'persistence periodic checkpoint enabled',
+      expect.anything()
+    );
+  });
+
+  test('checkpointIntervalMs > 0 periodically checkpoints active sessions', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir, checkpointIntervalMs: 20 });
+
+    const mockContext = {
+      storageState: jest.fn(async ({ path: p }) => {
+        await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
+      }),
+    };
+    await events.emitAsync('session:created', { userId: 'user-periodic', context: mockContext });
+    mockContext.storageState.mockClear();
+
+    // Wait for at least one real periodic tick.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(mockContext.storageState.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    await events.emitAsync('server:shutdown');
+  });
+
 });

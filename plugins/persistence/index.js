@@ -9,18 +9,25 @@
  *     "plugins": {
  *       "persistence": {
  *         "enabled": true,
- *         "profileDir": "/data/profiles"
+ *         "profileDir": "/data/profiles",
+ *         "checkpointIntervalMs": 60000
  *       }
  *     }
  *   }
  *
  * Or via environment variables (overrides config file):
  *   CAMOFOX_PROFILE_DIR=/data/profiles
+ *   CAMOFOX_CHECKPOINT_INTERVAL_MS=60000
  *
  * Each userId gets a deterministic SHA256-hashed subdirectory under profileDir.
  * Storage state is checkpointed on cookie import, session close, and shutdown.
  * On session creation, saved state is restored into the new Playwright context
  * via the session:creating hook (mutates contextOptions.storageState).
+ *
+ * checkpointIntervalMs (default: 0/off): when > 0, all active sessions are
+ * additionally checkpointed on a timer, so an ungraceful crash (OOM/SIGKILL)
+ * only loses state since the last periodic checkpoint instead of everything
+ * since the last teardown.
  */
 
 import {
@@ -40,25 +47,40 @@ export async function register(app, ctx, pluginConfig = {}) {
     return;
   }
 
+  // Resolve checkpointIntervalMs: env var > plugin config > off (0)
+  const checkpointIntervalMs =
+    parseInt(process.env.CAMOFOX_CHECKPOINT_INTERVAL_MS, 10) ||
+    parseInt(pluginConfig.checkpointIntervalMs, 10) ||
+    0;
+
   const logger = {
     warn: (msg, fields = {}) => log('warn', msg, fields),
   };
 
-  log('info', 'persistence plugin enabled', { profileDir });
+  log('info', 'persistence plugin enabled', { profileDir, checkpointIntervalMs });
 
   // Track active sessions for checkpoint on close
   const activeSessions = new Map(); // userId -> context
+  // Guard against overlapping checkpoints (periodic timer racing an
+  // event-driven checkpoint) for the same userId.
+  const checkpointsInFlight = new Set();
 
   /**
    * Checkpoint storage state to disk for a userId.
    */
   async function checkpoint(userId, context, reason) {
     if (!context) return;
-    const result = await persistStorageState({ profileDir, userId, context, logger });
-    if (result.persisted) {
-      log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
+    if (checkpointsInFlight.has(userId)) return;
+    checkpointsInFlight.add(userId);
+    try {
+      const result = await persistStorageState({ profileDir, userId, context, logger });
+      if (result.persisted) {
+        log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
+      }
+      return result;
+    } finally {
+      checkpointsInFlight.delete(userId);
     }
-    return result;
   }
 
   // --- Lifecycle hooks ---
@@ -114,8 +136,25 @@ export async function register(app, ctx, pluginConfig = {}) {
     activeSessions.delete(userId);
   });
 
+  // Periodic checkpoint: bounds data loss on ungraceful crashes (OOM/SIGKILL)
+  // to the checkpoint interval instead of "since the last teardown".
+  let checkpointTimer;
+  if (checkpointIntervalMs > 0) {
+    checkpointTimer = setInterval(async () => {
+      for (const [userId, context] of activeSessions) {
+        await checkpoint(userId, context, 'periodic').catch(() => {});
+      }
+    }, checkpointIntervalMs);
+    checkpointTimer.unref?.();
+    log('info', 'persistence periodic checkpoint enabled', { checkpointIntervalMs });
+  }
+
   // On shutdown: checkpoint all remaining sessions
   events.on('server:shutdown', async () => {
+    if (checkpointTimer) {
+      clearInterval(checkpointTimer);
+      checkpointTimer = undefined;
+    }
     for (const [userId, context] of activeSessions) {
       await checkpoint(userId, context, 'shutdown').catch(() => {});
     }
