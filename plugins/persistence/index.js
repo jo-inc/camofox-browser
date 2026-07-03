@@ -1,26 +1,34 @@
 /**
  * Persistence plugin for camofox-browser.
  *
- * Saves and restores per-user browser storage state (cookies + localStorage)
- * across session restarts using Playwright's storageState API.
+ * Saves and restores per-user browser storage state (cookies + localStorage
+ * + IndexedDB) across session restarts using Playwright's storageState API.
  *
  * Configuration (camofox.config.json):
  *   {
  *     "plugins": {
  *       "persistence": {
  *         "enabled": true,
- *         "profileDir": "/data/profiles"
+ *         "profileDir": "/data/profiles",
+ *         "indexedDB": true
  *       }
  *     }
  *   }
  *
  * Or via environment variables (overrides config file):
  *   CAMOFOX_PROFILE_DIR=/data/profiles
+ *   CAMOFOX_PERSIST_INDEXEDDB=false
  *
  * Each userId gets a deterministic SHA256-hashed subdirectory under profileDir.
  * Storage state is checkpointed on cookie import, session close, and shutdown.
  * On session creation, saved state is restored into the new Playwright context
  * via the session:creating hook (mutates contextOptions.storageState).
+ *
+ * indexedDB (default: true): storageState() also captures IndexedDB-backed
+ * data, so logins stored there (e.g. Firebase Auth and other SSO flows)
+ * survive restarts too. Set "indexedDB": false (or
+ * CAMOFOX_PERSIST_INDEXEDDB=false) to restore the previous
+ * cookies+localStorage-only snapshots.
  */
 
 import {
@@ -40,11 +48,18 @@ export async function register(app, ctx, pluginConfig = {}) {
     return;
   }
 
+  // Resolve indexedDB: env var > plugin config > on (true)
+  const envIndexedDB = process.env.CAMOFOX_PERSIST_INDEXEDDB;
+  const indexedDB =
+    envIndexedDB !== undefined
+      ? !['false', '0', 'no'].includes(envIndexedDB.toLowerCase())
+      : pluginConfig.indexedDB !== false;
+
   const logger = {
     warn: (msg, fields = {}) => log('warn', msg, fields),
   };
 
-  log('info', 'persistence plugin enabled', { profileDir });
+  log('info', 'persistence plugin enabled', { profileDir, indexedDB });
 
   // Track active sessions for checkpoint on close
   const activeSessions = new Map(); // userId -> context
@@ -54,7 +69,7 @@ export async function register(app, ctx, pluginConfig = {}) {
    */
   async function checkpoint(userId, context, reason) {
     if (!context) return;
-    const result = await persistStorageState({ profileDir, userId, context, logger });
+    const result = await persistStorageState({ profileDir, userId, context, logger, indexedDB });
     if (result.persisted) {
       log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
     }
