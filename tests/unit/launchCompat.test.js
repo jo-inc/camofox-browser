@@ -1,10 +1,7 @@
-import { describe, test, expect } from '@jest/globals';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+const { readFileSync } = process.getBuiltinModule('fs');
+const { join } = process.getBuiltinModule('path');
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const serverSource = readFileSync(join(__dirname, '../../server.js'), 'utf-8');
+const serverSource = readFileSync(join(process.cwd(), 'server.js'), 'utf-8');
 
 function sourceBetween(startMarker, endMarker) {
   const start = serverSource.indexOf(startMarker);
