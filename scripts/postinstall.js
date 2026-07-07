@@ -190,6 +190,19 @@ export async function main() {
     warn('    - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD re-exported by a wrapping process');
     warn('  Manual fix:  npx camoufox-js fetch');
   }
+
+  // Patch the Juggler protocol schema for playwright-core >=1.61 compatibility.
+  // This is idempotent and safe to run on every install.
+  try {
+    const { spawnSync: run } = await import('node:child_process');
+    const patchScript = join(dirname(new URL('.', import.meta.url).pathname), 'patch-juggler-viewport.js');
+    if (existsSync(patchScript)) {
+      const r = run(process.execPath, [patchScript], { stdio: 'inherit' });
+      if (r.status !== 0) warn('Juggler viewport patch failed — see output above');
+    }
+  } catch (e) {
+    warn(`Juggler viewport patch error: ${e.message}`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

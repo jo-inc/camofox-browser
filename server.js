@@ -710,7 +710,7 @@ async function probeGoogleSearch(candidateBrowser) {
       viewport: { width: 1280, height: 720 },
       permissions: ['geolocation'],
     });
-    const page = await context.newPage();
+    const page = await newPageWithViewport(context);
     await page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(1200);
     await page.goto('https://www.google.com/search?q=weather%20today', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -1469,6 +1469,14 @@ function tabNotFoundResponse(res, tabId) {
   return res.status(404).json({ error: 'Tab not found' });
 }
 
+// Helper: create a new page and set the default viewport size.
+// Works with both playwright-core <1.61 and >=1.61 (with patched Juggler schema).
+const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
+async function newPageWithViewport(context) {
+  const page = await context.newPage();
+  await page.setViewportSize(DEFAULT_VIEWPORT);
+  return page;
+}
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
   return {
@@ -1686,7 +1694,7 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
   }
   const session = await getSession(userId);
   const group = getTabGroup(session, sessionKey);
-  const page = await session.context.newPage();
+  const page = await newPageWithViewport(session.context);
   const tabState = createTabState(page);
   tabState.googleRetryCount = (previousTabState.googleRetryCount || 0) + 1;
   tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
@@ -2613,7 +2621,7 @@ app.post('/tabs', async (req, res) => {
       
       const group = getTabGroup(session, resolvedSessionKey);
       
-      const page = await session.context.newPage();
+      const page = await newPageWithViewport(session.context);
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
@@ -2640,7 +2648,7 @@ app.post('/tabs', async (req, res) => {
             }
             session = await getSession(userId, { trace: !!trace });
             const retryGroup = getTabGroup(session, resolvedSessionKey);
-            const retryPage = await session.context.newPage();
+            const retryPage = await newPageWithViewport(session.context);
             tabState = createTabState(retryPage);
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
@@ -2811,7 +2819,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           }
           session = await getSession(userId);
           const group = getTabGroup(session, currentSessionKey);
-          const page = await session.context.newPage();
+          const page = await newPageWithViewport(session.context);
           tabState = createTabState(page);
           tabState.googleRetryCount = previousRetryCount + 1;
           attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
@@ -5311,7 +5319,7 @@ app.post('/tabs/open', async (req, res) => {
     
     let group = getTabGroup(session, listItemId);
     
-    let page = await session.context.newPage();
+    let page = await newPageWithViewport(session.context);
     const tabId = fly.makeTabId();
     let tabState = createTabState(page);
     attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
@@ -5334,7 +5342,7 @@ app.post('/tabs/open', async (req, res) => {
         }
         session = await getSession(userId);
         group = getTabGroup(session, listItemId);
-        page = await session.context.newPage();
+        page = await newPageWithViewport(session.context);
         tabState = createTabState(page);
         attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
         group.set(tabId, tabState);
@@ -5966,7 +5974,7 @@ setInterval(async () => {
   let testContext;
   try {
     testContext = await browser.newContext();
-    const page = await testContext.newPage();
+    const page = await newPageWithViewport(testContext);
     await page.goto('about:blank', { timeout: 5000 });
     await page.close();
     await testContext.close();
