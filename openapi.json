@@ -1009,6 +1009,118 @@
         }
       }
     },
+    "/tabs/{tabId}/set_input_files": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Attach files to a file input element",
+        "description": "Programmatically selects files on an `<input type=\"file\">` element via\nPlaywright's privileged setInputFiles channel (browsers forbid this\nfrom page JS for security). File paths must resolve inside the\nconfigured uploads directory (env `CAMOFOX_UPLOADS_DIR`, defaults to\n`/home/node/cv-uploads`).\n\nTwo targeting modes:\n- **Direct input** (default): pass `ref` from a snapshot (preferred) or a\n  CSS `selector` targeting the `<input type=\"file\">`. Files are set\n  straight on the input via `setInputFiles`.\n- **File chooser** (opt-in, for custom dropzone widgets such as\n  react-dropzone that read from the trusted file-chooser event rather\n  than the hidden input): pass `dropzoneRef` or `dropzoneSelector`\n  targeting the *visible* clickable dropzone element. The server clicks\n  it, intercepts the resulting file chooser, and supplies the same\n  sandboxed files through it. If both a direct and a dropzone target are\n  given, the dropzone (file-chooser) path takes precedence.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "files"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Stable element ref from a snapshot targeting the file input (direct path)."
+                  },
+                  "selector": {
+                    "type": "string",
+                    "description": "CSS selector targeting the file input (direct path)."
+                  },
+                  "dropzoneRef": {
+                    "type": "string",
+                    "description": "Stable element ref for the visible dropzone element (file-chooser path)."
+                  },
+                  "dropzoneSelector": {
+                    "type": "string",
+                    "description": "CSS selector for the visible dropzone element (file-chooser path)."
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Absolute container paths inside the uploads dir."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Files attached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "via": {
+                      "type": "string",
+                      "enum": [
+                        "input",
+                        "filechooser"
+                      ],
+                      "description": "Which mechanism attached the files."
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (missing target/fields, path outside uploads dir, unreadable file, or dropzone click opened no file chooser).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/press": {
       "post": {
         "tags": [

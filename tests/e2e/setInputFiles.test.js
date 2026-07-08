@@ -107,6 +107,116 @@ describe('set_input_files', () => {
     }
   });
 
+  test('attaches a file to a custom dropzone via dropzoneSelector (file-chooser path)', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-dropzone.txt');
+      fs.writeFileSync(filePath, 'dummy dropzone content');
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
+
+      const result = await client.setInputFiles(tabId, {
+        dropzoneSelector: '#dropzone',
+        files: [filePath],
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.via).toBe('filechooser');
+      expect(result.files).toEqual([filePath]);
+
+      const snapshot = await client.waitForSnapshotContains(tabId, 'Selected: test-dropzone.txt');
+      expect(snapshot.snapshot).toContain('Selected: test-dropzone.txt');
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('attaches a file to a custom dropzone via dropzoneRef (file-chooser path)', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-dropzone-ref.txt');
+      fs.writeFileSync(filePath, 'dummy dropzone ref content');
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
+
+      const snapshot = await client.getSnapshot(tabId);
+      const match = snapshot.snapshot.match(/\[(e\d+)\][^\n]*click to browse/i);
+
+      const result = match
+        ? await client.setInputFiles(tabId, { dropzoneRef: match[1], files: [filePath] })
+        : await client.setInputFiles(tabId, { dropzoneSelector: '#dropzone', files: [filePath] });
+
+      expect(result.ok).toBe(true);
+      expect(result.via).toBe('filechooser');
+
+      const updated = await client.waitForSnapshotContains(tabId, 'Selected: test-dropzone-ref.txt');
+      expect(updated.snapshot).toContain('Selected: test-dropzone-ref.txt');
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('dropzone path still enforces the uploads-dir sandbox', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
+
+      await expect(
+        client.setInputFiles(tabId, {
+          dropzoneSelector: '#dropzone',
+          files: ['/etc/passwd'],
+        })
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('rejects with 400 when the dropzone target opens no file chooser', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-nochooser.txt');
+      fs.writeFileSync(filePath, 'content');
+
+      // Point the dropzone path at an element that does not open a chooser.
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
+
+      await expect(
+        client.setInputFiles(tabId, {
+          dropzoneSelector: '#fileName',
+          files: [filePath],
+        })
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('reports via:input for the direct file-input path', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-via-input.txt');
+      fs.writeFileSync(filePath, 'content');
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload`);
+
+      const result = await client.setInputFiles(tabId, {
+        selector: '#fileInput',
+        files: [filePath],
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.via).toBe('input');
+    } finally {
+      await client.cleanup();
+    }
+  });
+
   test('returns 404 for unknown tab', async () => {
     const client = createClient(serverUrl);
 

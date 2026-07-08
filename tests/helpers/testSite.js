@@ -326,6 +326,34 @@ function createTestApp() {
     `);
   });
 
+  // Mimics a react-dropzone-style widget: a visible clickable region that
+  // proxies to a hidden <input type=file>. The filename is read from the
+  // input's change event, so a direct setInputFiles on the *visible* element
+  // (a div) cannot work — only the file-chooser path clicking the div does.
+  app.get('/file-upload-dropzone', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Dropzone Upload Test</title></head>
+      <body>
+        <h1>Dropzone Upload Test</h1>
+        <div id="dropzone" style="width:300px;height:120px;border:2px dashed #888;cursor:pointer">
+          Drop file here or click to browse
+        </div>
+        <input type="file" id="hiddenInput" style="display:none" />
+        <p id="fileName">No file selected</p>
+        <script>
+          const dz = document.getElementById('dropzone');
+          const inp = document.getElementById('hiddenInput');
+          dz.addEventListener('click', () => inp.click());
+          inp.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            document.getElementById('fileName').textContent = file ? 'Selected: ' + file.name : 'No file selected';
+          });
+        </script>
+      </body></html>
+    `);
+  });
+
   return app;
 }
 
