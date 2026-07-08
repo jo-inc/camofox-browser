@@ -30,7 +30,7 @@ import {
   initMetrics, getRegister, isMetricsEnabled, createMetric,
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
-import { actionFromReq, classifyError } from './lib/request-utils.js';
+import { actionFromReq, classifyError, validateUrl } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb } from './lib/reporter.js';
@@ -155,8 +155,6 @@ app.use('/tabs/:tabId', fly.replayMiddleware(log));
 // so each key gates a distinct surface. When unset, behavior is unchanged.
 app.use(accessKeyMiddleware(CONFIG));
 
-const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
-
 // Interactive roles to include - exclude combobox to avoid opening complex widgets
 // (date pickers, dropdowns) that can interfere with navigation
 const INTERACTIVE_ROLES = [
@@ -221,17 +219,7 @@ function sendError(res, err, extraFields = {}) {
   res.status(status).json(body);
 }
 
-function validateUrl(url) {
-  try {
-    const parsed = new URL(url);
-    if (!ALLOWED_URL_SCHEMES.includes(parsed.protocol)) {
-      return `Blocked URL scheme: ${parsed.protocol} (only http/https allowed)`;
-    }
-    return null;
-  } catch {
-    return `Invalid URL: ${url}`;
-  }
-}
+// validateUrl -- now imported from lib/request-utils.js (allows about:blank)
 
 // isLoopbackAddress -- now imported from lib/auth.js (see top of file)
 
@@ -983,6 +971,7 @@ async function launchBrowserInstance() {
         proxy: launchProxy,
         geoip: !!launchProxy,
         virtual_display: vdDisplay,
+        window: CONFIG.persistentProfiles ? persistentWindowSize() : undefined,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
       await pluginEvents.emitAsync('browser:launching', { options });
@@ -1129,6 +1118,45 @@ async function closeAllSessions(reason, { clearDownloads = true, clearLocks = tr
   }
 }
 
+// --- Persistent profiles (opt-in: CAMOFOX_PERSISTENT_PROFILES=1) ---
+// A persistent context keeps the FULL on-disk Firefox profile (IndexedDB,
+// Service Workers, Cache Storage) — which storageState (cookies+localStorage)
+// cannot capture. Required for sites that store auth in IndexedDB (e.g. Telegram
+// Web). Each persistent identity is its own camoufox process (heavier), so this
+// is opt-in; non-persistent sessions keep the shared-browser/ephemeral-context model.
+// Pin the persistent browser window to the display size (default 1280x720, or
+// CAMOFOX_WINDOW / VNC_RESOLUTION) so its page doesn't render at the camoufox
+// fingerprint's screen size (e.g. 2560x1440) and overflow the VNC display.
+function persistentWindowSize() {
+  const raw = process.env.CAMOFOX_WINDOW || process.env.VNC_RESOLUTION || '1280x720';
+  const m = String(raw).match(/(\d+)\s*[xX]\s*(\d+)/);
+  return m ? [parseInt(m[1], 10), parseInt(m[2], 10)] : [1280, 720];
+}
+
+function persistentProfileDir(key) {
+  const safe = crypto.createHash('sha256').update(String(key)).digest('hex').slice(0, 32);
+  return `${CONFIG.userDataDir}/${safe}`;
+}
+
+async function buildPersistentLaunchOptions(launchProxy) {
+  const externalCamoufox = getExternalCamoufoxLaunch();
+  const vdDisplay = virtualDisplay?.get?.();
+  const useVirtualDisplay = !!vdDisplay;
+  const options = await launchOptions({
+    executable_path: externalCamoufox?.executablePath,
+    headless: useVirtualDisplay ? false : true,
+    os: getHostOS(),
+    humanize: true,
+    enable_cache: true,
+    proxy: launchProxy || undefined,
+    geoip: !!launchProxy,
+    virtual_display: vdDisplay,
+    window: persistentWindowSize(),
+  });
+  options.proxy = normalizePlaywrightProxy(options.proxy);
+  return options;
+}
+
 async function getSession(userId, { trace = false } = {}) {
   const key = normalizeUserId(userId);
   let session = sessions.get(key);
@@ -1198,7 +1226,17 @@ async function getSession(userId, { trace = false } = {}) {
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
       await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
-      const context = await b.newContext(contextOptions);
+      let context;
+      if (CONFIG.persistentProfiles) {
+        delete contextOptions.storageState; // persistent context owns its own on-disk state
+        const launchProxy = sessionProxy || browserLaunchProxy || null;
+        const persistentOpts = await buildPersistentLaunchOptions(launchProxy);
+        delete contextOptions.proxy; // proxy handled in launch options for persistent contexts
+        context = await firefox.launchPersistentContext(persistentProfileDir(key), { ...persistentOpts, ...contextOptions });
+        log('info', 'persistent context launched', { userId: key, userDataDir: persistentProfileDir(key) });
+      } else {
+        context = await b.newContext(contextOptions);
+      }
 
       let tracePath = null;
       if (trace) {

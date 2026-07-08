@@ -1,0 +1,42 @@
+FROM node:22-slim
+
+ARG CAMOUFOX_VERSION=135.0.1
+ARG CAMOUFOX_RELEASE=beta.24
+ARG ARCH=aarch64
+
+RUN apt-get update && apt-get install -y \
+    libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 \
+    libx11-xcb1 libxcomposite1 libxcursor1 libxdamage1 \
+    libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 \
+    libegl1-mesa libgl1-mesa-dri libgbm1 \
+    xvfb fonts-liberation fonts-noto-color-emoji fontconfig \
+    ca-certificates curl unzip python3-minimal \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY dist/camoufox-${ARCH}.zip /tmp/camoufox.zip
+RUN mkdir -p /root/.cache/camoufox \
+    && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
+    && chmod -R 755 /root/.cache/camoufox \
+    && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
+    && rm /tmp/camoufox.zip
+
+COPY dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
+RUN chmod 755 /usr/local/bin/yt-dlp
+
+WORKDIR /app
+COPY package.json ./
+COPY scripts/ ./scripts/
+RUN npm install --production
+
+COPY server.js ./
+COPY camofox.config.json ./
+COPY lib/ ./lib/
+COPY plugins/ ./plugins/
+
+RUN scripts/install-plugin-deps.sh
+
+ENV NODE_ENV=production
+ENV CAMOFOX_PORT=9377
+EXPOSE 9377
+
+CMD ["node", "server.js"]

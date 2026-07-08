@@ -38,7 +38,7 @@ if [ ! -d "$NOVNC_DIR" ]; then
   log "ERROR: $NOVNC_DIR not found; noVNC cannot start"
   exit 1
 fi
-VNC_BIND="${VNC_BIND:-127.0.0.1}"
+VNC_BIND="${VNC_BIND:-0.0.0.0}"
 log "Starting noVNC (websockify) on $VNC_BIND:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
 websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/var/log/novnc.log 2>&1 &
 
