@@ -5979,6 +5979,7 @@ setInterval(() => {
 // Active health probe -- detect hung browser even when isConnected() lies
 setInterval(async () => {
   if (!browser || healthState.isRecovering) return;
+  if (sessions.size === 0) return;
   const timeSinceSuccess = Date.now() - healthState.lastSuccessfulNav;
   // Skip probe if operations are in flight AND last success was recent.
   // If it's been >120s since any successful operation, probe anyway --

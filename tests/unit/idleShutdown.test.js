@@ -47,6 +47,13 @@ function evaluateHealth({ isRecovering, browserRunning, warming, machineId }) {
   };
 }
 
+function shouldRunActiveHealthProbe({ hasBrowser, isRecovering, sessionsSize, activeOps, timeSinceSuccessMs }) {
+  if (!hasBrowser || isRecovering) return false;
+  if (sessionsSize === 0) return false;
+  if (activeOps > 0 && timeSinceSuccessMs < 120000) return false;
+  return timeSinceSuccessMs >= 120000;
+}
+
 describe('idle browser shutdown scheduler', () => {
   test('repeated idle cleanup ticks do not reset the existing shutdown timer', () => {
     let sessionsSize = 0;
@@ -156,5 +163,25 @@ describe('health during idle browser shutdown', () => {
     const health = evaluateHealth({ isRecovering: true, browserRunning: false, warming: false });
     expect(health.status).toBe(503);
     expect(health.body).toEqual({ ok: false, engine: 'camoufox', recovering: true });
+  });
+
+  test('active health probe skips idle pre-warmed browsers so idle shutdown can close them', () => {
+    expect(shouldRunActiveHealthProbe({
+      hasBrowser: true,
+      isRecovering: false,
+      sessionsSize: 0,
+      activeOps: 0,
+      timeSinceSuccessMs: 180000,
+    })).toBe(false);
+  });
+
+  test('active health probe still runs for stale browsers with active sessions', () => {
+    expect(shouldRunActiveHealthProbe({
+      hasBrowser: true,
+      isRecovering: false,
+      sessionsSize: 1,
+      activeOps: 0,
+      timeSinceSuccessMs: 180000,
+    })).toBe(true);
   });
 });
