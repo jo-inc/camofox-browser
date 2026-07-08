@@ -142,17 +142,118 @@ describe('set_input_files', () => {
       const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
 
       const snapshot = await client.getSnapshot(tabId);
-      const match = snapshot.snapshot.match(/\[(e\d+)\][^\n]*click to browse/i);
+      // The dropzone carries role=button, so it must appear in the snapshot —
+      // fail loudly rather than silently falling back to the selector path,
+      // which would leave dropzoneRef resolution untested.
+      const dropLine = snapshot.snapshot.split('\n').find(l => /drop file|click to browse/i.test(l));
+      expect(dropLine).toBeTruthy();
+      const refMatch = dropLine.match(/\[(e\d+)\]/);
+      expect(refMatch).toBeTruthy();
 
-      const result = match
-        ? await client.setInputFiles(tabId, { dropzoneRef: match[1], files: [filePath] })
-        : await client.setInputFiles(tabId, { dropzoneSelector: '#dropzone', files: [filePath] });
+      const result = await client.setInputFiles(tabId, { dropzoneRef: refMatch[1], files: [filePath] });
 
       expect(result.ok).toBe(true);
       expect(result.via).toBe('filechooser');
 
       const updated = await client.waitForSnapshotContains(tabId, 'Selected: test-dropzone-ref.txt');
       expect(updated.snapshot).toContain('Selected: test-dropzone-ref.txt');
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('rejects a symlink inside the uploads dir that points outside it', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      // A symlink planted in the uploads dir must not smuggle an out-of-tree
+      // target (e.g. /etc/passwd) past the containment check.
+      const link = path.join(uploadsDir, 'escape.txt');
+      try { fs.unlinkSync(link); } catch { /* not present */ }
+      fs.symlinkSync('/etc/passwd', link);
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload`);
+
+      await expect(
+        client.setInputFiles(tabId, { selector: '#fileInput', files: [link] })
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      try { fs.unlinkSync(path.join(uploadsDir, 'escape.txt')); } catch { /* ignore */ }
+      await client.cleanup();
+    }
+  });
+
+  test('rejects a directory path even inside the uploads dir', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const dir = path.join(uploadsDir, 'a-directory');
+      fs.mkdirSync(dir, { recursive: true });
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload`);
+
+      await expect(
+        client.setInputFiles(tabId, { selector: '#fileInput', files: [dir] })
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('rejects when userId is missing', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-nouser.txt');
+      fs.writeFileSync(filePath, 'content');
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload`);
+
+      await expect(
+        client.setInputFiles(tabId, { userId: undefined, selector: '#fileInput', files: [filePath] })
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('dropzone target takes precedence when both a direct and dropzone target are given', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-precedence.txt');
+      fs.writeFileSync(filePath, 'content');
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
+
+      // Supply both a valid direct input selector and the dropzone selector.
+      const result = await client.setInputFiles(tabId, {
+        selector: '#hiddenInput',
+        dropzoneSelector: '#dropzone',
+        files: [filePath],
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.via).toBe('filechooser');
+    } finally {
+      await client.cleanup();
+    }
+  });
+
+  test('direct setInputFiles on a non-input dropzone div fails (justifies the dropzone path)', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const filePath = path.join(uploadsDir, 'test-divfail.txt');
+      fs.writeFileSync(filePath, 'content');
+
+      const { tabId } = await client.createTab(`${testSiteUrl}/file-upload-dropzone`);
+
+      // Targeting the visible div directly (not via the dropzone path) cannot
+      // work — it isn't an <input type=file>. This is why dropzoneSelector exists.
+      await expect(
+        client.setInputFiles(tabId, { selector: '#dropzone', files: [filePath] })
+      ).rejects.toThrow();
     } finally {
       await client.cleanup();
     }

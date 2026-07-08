@@ -3693,6 +3693,28 @@ app.post('/tabs/:tabId/type', async (req, res) => {
 });
 
 // Set input files (upload)
+const SET_INPUT_FILES_TIMEOUT_MS = 10000;
+const DROPZONE_CLICK_TIMEOUT_MS = 10000;
+// Chooser wait must comfortably exceed the click timeout: a slow click that
+// only opens the chooser near its own deadline must not lose a race to an
+// equal-length chooser timer and report a false "no chooser".
+const DROPZONE_CHOOSER_TIMEOUT_MS = 15000;
+
+// Realpath the allowlist root once (the mount itself may be a symlink) so the
+// per-file containment check compares fully-resolved paths. Cached only on
+// success — if the dir doesn't exist yet we fall back without caching.
+let _uploadsRootReal = null;
+async function uploadsRootReal() {
+  if (_uploadsRootReal) return _uploadsRootReal;
+  const base = path.resolve(CONFIG.uploadsDir);
+  try {
+    _uploadsRootReal = await fs.promises.realpath(base);
+    return _uploadsRootReal;
+  } catch {
+    return base;
+  }
+}
+
 /**
  * @openapi
  * /tabs/{tabId}/set_input_files:
@@ -3764,7 +3786,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
  *                   type: array
  *                   items: { type: string }
  *       400:
- *         description: Bad request (missing target/fields, path outside uploads dir, unreadable file, or dropzone click opened no file chooser).
+ *         description: Bad request (missing userId/target/fields, path resolving outside uploads dir, non-file or unreadable path, or dropzone click opened no file chooser).
  *         content:
  *           application/json:
  *             schema:
@@ -3781,6 +3803,7 @@ app.post('/tabs/:tabId/set_input_files', async (req, res) => {
 
   try {
     const { userId, ref, selector, dropzoneRef, dropzoneSelector, files } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
@@ -3794,22 +3817,38 @@ app.post('/tabs/:tabId/set_input_files', async (req, res) => {
 
     // Restrict to a single allowlisted directory so this endpoint can't be
     // turned into an arbitrary-file-exfiltration channel via the browser.
-    const ALLOWED_ROOT = path.resolve(process.env.CAMOFOX_UPLOADS_DIR || '/home/node/cv-uploads');
+    // Containment is checked on the *realpath* — a symlink planted inside the
+    // uploads dir must not be able to point Playwright at files outside it.
+    const ALLOWED_ROOT = await uploadsRootReal();
     const resolved = [];
     for (const f of files) {
       if (typeof f !== 'string') {
         return res.status(400).json({ error: 'each file must be a string path' });
       }
-      const abs = path.resolve(f);
-      if (abs !== ALLOWED_ROOT && !abs.startsWith(ALLOWED_ROOT + path.sep)) {
-        return res.status(400).json({ error: `path outside allowed uploads dir (${ALLOWED_ROOT}): ${abs}` });
+      let real;
+      try {
+        real = await fs.promises.realpath(path.resolve(f));
+      } catch {
+        return res.status(400).json({ error: `file not found: ${f}` });
+      }
+      if (real !== ALLOWED_ROOT && !real.startsWith(ALLOWED_ROOT + path.sep)) {
+        return res.status(400).json({ error: `path outside allowed uploads dir (${ALLOWED_ROOT})` });
+      }
+      let stat;
+      try {
+        stat = await fs.promises.stat(real);
+      } catch {
+        return res.status(400).json({ error: `file not readable: ${f}` });
+      }
+      if (!stat.isFile()) {
+        return res.status(400).json({ error: `not a regular file: ${f}` });
       }
       try {
-        await fs.promises.access(abs, fs.constants.R_OK);
+        await fs.promises.access(real, fs.constants.R_OK);
       } catch {
-        return res.status(400).json({ error: `file not readable: ${abs}` });
+        return res.status(400).json({ error: `file not readable: ${f}` });
       }
-      resolved.push(abs);
+      resolved.push(real);
     }
 
     const { tabState } = found;
@@ -3842,13 +3881,19 @@ app.post('/tabs/:tabId/set_input_files', async (req, res) => {
 
         // Register the waiter before clicking so we can't miss a fast chooser.
         const chooserPromise = tabState.page
-          .waitForEvent('filechooser', { timeout: 10000 })
+          .waitForEvent('filechooser', { timeout: DROPZONE_CHOOSER_TIMEOUT_MS })
           .catch(() => null);
         try {
-          await target.click({ timeout: 10000 });
+          await target.click({ timeout: DROPZONE_CLICK_TIMEOUT_MS });
         } catch (clickErr) {
-          // Dropzones often wrap the clickable region; retry forcing the click.
-          await target.click({ timeout: 10000, force: true });
+          // Only force through a click that was blocked or timed out (dropzones
+          // often wrap the clickable region under an overlay). A strict-mode
+          // violation, detached node, or closed target won't be fixed by force
+          // and must surface with its real diagnostic.
+          if (!isTimeoutError(clickErr) && !clickErr.message?.includes('intercepts pointer events')) {
+            throw clickErr;
+          }
+          await target.click({ timeout: DROPZONE_CLICK_TIMEOUT_MS, force: true });
         }
 
         const chooser = await chooserPromise;
@@ -3857,16 +3902,16 @@ app.post('/tabs/:tabId/set_input_files', async (req, res) => {
           err.statusCode = 400;
           throw err;
         }
-        await chooser.setFiles(resolved, { timeout: 10000 });
+        await chooser.setFiles(resolved, { timeout: SET_INPUT_FILES_TIMEOUT_MS });
         return 'filechooser';
       }
 
       // Direct path: set files straight on the <input type="file">.
       if (ref) {
         const locator = await resolveRef(ref, 'set_input_files');
-        await locator.setInputFiles(resolved, { timeout: 10000 });
+        await locator.setInputFiles(resolved, { timeout: SET_INPUT_FILES_TIMEOUT_MS });
       } else {
-        await tabState.page.setInputFiles(selector, resolved, { timeout: 10000 });
+        await tabState.page.setInputFiles(selector, resolved, { timeout: SET_INPUT_FILES_TIMEOUT_MS });
       }
       return 'input';
     });
@@ -3874,7 +3919,9 @@ app.post('/tabs/:tabId/set_input_files', async (req, res) => {
     pluginEvents.emit('tab:set_input_files', { userId, tabId, files: resolved, ref, selector, dropzoneRef, dropzoneSelector, via });
     res.json({ ok: true, via, files: resolved });
   } catch (err) {
-    log('error', 'set_input_files failed', { reqId: req.reqId, error: err.message });
+    // Client errors (bad path, no chooser) shouldn't log at error level or skew error metrics.
+    const level = err.statusCode && err.statusCode < 500 ? 'info' : 'error';
+    log(level, 'set_input_files failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });

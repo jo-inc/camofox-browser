@@ -336,7 +336,7 @@ function createTestApp() {
       <html><head><title>Dropzone Upload Test</title></head>
       <body>
         <h1>Dropzone Upload Test</h1>
-        <div id="dropzone" style="width:300px;height:120px;border:2px dashed #888;cursor:pointer">
+        <div id="dropzone" role="button" tabindex="0" style="width:300px;height:120px;border:2px dashed #888;cursor:pointer">
           Drop file here or click to browse
         </div>
         <input type="file" id="hiddenInput" style="display:none" />

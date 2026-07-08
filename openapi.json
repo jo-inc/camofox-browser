@@ -1099,7 +1099,7 @@
             }
           },
           "400": {
-            "description": "Bad request (missing target/fields, path outside uploads dir, unreadable file, or dropzone click opened no file chooser).",
+            "description": "Bad request (missing userId/target/fields, path resolving outside uploads dir, non-file or unreadable path, or dropzone click opened no file chooser).",
             "content": {
               "application/json": {
                 "schema": {
