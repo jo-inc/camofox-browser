@@ -30,7 +30,7 @@ import {
   initMetrics, getRegister, isMetricsEnabled, createMetric,
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
-import { actionFromReq, classifyError } from './lib/request-utils.js';
+import { actionFromReq, classifyError, validateUrl } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
@@ -149,8 +149,6 @@ app.use('/tabs/:tabId', fly.replayMiddleware(log));
 // so each key gates a distinct surface. When unset, behavior is unchanged.
 app.use(accessKeyMiddleware(CONFIG));
 
-const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
-
 // Interactive roles to include - exclude combobox to avoid opening complex widgets
 // (date pickers, dropdowns) that can interfere with navigation
 const INTERACTIVE_ROLES = [
@@ -207,17 +205,7 @@ function sendError(res, err, extraFields = {}) {
   res.status(status).json(body);
 }
 
-function validateUrl(url) {
-  try {
-    const parsed = new URL(url);
-    if (!ALLOWED_URL_SCHEMES.includes(parsed.protocol)) {
-      return `Blocked URL scheme: ${parsed.protocol} (only http/https allowed)`;
-    }
-    return null;
-  } catch {
-    return `Invalid URL: ${url}`;
-  }
-}
+// validateUrl -- now imported from lib/request-utils.js (allows about:blank)
 
 // isLoopbackAddress -- now imported from lib/auth.js (see top of file)
 
