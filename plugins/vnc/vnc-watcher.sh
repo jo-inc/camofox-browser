@@ -45,12 +45,19 @@ websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/va
 log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
 while true; do
-  # Find Xvfb with our patched resolution
-  FOUND=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
-    /\/Xvfb :[0-9]+/ && index($0, res) {
-      for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; exit }
-    }
-  ' | head -1)
+  # Find Xvfb display via socket file in /tmp/.X11-unix/X*
+  # Works for both `:N` literal launches and `-displayfd N` launches (where
+  # the display number is NOT present as a `:N` token in `ps` args).
+  # Use [ -S ] to verify the path is a socket, not a directory.
+  FOUND=""
+  for sock in /tmp/.X11-unix/X*; do
+    [ -e "$sock" ] || continue
+    DISP_NUM=$(basename "$sock" | sed 's/^X//')
+    echo "$DISP_NUM" | grep -qE '^[0-9]+$' || continue
+    [ -S "$sock" ] || continue
+    FOUND=":$DISP_NUM"
+    break
+  done
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
     # New or changed display -- (re)attach x11vnc
