@@ -8,6 +8,15 @@ afterEach(() => {
 });
 
 describe('loadConfig', () => {
+  test('reads the optional API bind host and forwards it to server subprocesses', () => {
+    process.env.CAMOFOX_BIND_HOST = '127.0.0.1';
+
+    const config = loadConfig();
+
+    expect(config.bindHost).toBe('127.0.0.1');
+    expect(config.serverEnv.CAMOFOX_BIND_HOST).toBe('127.0.0.1');
+  });
+
   test('prefers CAMOUFOX_EXECUTABLE for external Camoufox executable', () => {
     process.env.CAMOUFOX_EXECUTABLE = '/nix/store/camoufox/bin/camoufox';
     process.env.CAMOUFOX_EXECUTABLE_PATH = '/ignored/camoufox';
