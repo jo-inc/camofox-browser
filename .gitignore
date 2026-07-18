@@ -13,6 +13,11 @@ npm-debug.log*
 *.seed
 *.pid.lock
 
+# Local pi project scaffold
+ABOUT.md
+CRON.md
+MEMORY.md
+
 # Coverage
 coverage/
 .nyc_output/
@@ -20,6 +25,7 @@ coverage/
 # Build
 dist/
 build/
+/plugin.js
 /plugin.js.map
 
 # IDE
@@ -33,7 +39,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# .github/ — removed to allow CI workflow tracking
 fly.toml
 
 # Camoufox cache

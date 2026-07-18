@@ -1,0 +1,43 @@
+app = "jo-browser"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Horizontal scaling: Fly auto-starts stopped machines when running ones hit soft_limit.
+# Max machines = pool size set via: fly scale count N --region sjc
+# Pool size target: 3 machines (2 always running, 1 on-demand burst).
+# Browser idle shutdown (server.js) only kills the Camoufox process, not the machine.
+[http_service]
+  internal_port = 9377
+  force_https = false
+  auto_stop_machines = false       # machines stay running — Fly manages lifecycle
+  auto_start_machines = true       # Fly starts stopped machines on demand
+  min_machines_running = 2         # 2 always up for zero-downtime rolling deploys
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 25
+    hard_limit = 35
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    path = "/health"
+
+[metrics]
+  port = 9377
+  path = "/metrics"
+
+[[vm]]
+  memory = "4gb"
+  cpu_kind = "performance"
+  cpus = 1
+
+[[restart]]
+  policy = "always"
+
+[env]
+  NODE_ENV = "production"
+  SESSION_TIMEOUT_MS = "600000"
+  BROWSER_IDLE_TIMEOUT_MS = "900000"
+  MAX_SESSIONS = "10"
+  MAX_OLD_SPACE_SIZE = "512"

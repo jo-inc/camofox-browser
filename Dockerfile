@@ -42,24 +42,25 @@ RUN apt-get update && apt-get install -y \
     python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-bake Camoufox browser binary into image via bind mount (downloaded by Makefile)
+# Pre-bake Camoufox browser binary into image (downloaded at build time)
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
-RUN --mount=type=bind,source=dist,target=/dist \
-    mkdir -p /root/.cache/camoufox \
-    && (unzip -q /dist/camoufox-${ARCH}.zip -d /root/.cache/camoufox || true) \
+RUN mkdir -p /root/.cache/camoufox \
+    && curl -L -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${ARCH}.zip" \
+    && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
+    && rm /tmp/camoufox.zip \
     && chmod -R 755 /root/.cache/camoufox \
     && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
 
 # Install yt-dlp for YouTube transcript extraction (no browser needed)
-RUN --mount=type=bind,source=dist,target=/dist \
-    install -m 755 /dist/yt-dlp-${ARCH} /usr/local/bin/yt-dlp
+RUN curl -L -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
+    && chmod 755 /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
-RUN npm install --production
+RUN npm ci --omit=dev
 
 COPY server.js ./
 COPY camofox.config.json ./

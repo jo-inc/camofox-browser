@@ -1,10 +1,17 @@
 {
-  "id": "camofox-browser",
-  "name": "Camofox Browser",
+  "id": "jo-browser",
+  "name": "Jo Browser",
   "version": "1.6.0",
   "plugins": {
-    "youtube": { "enabled": true },
-    "persistence": { "enabled": true },
-    "vnc": { "enabled": false, "resolution": "1920x1080" }
+    "youtube": {
+      "enabled": true
+    },
+    "persistence": {
+      "enabled": false
+    }
+  },
+  "crashReporter": {
+    "repo": "jo-inc/jo-browser",
+    "userAgent": "jo-browser-crash-reporter"
   }
 }

@@ -622,7 +622,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_TRACES_TTL_HOURS` | Traces older than this are swept on startup | `24` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
-| `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
+| `SESSION_TIMEOUT_MS` | Session inactivity timeout | `600000` (10min) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle (0 = never) | `300000` (5min) |
 | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |

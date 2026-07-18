@@ -10,6 +10,12 @@ npm install && npm start
 # Server runs on http://localhost:9377
 ```
 
+## Deploy
+
+Production deploys are handled by GitHub Actions in `.github/workflows/deploy.yml` on pushes to `master` or `main` (and manual `workflow_dispatch`). The workflow runs syntax checks + unit tests, then `flyctl deploy --remote-only` using `FLY_API_TOKEN`.
+
+Do not normally run `fly deploy` locally for committed changes; commit and push so CI owns the deploy. Use local `fly deploy --app jo-browser` only for explicit emergency/manual deploys, and verify Fly machine health afterward.
+
 ## Core Workflow
 
 1. **Create a tab** -> Get `tabId`
