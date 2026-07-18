@@ -2,8 +2,8 @@ FROM node:22-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
-ARG CAMOUFOX_VERSION=135.0.1
-ARG CAMOUFOX_RELEASE=beta.24
+ARG CAMOUFOX_VERSION=152.0.4
+ARG CAMOUFOX_RELEASE=beta.27
 ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
