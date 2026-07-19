@@ -6,7 +6,9 @@ const mockWatcher = () => {
   const proc = new EventEmitter();
   proc.pid = 12345;
   proc.exitCode = null;
-  proc.kill = jest.fn();
+  proc.killed = false;
+  proc.getVncStatus = jest.fn(() => ({ running: true, display: ':0', pid: 23456 }));
+  proc.kill = jest.fn(() => { proc.killed = true; });
   return proc;
 };
 const mockStartWatcher = jest.fn(mockWatcher);
@@ -88,6 +90,36 @@ describe('vnc plugin', () => {
       expect.any(Function),
       expect.any(Function),
     );
+  });
+
+  test('status endpoint reports watcher state and configured ports without auth', async () => {
+    await register(mockApp, ctx, { enabled: true, vncPort: 5901, novncPort: 6081 });
+
+    const handlers = routes['GET /vnc/status'];
+    expect(handlers).toHaveLength(1);
+    const res = { json: jest.fn() };
+    handlers[0]({}, res);
+
+    expect(res.json).toHaveBeenCalledWith({
+      enabled: true,
+      running: true,
+      watcherRunning: true,
+      display: ':0',
+      vncPort: 5901,
+      novncPort: 6081,
+      path: '/vnc.html',
+    });
+  });
+
+  test('status endpoint reports a stopped watcher', async () => {
+    await register(mockApp, ctx, { enabled: true });
+    const proc = mockStartWatcher.mock.results[0].value;
+    proc.exitCode = 1;
+    proc.getVncStatus.mockReturnValue({ running: false });
+
+    const res = { json: jest.fn() };
+    routes['GET /vnc/status'][0]({}, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ running: false }));
   });
 
   test('passes resolved config to startWatcher', async () => {
