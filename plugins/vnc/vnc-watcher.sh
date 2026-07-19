@@ -40,17 +40,20 @@ if [ ! -d "$NOVNC_DIR" ]; then
 fi
 VNC_BIND="${VNC_BIND:-127.0.0.1}"
 log "Starting noVNC (websockify) on $VNC_BIND:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
-websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/var/log/novnc.log 2>&1 &
+websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/tmp/camofox-novnc.log 2>&1 &
 
 log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
 while true; do
   # Find Xvfb with our patched resolution
-  FOUND=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
-    /\/Xvfb :[0-9]+/ && index($0, res) {
-      for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; exit }
+  # Only attach to the Xvfb spawned by this watcher's server process. Other
+  # agents and test runs may have displays with the same resolution.
+  FOUND=$(ps -eo pid=,ppid=,args= 2>/dev/null | awk -v parent="$PPID" -v res="$VNC_RESOLUTION" '
+    $2 == parent && /\/Xvfb :[0-9]+/ && index($0, res) {
+      for (i=3;i<=NF;i++) if ($i ~ /^:[0-9]+$/) found=$i
     }
-  ' | head -1)
+    END { if (found) print found }
+  ')
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
     # New or changed display -- (re)attach x11vnc
@@ -63,7 +66,7 @@ while true; do
     CURRENT_DISPLAY="$FOUND"
     log "Attaching x11vnc to DISPLAY=$CURRENT_DISPLAY"
 
-    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -rfbport $VNC_PORT -noxdamage -quiet -bg -o /var/log/x11vnc.log"
+    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -localhost -rfbport $VNC_PORT -noxdamage -quiet -bg -o /tmp/camofox-x11vnc.log"
     [ "${VIEW_ONLY:-0}" = "1" ] && X11VNC_ARGS="$X11VNC_ARGS -viewonly"
     if [ -n "$PASSFILE" ]; then
       X11VNC_ARGS="$X11VNC_ARGS -rfbauth $PASSFILE"

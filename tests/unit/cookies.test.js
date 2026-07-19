@@ -65,16 +65,20 @@ async function startServerWithoutApiKey() {
 
 function stopServer() {
   return new Promise((resolve) => {
-    if (!serverProcess) return resolve();
-    serverProcess.on('close', () => {
-      serverProcess = null;
-      serverUrl = null;
+    const proc = serverProcess;
+    if (!proc) return resolve();
+    const killTimer = setTimeout(() => {
+      if (!proc.killed) proc.kill('SIGKILL');
+    }, 5000);
+    proc.on('close', () => {
+      clearTimeout(killTimer);
+      if (serverProcess === proc) {
+        serverProcess = null;
+        serverUrl = null;
+      }
       resolve();
     });
-    serverProcess.kill('SIGTERM');
-    setTimeout(() => {
-      if (serverProcess) serverProcess.kill('SIGKILL');
-    }, 5000);
+    proc.kill('SIGTERM');
   });
 }
 

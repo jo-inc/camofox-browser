@@ -159,6 +159,16 @@ describe('actionFromReq classifies routes correctly', () => {
   test('create_tab route → "create_tab"', () => {
     expect(actionFromReq(makeReq('POST', '/tabs'))).toBe('create_tab');
   });
+
+  test('concrete tab action paths are normalized', () => {
+    expect(actionFromReq({ method: 'POST', path: '/tabs/68341eecdd3168_abc-123/navigate' })).toBe('navigate');
+    expect(actionFromReq({ method: 'GET', path: '/tabs/68341eecdd3168_abc-123/snapshot' })).toBe('snapshot');
+  });
+
+  test('concrete session paths are normalized', () => {
+    expect(actionFromReq({ method: 'DELETE', path: '/sessions/17900' })).toBe('delete_session');
+    expect(actionFromReq({ method: 'POST', path: '/sessions/17900/cookies' })).toBe('set_cookies');
+  });
 });
 
 describe('classifyError categorizes timeout vs proxy', () => {
@@ -176,5 +186,20 @@ describe('classifyError categorizes timeout vs proxy', () => {
 
   test('dead context → "dead_context"', () => {
     expect(classifyError(new Error('Target page, context or browser has been closed'))).toBe('dead_context');
+  });
+
+  test('operational browser failures classify without unknown', () => {
+    expect(classifyError(Object.assign(new Error('Unknown ref: e999'), { code: 'stale_refs' }))).toBe('stale_refs');
+    expect(classifyError(new Error('Execution context was destroyed, most likely because of a navigation'))).toBe('navigation_race');
+    expect(classifyError(new Error('page.goto: NS_ERROR_NET_INTERRUPT'))).toBe('navigation_race');
+    expect(classifyError(new Error('page.reload: NS_BINDING_ABORTED'))).toBe('navigation_race');
+    expect(classifyError(new Error("locator.click: Error: strict mode violation: locator('td') resolved to 62 elements:"))).toBe('ambiguous_selector');
+    expect(classifyError(new Error('locator.fill: Error: Malformed value'))).toBe('element_error');
+    expect(classifyError(new Error('Element input[type=submit] is not fillable. Use click for buttons and other controls.'))).toBe('element_error');
+    expect(classifyError(new Error('locator.fill: Unexpected token "[" while parsing selector "text=[broken"'))).toBe('invalid_selector');
+    expect(classifyError(new Error('User concurrency limit reached, try again'))).toBe('concurrency_timeout');
+    expect(classifyError(new Error('Browser launch timeout (60s)'))).toBe('browser_launch');
+    expect(classifyError(new Error('Element is not attached to the DOM'))).toBe('element_error');
+    expect(classifyError(new Error('Target crashed'))).toBe('page_crashed');
   });
 });
