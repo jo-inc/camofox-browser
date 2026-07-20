@@ -25,57 +25,139 @@ npm start     # → http://localhost:9377
 
 This stays running in the background. It does not need to be your cwd afterwards.
 
-## 2. Register the MCP server
+## 2. Install the `camofox-mcp` bin
 
-Pick one — they all expose the same `camofox-mcp` bin so they work from **any directory**.
-
-**Option A — `npm link` (recommended for local development)**
-
-From the camofox-browser checkout (once):
+The MCP server is the same for every host — what differs is only the config file you paste into. First, make the `camofox-mcp` bin available on your PATH. Pick one:
 
 ```bash
-npm link           # exposes the `camofox-mcp` bin globally
-```
+# Option A — npm link (if you have the source checkout; picks up local edits)
+cd camofox-browser && npm link
 
-Then register from anywhere:
-
-```bash
-claude mcp add camofox-browser -- camofox-mcp
-```
-
-**Option B — `npm install -g` (global install without the source checkout)**
-
-```bash
+# Option B — global install (no source checkout needed)
 npm install -g @askjo/camofox-browser
-claude mcp add camofox-browser -- camofox-mcp
+
+# Option C — npx (no install; pins to a published version)
+#   use `npx -y @askjo/camofox-browser mcp` wherever a command is expected below
 ```
 
-**Option C — `npx` (no install; pins to a published version)**
+Verify the bin resolves from any directory:
 
 ```bash
-claude mcp add camofox-browser -- npx -y @askjo/camofox-browser mcp
+which camofox-mcp   # → .../bin/camofox-mcp
 ```
 
-**From-source fallback** (only if you're working inside the checkout and haven't linked):
+## 3. Register with your host
+
+All five hosts speak standard MCP, so they all run the same `camofox-mcp` bin. Pick your host's config snippet below.
+
+### Claude Code
 
 ```bash
-claude mcp add camofox-browser -- node ./mcp/server.mjs
+# CLI (user scope = available in every project)
+claude mcp add camofox-browser -s user -- camofox-mcp
 ```
 
-> ⚠️ The `node ./mcp/server.mjs` form is **path-dependent** — it only works when cwd is the checkout. Prefer options A–C for use outside the repo.
+Or in `~/.claude.json` (user) / `.mcp.json` (project, checked in):
 
-If you need cookie import or a non-default REST URL, pass env:
+```json
+{
+  "mcpServers": {
+    "camofox-browser": {
+      "command": "camofox-mcp"
+    }
+  }
+}
+```
+
+### Codex CLI
+
+`~/.codex/config.toml` (user) or `.codex/config.toml` (project, trusted dirs only):
+
+```toml
+[mcp_servers.camofox-browser]
+command = "camofox-mcp"
+env = { CAMOFOX_BASE_URL = "http://localhost:9377" }
+```
+
+### Antigravity / agy
+
+Global `~/.gemini/config/mcp_config.json` or workspace `.agents/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "camofox-browser": {
+      "command": "camofox-mcp"
+    }
+  }
+}
+```
+
+### Cursor
+
+Global `~/.cursor/mcp.json` or project `.cursor/mcp.json` (checked in):
+
+```json
+{
+  "mcpServers": {
+    "camofox-browser": {
+      "command": "camofox-mcp"
+    }
+  }
+}
+```
+
+(Or via UI: Settings → Cursor Settings → MCP → Add New MCP Server.)
+
+### opencode
+
+`opencode.json` in the project root, or global `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "camofox-browser": {
+      "type": "local",
+      "command": ["camofox-mcp"]
+    }
+  }
+}
+```
+
+### Common: env vars and from-source fallback
+
+If you need cookie import or a non-default REST URL, add env. Example for Claude Code:
 
 ```bash
-claude mcp add camofox-browser \
+claude mcp add camofox-browser -s user \
   --env CAMOFOX_BASE_URL=http://localhost:9377 \
   --env CAMOFOX_API_KEY=<key> \
   -- camofox-mcp
 ```
 
-## 3. Verify
+For the other hosts, add the same keys to the `env` / `environment` field of that host's snippet.
 
-Run `/mcp` in Claude Code. You should see `camofox-browser` connected with all 11 tools.
+**From-source fallback** (only if you're inside the checkout and haven't linked the bin):
+
+```bash
+# Replace `camofox-mcp` with `node /absolute/path/to/mcp/server.mjs`
+claude mcp add camofox-browser -- node /Users/you/src/camofox-browser/mcp/server.mjs
+```
+
+> ⚠️ Always prefer the `camofox-mcp` bin (options A/B/C above). The `node ./mcp/server.mjs` form is **path-dependent** — relative paths break outside the checkout.
+
+## 4. Verify
+
+| Host | How to verify |
+|------|---------------|
+| Claude Code | `/mcp` — `camofox-browser` shows connected |
+| Codex CLI | `codex` then check MCP server list |
+| agy | `/mcp` overlay in the `agy` CLI |
+| Cursor | Settings → MCP — server shows green |
+| opencode | `opencode mcp list` |
+
+You should see 11 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_click`, `camofox_type`, `camofox_navigate`, `camofox_scroll`, `camofox_screenshot`, `camofox_evaluate`, `camofox_list_tabs`, `camofox_close_tab`, `camofox_import_cookies`.
 
 ## Tools
 
@@ -121,7 +203,7 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 - **`422 strict mode violation ... resolved to N elements`** on `click` — CSS selector matched multiple elements. Re-snapshot and click by element ref.
 - **`403 Forbidden` on `camofox_import_cookies`** — key mismatch between REST server and MCP server, or hitting a remote server without `CAMOFOX_API_KEY`.
 
-## Verification
+## Smoke test (developer)
 
 A dependency-free smoke test exercises the handshake, all 11 tools, and schemas — no REST server required:
 
