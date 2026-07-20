@@ -134,7 +134,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_create_tab" });
     api.registerTool((ctx) => ({
         name: "camofox_snapshot",
         description: "Get accessibility snapshot of a Camoufox page with element refs (e1, e2, etc.) for interaction, plus a visual screenshot. " +
@@ -162,7 +162,7 @@ export default function register(api) {
             }
             return { content };
         },
-    }));
+    }), { name: "camofox_snapshot" });
     api.registerTool((ctx) => ({
         name: "camofox_click",
         description: "Click an element in a Camoufox tab by ref (e.g., e1) or CSS selector.",
@@ -184,7 +184,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_click" });
     api.registerTool((ctx) => ({
         name: "camofox_type",
         description: "Type text into an element in a Camoufox tab.",
@@ -208,7 +208,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_type" });
     api.registerTool((ctx) => ({
         name: "camofox_navigate",
         description: "Navigate a Camoufox tab to a URL or use a search macro (@google_search, @youtube_search, etc.). Preferred over Chrome for sites with bot detection.",
@@ -249,7 +249,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_navigate" });
     api.registerTool((ctx) => ({
         name: "camofox_scroll",
         description: "Scroll a Camoufox page.",
@@ -271,7 +271,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_scroll" });
     api.registerTool((ctx) => ({
         name: "camofox_screenshot",
         description: "Take a screenshot of a Camoufox page.",
@@ -310,7 +310,7 @@ export default function register(api) {
                 ],
             };
         },
-    }));
+    }), { name: "camofox_screenshot" });
     api.registerTool((ctx) => ({
         name: "camofox_close_tab",
         description: "Close a Camoufox browser tab.",
@@ -329,7 +329,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_close_tab" });
     api.registerTool((ctx) => ({
         name: "camofox_evaluate",
         description: "Execute JavaScript in a Camoufox tab's page context. Returns the result of the expression. Use for injecting scripts, reading page state, or calling web app APIs.",
@@ -350,7 +350,7 @@ export default function register(api) {
             });
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_evaluate" });
     api.registerTool((ctx) => ({
         name: "camofox_list_tabs",
         description: "List all open Camoufox tabs for a user.",
@@ -364,7 +364,7 @@ export default function register(api) {
             const result = await fetchApi(baseUrl, `/tabs?userId=${userId}`);
             return toToolResult(result);
         },
-    }));
+    }), { name: "camofox_list_tabs" });
     api.registerTool((ctx) => ({
         name: "camofox_import_cookies",
         description: "Import cookies into the current Camoufox user session (Netscape cookie file). Use to authenticate to sites like LinkedIn without interactive login.",
@@ -401,7 +401,7 @@ export default function register(api) {
             });
             return toToolResult({ imported: pwCookies.length, userId, result });
         },
-    }));
+    }), { name: "camofox_import_cookies" });
     api.registerCommand({
         name: "camofox",
         description: "Camoufox browser server control (status, start, stop)",
@@ -483,7 +483,7 @@ export default function register(api) {
     if (api.registerRpc) {
         api.registerRpc("camofox.health", async () => {
             try {
-                const health = await fetchApi(baseUrl, "/health");
+                const health = (await fetchApi(baseUrl, "/health"));
                 return { status: "ok", ...health };
             }
             catch (err) {

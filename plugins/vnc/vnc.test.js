@@ -1,12 +1,15 @@
 import { EventEmitter } from 'node:events';
 import { jest } from '@jest/globals';
+import { createPluginEvents } from '../../lib/plugins.js';
 
 // Mock the launcher module -- index.js no longer imports child_process directly
 const mockWatcher = () => {
   const proc = new EventEmitter();
   proc.pid = 12345;
   proc.exitCode = null;
-  proc.kill = jest.fn();
+  proc.killed = false;
+  proc.getVncStatus = jest.fn(() => ({ running: true, display: ':0', pid: 23456 }));
+  proc.kill = jest.fn(() => { proc.killed = true; });
   return proc;
 };
 const mockStartWatcher = jest.fn(mockWatcher);
@@ -44,8 +47,7 @@ describe('vnc plugin', () => {
   let events, ctx, mockApp, routes;
 
   beforeEach(() => {
-    events = new EventEmitter();
-    events.setMaxListeners(50);
+    events = createPluginEvents();
     routes = {};
     mockApp = {
       get: jest.fn((path, ...handlers) => { routes[`GET ${path}`] = handlers; }),
@@ -88,6 +90,36 @@ describe('vnc plugin', () => {
       expect.any(Function),
       expect.any(Function),
     );
+  });
+
+  test('status endpoint reports watcher state and configured ports without auth', async () => {
+    await register(mockApp, ctx, { enabled: true, vncPort: 5901, novncPort: 6081 });
+
+    const handlers = routes['GET /vnc/status'];
+    expect(handlers).toHaveLength(1);
+    const res = { json: jest.fn() };
+    handlers[0]({}, res);
+
+    expect(res.json).toHaveBeenCalledWith({
+      enabled: true,
+      running: true,
+      watcherRunning: true,
+      display: ':0',
+      vncPort: 5901,
+      novncPort: 6081,
+      path: '/vnc.html',
+    });
+  });
+
+  test('status endpoint reports a stopped watcher', async () => {
+    await register(mockApp, ctx, { enabled: true });
+    const proc = mockStartWatcher.mock.results[0].value;
+    proc.exitCode = 1;
+    proc.getVncStatus.mockReturnValue({ running: false });
+
+    const res = { json: jest.fn() };
+    routes['GET /vnc/status'][0]({}, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ running: false }));
   });
 
   test('passes resolved config to startWatcher', async () => {
@@ -153,7 +185,24 @@ describe('vnc plugin', () => {
     const res = { json: jest.fn() };
 
     await handler(req, res);
+    expect(ctx.sessions.get('user-1').context.storageState).toHaveBeenCalledWith(undefined);
     expect(res.json).toHaveBeenCalledWith(mockState);
+  });
+
+  test('storage_state endpoint includes IndexedDB when persistence opts in', async () => {
+    ctx.persistenceStorageStateOptions = { indexedDB: true };
+    await register(mockApp, ctx, { enabled: true });
+
+    const storageState = jest.fn(async () => ({ cookies: [], origins: [] }));
+    ctx.sessions.set('user-1', { context: { storageState } });
+
+    const handler = routes['GET /sessions/:userId/storage_state'].at(-1);
+    await handler(
+      { params: { userId: 'user-1' }, reqId: 'test' },
+      { json: jest.fn() },
+    );
+
+    expect(storageState).toHaveBeenCalledWith({ indexedDB: true });
   });
 
   test('storage_state endpoint uses safeError on failure', async () => {
@@ -192,6 +241,10 @@ describe('vnc plugin', () => {
 
     expect(exported).toHaveLength(2);
     expect(exported[0]).toMatchObject({ userId: 'user-1' });
+    expect(exported[1]).toMatchObject({
+      userId: 'user-1',
+      storageState: { cookies: [], origins: [] },
+    });
   });
 
   test('watcher is killed on server:shutdown', async () => {

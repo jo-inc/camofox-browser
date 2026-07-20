@@ -120,8 +120,12 @@ describe('Tab Lifecycle Contract', () => {
       try {
         const { tabId } = await client.createTab(`${testSiteUrl}/popup-source`);
 
-        // Click the target=_blank link
-        await client.click(tabId, { selector: '#blankLink' });
+        // Trigger the browser primitive directly. This suite verifies popup
+        // registration, not the separate /click route and its ref rebuilding.
+        await client.request('POST', `/tabs/${tabId}/evaluate`, {
+          userId: client.userId,
+          expression: "document.querySelector('#blankLink').click()",
+        });
 
         // Wait briefly for popup event to register
         await new Promise(r => setTimeout(r, 1500));
@@ -150,8 +154,12 @@ describe('Tab Lifecycle Contract', () => {
       try {
         const { tabId } = await client.createTab(`${testSiteUrl}/popup-source`);
 
-        // Click the window.open button
-        await client.click(tabId, { selector: '#openBtn' });
+        // Trigger the browser primitive directly. This keeps the lifecycle
+        // assertion independent from /click post-action snapshot behavior.
+        await client.request('POST', `/tabs/${tabId}/evaluate`, {
+          userId: client.userId,
+          expression: "document.querySelector('#openBtn').click()",
+        });
 
         // Wait briefly for popup event to register
         await new Promise(r => setTimeout(r, 1500));
