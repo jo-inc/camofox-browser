@@ -44,6 +44,7 @@
     "dist/plugin.js",
     "tsconfig.json",
     "openclaw.plugin.json",
+    "mcp/",
     "bin/",
     "scripts/",
     "run.sh",
@@ -119,6 +120,8 @@
     "build": "tsc -p . || true; mkdir -p dist && cp plugin.js dist/plugin.js",
     "prepublishOnly": "npm run build",
     "start": "node server.js",
+    "mcp": "node mcp/server.mjs",
+    "test:mcp": "node scripts/test-mcp.mjs",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.e2e.cjs --runInBand --forceExit",
     "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
@@ -132,6 +135,7 @@
     "fetch-bin": "npx camoufox-js fetch"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "camoufox-js": "0.10.2",
     "express": "^4.18.2",
     "playwright-core": "^1.58.0",
@@ -145,6 +149,7 @@
     "typescript": "^5.7.0"
   },
   "bin": {
-    "camofox-browser": "./bin/camofox-browser.js"
+    "camofox-browser": "./bin/camofox-browser.js",
+    "camofox-mcp": "./mcp/server.mjs"
   }
 }

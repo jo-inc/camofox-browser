@@ -78,6 +78,30 @@ openclaw plugins install @askjo/camofox-browser
 
 **Tools:** `camofox_create_tab`  |  `camofox_snapshot`  |  `camofox_click`  |  `camofox_type`  |  `camofox_navigate`  |  `camofox_scroll`  |  `camofox_screenshot`  |  `camofox_close_tab`  |  `camofox_list_tabs`  |  `camofox_import_cookies`
 
+### MCP Server (Claude Code / any MCP host)
+
+A standalone [Model Context Protocol](https://modelcontextprotocol.io) server (`mcp/server.mjs`) exposes the same 11 tools to any MCP-compatible host — Claude Code, Cursor, etc. It mirrors the OpenClaw plugin 1:1 (same tool names, schemas, and REST routes), so behavior is identical regardless of which host reaches camofox.
+
+The MCP server only **forwards** calls — start the REST server first (`npm start`), then register the MCP server with your host:
+
+```bash
+# Claude Code
+claude mcp add camofox-browser \
+  --env CAMOFOX_BASE_URL=http://localhost:9377 \
+  -- node ./mcp/server.mjs
+```
+
+Verify with `/mcp` in Claude Code — you should see `camofox-browser` connected with all 11 tools.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `CAMOFOX_BASE_URL` | `http://localhost:9377` | REST server URL |
+| `CAMOFOX_USER_ID` | `mcp-<random>` | Session isolation (one MCP server = one camofox session) |
+| `CAMOFOX_SESSION_KEY` | `default` | Tab partition within the user |
+| `CAMOFOX_API_KEY` | _(unset)_ | Required only for `camofox_import_cookies` |
+
+Run directly with `npm run mcp`, or use the `camofox-mcp` bin after install.
+
 ### Standalone
 
 Run from npm:
