@@ -912,6 +912,77 @@
         }
       }
     },
+    "/tabs/{tabId}/upload": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Attach a file to an upload control",
+        "description": "Attaches a file to a file-upload control without going through the native OS file dialog. Two strategies are tried in order: (1) if an <input type=\"file\"> is already present, call Playwright setInputFiles on it directly (works for hidden inputs); (2) otherwise arm a filechooser listener, activate the trigger element (ref or selector) via keyboard (focus + Enter) then a forced click as fallback, and call setFiles on the resulting chooser. The path(s) MUST be visible inside the container (e.g. a bind-mounted directory).\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "path"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Absolute container-side path, or array of paths.",
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Trigger element ref (e.g. e36). Optional when an input[type=file] already exists."
+                  },
+                  "selector": {
+                    "type": "string",
+                    "description": "Trigger element CSS/Playwright selector. Optional when an input[type=file] already exists."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File(s) attached."
+          },
+          "400": {
+            "description": "Bad request (missing path/userId or file not found in container)."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/type": {
       "post": {
         "tags": [
