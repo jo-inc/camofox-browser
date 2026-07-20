@@ -437,11 +437,31 @@
                   "trace": {
                     "type": "boolean",
                     "description": "Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session."
+                  },
+                  "proxy": {
+                    "type": "object",
+                    "description": "Optional Playwright proxy for the user BrowserContext. Accepted only when creating a new userId session; all tabs for that userId across sessionKey groups share it. Cannot be used with global PROXY_* configuration.",
+                    "properties": {
+                      "server": {
+                        "type": "string",
+                        "description": "Proxy server URL with http, https, socks4, or socks5 scheme. Do not embed credentials in this URL.",
+                        "example": "http://gw.example.com:10000"
+                      },
+                      "username": {
+                        "type": "string",
+                        "description": "Optional proxy username."
+                      },
+                      "password": {
+                        "type": "string",
+                        "description": "Optional proxy password."
+                      }
+                    }
                   }
                 }
               }
             }
-          }
+          },
+          "description": "Request-level proxies are applied at BrowserContext creation time and do not automatically configure GeoIP-matching locale, timezone, or geolocation."
         },
         "responses": {
           "200": {
@@ -473,7 +493,7 @@
             }
           },
           "409": {
-            "description": "Cannot enable tracing on an existing session.",
+            "description": "Cannot enable tracing on an existing session, or request proxy conflicts with an existing/global proxy session.",
             "content": {
               "application/json": {
                 "schema": {
