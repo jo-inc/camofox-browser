@@ -4,30 +4,78 @@ A standalone [Model Context Protocol](https://modelcontextprotocol.io) server th
 
 It mirrors the existing OpenClaw plugin **1:1**: same 11 tool names, identical JSON-Schema parameters, and the same REST routes. Whether an agent reaches camofox via OpenClaw or MCP, the behavior is identical.
 
-## How it works
+## Architecture
 
-The MCP server only **forwards** calls to the camofox REST server (`localhost:9377` by default). It does not launch the browser itself — start the REST server first, then register the MCP server with your host.
+The MCP server is a thin stdio client over the camofox REST server. Two pieces:
 
-## Quick start
+- **REST server** (`server.js`) — launches Camoufox, exposes the HTTP API on `:9377`. Run **once**, it stays up.
+- **MCP server** (`mcp/server.mjs`, exposed as the `camofox-mcp` bin) — translates MCP tool calls into REST calls. Claude Code spawns one **per session**.
 
-1. Start the REST server (one-time binary download on first run):
+Registering the MCP server does **not** require being inside the camofox-browser checkout. The examples below work from any directory.
 
-   ```bash
-   npm install   # downloads Camoufox (~300MB) on first run
-   npm start     # → http://localhost:9377
-   ```
+## 1. Start the REST server
 
-2. Register the MCP server with your host. For Claude Code:
+Clone the repo and start the server (one-time binary download on first run):
 
-   ```bash
-   claude mcp add camofox-browser \
-     --env CAMOFOX_BASE_URL=http://localhost:9377 \
-     -- node ./mcp/server.mjs
-   ```
+```bash
+git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
+npm install   # downloads Camoufox (~300MB) on first run
+npm start     # → http://localhost:9377
+```
 
-   Or run directly with `npm run mcp`, or via the `camofox-mcp` bin after `npm install`.
+This stays running in the background. It does not need to be your cwd afterwards.
 
-3. Verify — run `/mcp` in Claude Code. You should see `camofox-browser` connected with all 11 tools.
+## 2. Register the MCP server
+
+Pick one — they all expose the same `camofox-mcp` bin so they work from **any directory**.
+
+**Option A — `npm link` (recommended for local development)**
+
+From the camofox-browser checkout (once):
+
+```bash
+npm link           # exposes the `camofox-mcp` bin globally
+```
+
+Then register from anywhere:
+
+```bash
+claude mcp add camofox-browser -- camofox-mcp
+```
+
+**Option B — `npm install -g` (global install without the source checkout)**
+
+```bash
+npm install -g @askjo/camofox-browser
+claude mcp add camofox-browser -- camofox-mcp
+```
+
+**Option C — `npx` (no install; pins to a published version)**
+
+```bash
+claude mcp add camofox-browser -- npx -y @askjo/camofox-browser mcp
+```
+
+**From-source fallback** (only if you're working inside the checkout and haven't linked):
+
+```bash
+claude mcp add camofox-browser -- node ./mcp/server.mjs
+```
+
+> ⚠️ The `node ./mcp/server.mjs` form is **path-dependent** — it only works when cwd is the checkout. Prefer options A–C for use outside the repo.
+
+If you need cookie import or a non-default REST URL, pass env:
+
+```bash
+claude mcp add camofox-browser \
+  --env CAMOFOX_BASE_URL=http://localhost:9377 \
+  --env CAMOFOX_API_KEY=<key> \
+  -- camofox-mcp
+```
+
+## 3. Verify
+
+Run `/mcp` in Claude Code. You should see `camofox-browser` connected with all 11 tools.
 
 ## Tools
 
