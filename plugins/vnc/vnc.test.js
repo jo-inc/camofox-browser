@@ -53,7 +53,6 @@ describe('vnc plugin', () => {
     ctx = {
       events,
       config: {},
-      pluginConfigs: new Map(),
       log: jest.fn(),
       sessions: new Map(),
       safeError: (err) => typeof err === 'string' ? err : (err?.message || 'Internal error'),
@@ -159,7 +158,7 @@ describe('vnc plugin', () => {
   });
 
   test('storage_state endpoint includes IndexedDB when persistence opts in', async () => {
-    ctx.pluginConfigs.set('persistence', { indexedDB: true });
+    ctx.persistenceStorageStateOptions = { indexedDB: true };
     await register(mockApp, ctx, { enabled: true });
 
     const storageState = jest.fn(async () => ({ cookies: [], origins: [] }));

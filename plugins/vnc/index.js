@@ -45,15 +45,12 @@
 
 import { resolveVncConfig, startWatcher } from './vnc-launcher.js';
 import { requireAuth } from '../../lib/auth.js';
-import { resolvePersistenceIndexedDB } from '../../lib/persistence-config.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log, sessions, VirtualDisplay, safeError } = ctx;
 
   // Resolve all config (env vars + pluginConfig) via the launcher module
   const vncConfig = resolveVncConfig(pluginConfig);
-  const persistenceConfig = ctx.pluginConfigs?.get('persistence') || {};
-  const persistIndexedDB = resolvePersistenceIndexedDB(persistenceConfig);
 
   if (!vncConfig.enabled) {
     log('info', 'vnc plugin: disabled (set ENABLE_VNC=1 or plugins.vnc.enabled=true)');
@@ -117,9 +114,7 @@ export async function register(app, ctx, pluginConfig = {}) {
         return res.status(404).json({ error: `No active session for userId="${userId}"` });
       }
 
-      const state = await session.context.storageState(
-        persistIndexedDB ? { indexedDB: true } : undefined
-      );
+      const state = await session.context.storageState(ctx.persistenceStorageStateOptions);
 
       log('info', 'storage_state exported', {
         reqId: req.reqId,

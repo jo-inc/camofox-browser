@@ -34,7 +34,6 @@ import {
   persistStorageState,
 } from '../../lib/persistence.js';
 import { importBootstrapCookies } from '../../lib/cookies.js';
-import { resolvePersistenceIndexedDB } from '../../lib/persistence-config.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log } = ctx;
@@ -48,7 +47,8 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   // IndexedDB capture is opt-in because it may persist large amounts of
   // application data and make checkpoints significantly slower.
-  const indexedDB = resolvePersistenceIndexedDB(pluginConfig);
+  const indexedDB = pluginConfig.indexedDB === true;
+  ctx.persistenceStorageStateOptions = indexedDB ? { indexedDB: true } : undefined;
 
   const logger = {
     warn: (msg, fields = {}) => log('warn', msg, fields),
