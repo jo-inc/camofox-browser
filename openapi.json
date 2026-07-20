@@ -1148,6 +1148,116 @@
         }
       }
     },
+    "/tabs/{tabId}/mouse": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Send a mouse action at viewport coordinates",
+        "description": "Sends a low-level mouse action using viewport CSS-pixel coordinates. This is useful for human handoff UIs and visual automation flows where an external operator selects coordinates directly instead of an element ref or CSS selector.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "x",
+                  "y"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "click",
+                      "move",
+                      "down",
+                      "up"
+                    ],
+                    "default": "click"
+                  },
+                  "x": {
+                    "type": "number",
+                    "description": "X coordinate in viewport CSS pixels."
+                  },
+                  "y": {
+                    "type": "number",
+                    "description": "Y coordinate in viewport CSS pixels."
+                  },
+                  "button": {
+                    "type": "string",
+                    "enum": [
+                      "left",
+                      "right",
+                      "middle"
+                    ],
+                    "default": "left"
+                  },
+                  "clickCount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mouse action result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "action": {
+                      "type": "string"
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid mouse request."
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/viewport": {
       "post": {
         "tags": [

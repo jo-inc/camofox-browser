@@ -3853,6 +3853,134 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
   }
 });
 
+// Mouse coordinates (for human handoff UIs; coordinates are viewport CSS pixels)
+/**
+ * @openapi
+ * /tabs/{tabId}/mouse:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Send a mouse action at viewport coordinates
+ *     description: >
+ *       Sends a low-level mouse action using viewport CSS-pixel coordinates.
+ *       This is useful for human handoff UIs and visual automation flows where
+ *       an external operator selects coordinates directly instead of an element
+ *       ref or CSS selector.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, x, y]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               action:
+ *                 type: string
+ *                 enum: [click, move, down, up]
+ *                 default: click
+ *               x:
+ *                 type: number
+ *                 description: X coordinate in viewport CSS pixels.
+ *               y:
+ *                 type: number
+ *                 description: Y coordinate in viewport CSS pixels.
+ *               button:
+ *                 type: string
+ *                 enum: [left, right, middle]
+ *                 default: left
+ *               clickCount:
+ *                 type: integer
+ *                 minimum: 1
+ *                 default: 1
+ *     responses:
+ *       200:
+ *         description: Mouse action result.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 action:
+ *                   type: string
+ *                 x:
+ *                   type: number
+ *                 y:
+ *                   type: number
+ *       400:
+ *         description: Invalid mouse request.
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/mouse', async (req, res) => {
+  try {
+    const { userId, action = 'click', x, y, button = 'left', clickCount = 1 } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const nx = Number(x);
+    const ny = Number(y);
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+      return res.status(400).json({ error: 'numeric x and y required' });
+    }
+
+    const allowedActions = new Set(['click', 'move', 'down', 'up']);
+    if (!allowedActions.has(action)) {
+      return res.status(400).json({ error: "action must be 'click', 'move', 'down', or 'up'" });
+    }
+
+    const allowedButtons = new Set(['left', 'right', 'middle']);
+    if (!allowedButtons.has(button)) {
+      return res.status(400).json({ error: "button must be 'left', 'right', or 'middle'" });
+    }
+
+    const nClickCount = Math.floor(Number(clickCount));
+    if (!Number.isFinite(nClickCount) || nClickCount < 1) {
+      return res.status(400).json({ error: 'clickCount must be a positive integer' });
+    }
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    await withUserLimit(userId, () => withTabLock(req.params.tabId, async () => {
+      if (action === 'move') {
+        await tabState.page.mouse.move(nx, ny);
+      } else if (action === 'down') {
+        await tabState.page.mouse.move(nx, ny);
+        await tabState.page.mouse.down({ button });
+      } else if (action === 'up') {
+        await tabState.page.mouse.move(nx, ny);
+        await tabState.page.mouse.up({ button });
+      } else {
+        await tabState.page.mouse.click(nx, ny, { button, clickCount: nClickCount });
+      }
+      await tabState.page.waitForTimeout(150);
+    }));
+
+    pluginEvents.emit('tab:mouse', { userId, tabId: req.params.tabId, action, x: nx, y: ny });
+    res.json({ ok: true, action, x: nx, y: ny });
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'mouse').inc();
+    log('error', 'mouse failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Viewport
 /**
  * @openapi
