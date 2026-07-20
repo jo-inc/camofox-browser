@@ -964,6 +964,11 @@
                   "selector": {
                     "type": "string",
                     "description": "Trigger element CSS/Playwright selector. Optional when an input[type=file] already exists."
+                  },
+                  "timeout": {
+                    "type": "integer",
+                    "default": 12000,
+                    "description": "Overall budget in ms to wait for an upload UI (in-app panel input or native file chooser) to appear after the trigger is activated. Ignored values (non-numeric or <= 0) fall back to the default."
                   }
                 }
               }

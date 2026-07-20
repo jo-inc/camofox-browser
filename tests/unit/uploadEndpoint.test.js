@@ -38,6 +38,18 @@ function validateUploadRequest({ userId, path: filePath, ref, selector }, fileEx
   return null;
 }
 
+// Default when the request omits `timeout` or supplies an unusable value.
+// Kept in sync with UPLOAD_UI_TIMEOUT_MS in server.js.
+const DEFAULT_UPLOAD_TIMEOUT_MS = 12000;
+
+/**
+ * Mirrors the `uploadTimeout` resolution in the /upload endpoint: use the
+ * caller's `timeout` when it is a finite positive number, else the default.
+ */
+function resolveUploadTimeout(timeout) {
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_UPLOAD_TIMEOUT_MS;
+}
+
 describe('/upload request validation', () => {
   test('requires userId', () => {
     const r = validateUploadRequest({ path: '/tmp/a.png' });
@@ -75,6 +87,23 @@ describe('/upload request validation', () => {
   });
 });
 
+describe('/upload timeout argument', () => {
+  test('defaults when omitted', () => {
+    expect(resolveUploadTimeout(undefined)).toBe(DEFAULT_UPLOAD_TIMEOUT_MS);
+  });
+
+  test('honours a positive numeric override', () => {
+    expect(resolveUploadTimeout(30000)).toBe(30000);
+  });
+
+  test('falls back to the default for zero, negative, or non-numeric values', () => {
+    expect(resolveUploadTimeout(0)).toBe(DEFAULT_UPLOAD_TIMEOUT_MS);
+    expect(resolveUploadTimeout(-1)).toBe(DEFAULT_UPLOAD_TIMEOUT_MS);
+    expect(resolveUploadTimeout('soon')).toBe(DEFAULT_UPLOAD_TIMEOUT_MS);
+    expect(resolveUploadTimeout(NaN)).toBe(DEFAULT_UPLOAD_TIMEOUT_MS);
+  });
+});
+
 describe('/upload source contract', () => {
   test('the route is registered', () => {
     expect(serverSrc).toMatch(/app\.post\(\s*['"]\/tabs\/:tabId\/upload['"]/);
@@ -103,5 +132,33 @@ describe('/upload source contract', () => {
     const slice = serverSrc.slice(idx, idx + 4000);
     expect(slice).toMatch(/withUserLimit\(/);
     expect(slice).toMatch(/withTabLock\(/);
+  });
+
+  test('declares named timeout constants instead of inline magic numbers', () => {
+    for (const name of [
+      'UPLOAD_UI_TIMEOUT_MS',
+      'UPLOAD_PANEL_MARGIN_MS',
+      'UPLOAD_INPUT_TIMEOUT_MS',
+      'UPLOAD_FOCUS_TIMEOUT_MS',
+      'UPLOAD_CLICK_TIMEOUT_MS',
+      'UPLOAD_PANEL_POLL_MS',
+      'UPLOAD_REFS_TIMEOUT_MS',
+      'UPLOAD_SETTLE_MS',
+    ]) {
+      expect(serverSrc).toMatch(new RegExp(`const ${name} = \\d+;`));
+    }
+  });
+
+  test('resolves the overall wait budget from the request timeout with a default', () => {
+    const start = serverSrc.indexOf("app.post('/tabs/:tabId/upload'");
+    const end = serverSrc.indexOf('\n// Type', start);
+    const block = serverSrc.slice(start, end === -1 ? undefined : end);
+    expect(block).toMatch(/req\.body\.timeout/);
+    expect(block).toMatch(/UPLOAD_UI_TIMEOUT_MS/);
+    // The whole route body should carry no bare millisecond literals -- every
+    // timeout must reference a named constant or the resolved uploadTimeout.
+    expect(block).not.toMatch(/timeout:\s*\d/);
+    expect(block).not.toMatch(/timeoutMs:\s*\d/);
+    expect(block).not.toMatch(/waitForTimeout\(\s*\d/);
   });
 });
