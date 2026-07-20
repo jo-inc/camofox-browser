@@ -5,7 +5,7 @@ const RUNTIME_TOOL_RE = /name:\s*["'](camofox_[^"']+)["']/g;
 
 function runtimeToolNames() {
   const plugin = fs.readFileSync(new URL('../../plugin.js', import.meta.url), 'utf8');
-  return [...plugin.matchAll(RUNTIME_TOOL_RE)].map(match => match[1]);
+  return [...new Set([...plugin.matchAll(RUNTIME_TOOL_RE)].map(match => match[1]))];
 }
 
 describe('OpenClaw manifest', () => {

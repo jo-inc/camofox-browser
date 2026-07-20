@@ -33,10 +33,18 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
-import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb } from './lib/reporter.js';
+import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { killProcessIds } from './lib/browser-processes.js';
+import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses } from './lib/process-ownership.js';
+import {
+  safePageUrl, urlDomain, hashIdentifier,
+  isDeadContextError, isPageCrashedError, isTimeoutError,
+  isTabLockQueueTimeout, isTabDestroyedError,
+  browserErrorStatus, browserErrorCode, browserErrorRecovery, isRetryableBrowserError,
+} from './lib/browser-errors.js';
 
 const CONFIG = loadConfig();
 
@@ -175,6 +183,14 @@ const IFRAME_SKIP_PATTERNS = [
   /web-pixel/i, /analytics/i, /tracking/i, /gtm/i, /facebook/i,
   /doubleclick/i, /google.*tag/i, /hotjar/i, /segment/i, /sentry/i,
   /recaptcha/i, /gstatic/i, /app-bridge/i, /extensions\.shopifycdn/i,
+  // Bot-detection / anti-automation frames. These are short-lived and frequently
+  // DETACH mid-ariaSnapshot, which hangs buildRefs until the handler timeout (30s)
+  // and surfaces as a spurious 500 on the click/snapshot that triggered the rebuild.
+  // e.g. LinkedIn injects PerimeterX (px-iframe-*/px-captcha) on authenticated
+  // actions such as the connection-invite modal, so skipping these is required for
+  // those write flows to work.
+  /px-iframe/i, /px-captcha/i, /perimeterx/i, /\bcaptcha\b/i, /hcaptcha/i,
+  /arkose/i, /funcaptcha/i, /datadome/i,
 ];
 const MAX_IFRAMES_TO_PROCESS = 8;
 const IFRAME_SNAPSHOT_TIMEOUT_MS = 3000;
@@ -193,6 +209,60 @@ class StaleRefsError extends Error {
   }
 }
 
+function selectorValidationError(selector) {
+  if (selector === undefined || selector === null) return null;
+  if (typeof selector !== 'string' || selector.trim() === '') return 'selector must be a non-empty string';
+  if (/^text\s*\(/i.test(selector)) return 'Invalid text selector syntax. Use text=... or a valid CSS selector.';
+  const stack = [];
+  let quote = null;
+  let escaped = false;
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  for (const ch of selector) {
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch);
+    if (ch === ')' || ch === ']' || ch === '}') {
+      if (stack.pop() !== pairs[ch]) return `Invalid selector syntax: ${selector}`;
+    }
+  }
+  if (quote || stack.length) return `Invalid selector syntax: ${selector}`;
+  return null;
+}
+
+function invalidSelectorError(message) {
+  return Object.assign(new Error(message), { code: 'invalid_selector', statusCode: 400 });
+}
+
+const NON_FILLABLE_INPUT_TYPES = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+
+async function assertLocatorFillable(locator) {
+  const info = await locator.evaluate((el) => {
+    const tagName = el.tagName?.toLowerCase?.() || '';
+    const type = tagName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+    const role = el.getAttribute?.('role') || '';
+    const contentEditable = el.isContentEditable;
+    return { tagName, type, role, contentEditable };
+  });
+  if (info.contentEditable || info.tagName === 'textarea') return;
+  if (info.tagName === 'input' && !NON_FILLABLE_INPUT_TYPES.has(info.type)) return;
+  if (info.role === 'textbox' || info.role === 'searchbox') return;
+  const target = info.type ? `${info.tagName}[type=${info.type}]` : (info.role ? `${info.tagName}[role=${info.role}]` : info.tagName || 'element');
+  throw Object.assign(new Error(`Element ${target} is not fillable. Use click for buttons and other controls.`), {
+    code: 'element_not_actionable',
+    statusCode: 422,
+  });
+}
+
+async function fillLocator(locator, text) {
+  await assertLocatorFillable(locator);
+  await locator.fill(text, { timeout: 10000 });
+}
+
 function safeError(err) {
   if (CONFIG.nodeEnv === 'production') {
     log('error', 'internal error', { error: err.message, stack: err.stack });
@@ -201,21 +271,28 @@ function safeError(err) {
   return err.message;
 }
 
-// Send error response with appropriate status code (422 for stale refs, 500 otherwise)
 function sendError(res, err, extraFields = {}) {
-  const status = err instanceof StaleRefsError ? 422 : (err.statusCode || 500);
-  const body = { error: safeError(err), ...extraFields };
-  if (err instanceof StaleRefsError) {
-    body.code = 'stale_refs';
-    body.ref = err.ref;
-  }
-  // Report unexpected 500s to Sentry (skip intentional admission-control 503s)
-  if (status >= 500 && !err.statusCode) {
+  const status = browserErrorStatus(err) || 500;
+  const code = browserErrorCode(err);
+  const recovery = browserErrorRecovery(err);
+  const body = {
+    error: safeError(err),
+    retryable: isRetryableBrowserError(err),
+    ...extraFields,
+  };
+  if (code) body.code = code;
+  if (recovery) body.recovery = recovery;
+  if (err instanceof StaleRefsError) body.ref = err.ref;
+  if (status >= 500 && !err.statusCode && !recovery) {
+    const req = res.req;
+    const userId = req?.query?.userId || req?.body?.userId;
     sentryCaptureException(err, {
-      path: res.req?.originalUrl,
-      method: res.req?.method,
-      userId: res.req?.query?.userId || res.req?.body?.userId,
-      reqId: res.req?.reqId,
+      path: req?.originalUrl,
+      route: req?.route?.path,
+      method: req?.method,
+      action: req ? actionFromReq(req) : undefined,
+      userIdHash: hashIdentifier(userId),
+      reqId: req?.reqId,
     });
   }
   res.status(status).json(body);
@@ -315,8 +392,26 @@ function validateUrl(url) {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/sessions/:userId/cookies', authMiddleware(), express.json({ limit: '512kb' }), async (req, res) => {
+app.post('/sessions/:userId/cookies', express.json({ limit: '512kb' }), async (req, res) => {
   try {
+    if (CONFIG.apiKey) {
+      const apiKey = CONFIG.apiKey;
+      const auth = String(req.headers['authorization'] || '');
+      const match = auth.match(/^Bearer\s+(.+)$/i);
+      if (!match || !timingSafeCompare(match[1], apiKey)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else {
+      const remoteAddress = req.socket?.remoteAddress || '';
+      const allowUnauthedLocal = CONFIG.nodeEnv !== 'production' && isLoopbackAddress(remoteAddress);
+      if (!allowUnauthedLocal) {
+        return res.status(403).json({
+          error:
+            'Cookie import is disabled without CAMOFOX_API_KEY except for loopback requests in non-production environments.',
+        });
+      }
+    }
+
     const userId = req.params.userId;
     if (!req.body || !('cookies' in req.body)) {
       return res.status(400).json({ error: 'Missing "cookies" field in request body' });
@@ -561,12 +656,12 @@ let browserIdleTimer = null;
 let browserLaunchPromise = null;
 let browserWarmRetryTimer = null;
 
-if (BROWSER_IDLE_TIMEOUT_MS <= 0) {
-  log('info', 'browser idle shutdown disabled (BROWSER_IDLE_TIMEOUT_MS=0)');
-}
+// Tracks why the browser was last stopped. Intentional reasons (idle_shutdown, admin_stop)
+// keep /health returning 200. Unexpected reasons trigger 503 + warm retry.
+let _lastBrowserStopReason = null;
+const INTENTIONAL_STOP_REASONS = new Set(['idle_shutdown', 'admin_stop']);
 
 function scheduleBrowserIdleShutdown() {
-  if (BROWSER_IDLE_TIMEOUT_MS <= 0) return;
   if (browserIdleTimer || sessions.size > 0 || !browser) return;
   browserIdleTimer = setTimeout(async () => {
     browserIdleTimer = null;
@@ -685,6 +780,21 @@ function getTotalTabCount() {
 // Virtual display for WebGL support and anti-detection.
 // Xvfb gives Firefox a real X display with GLX, enabling software-rendered WebGL
 // via Mesa llvmpipe. Without this, WebGL returns "no context" -- a massive bot signal.
+const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1280x720x24';
+
+class DefaultVirtualDisplay extends VirtualDisplay {
+  get xvfb_args() {
+    const args = super.xvfb_args;
+    const idx = args.indexOf('0');
+    if (idx > 0 && args[idx - 1] === '-screen') {
+      const patched = [...args];
+      patched[idx + 1] = DEFAULT_VIRTUAL_DISPLAY_RESOLUTION;
+      return patched;
+    }
+    return args;
+  }
+}
+
 let virtualDisplay = null;
 let browserLaunchProxy = null;
 let externalCamoufoxLaunch = null;
@@ -707,7 +817,7 @@ async function probeGoogleSearch(candidateBrowser) {
   let context = null;
   try {
     context = await candidateBrowser.newContext({
-      viewport: { width: 1280, height: 720 },
+      viewport: null,
       permissions: ['geolocation'],
     });
     const page = await context.newPage();
@@ -763,10 +873,17 @@ async function _closeBrowserFullyImpl(reason) {
   if (!b) return;
   clearBrowserIdleTimer();
 
-  // Capture PID before nulling browser ref -- we need it for force-kill
+  // Capture PID/process snapshot before nulling browser ref.
   const pid = _lastBrowserPid;
+  // Capture ownership before Playwright closes and reparents its children.
+  // Multiple scoped servers may share a host, so a later /proc name scan must
+  // never treat another server's browser as one of our survivors.
+  const ownedBrowserProcesses = snapshotOwnedBrowserProcesses(process.pid);
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
+
+  // Track stop reason for health semantics
+  _lastBrowserStopReason = reason;
 
   // Null the ref so new requests don't use a dying browser
   browser = null;
@@ -785,12 +902,11 @@ async function _closeBrowserFullyImpl(reason) {
     clearTimeout(closeTimer);
   }
 
-  // Force-kill browser survivors. Playwright's Firefox launcher can return no
-  // process PID, so fall back to scanning the container for Camoufox/Xvfb.
+  // Force-kill only survivors captured before this close began.
   if (pid) {
     await _forceKillProcessTree(pid, reason);
   }
-  await _forceKillBrowserProcesses(reason, pid);
+  await _forceKillBrowserProcesses(reason, ownedBrowserProcesses);
 
   // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
   try {
@@ -824,7 +940,8 @@ async function _closeBrowserFullyImpl(reason) {
 
 /**
  * Force-kill a browser process tree by PID. On Linux, kills the process group
- * (SIGKILL -pid) then scans /proc for any orphaned children.
+ * (SIGKILL -pid). Orphan cleanup is deliberately left to the ownership
+ * snapshot captured before browser.close(), below.
  */
 async function _forceKillProcessTree(pid, reason) {
   if (!pid || pid <= 1) return;
@@ -847,68 +964,19 @@ async function _forceKillProcessTree(pid, reason) {
     // ESRCH = group doesn't exist (browser wasn't a group leader), which is fine
   }
 
-  // Wait for kernel to reparent children to PID 1 before scanning
+  // Give the group kill time to complete. Any descendants that escaped it are
+  // selected later only from the pre-close, starttime-safe ownership snapshot.
   await new Promise(r => setTimeout(r, 200));
-
-  // On Linux: scan /proc for orphaned children that escaped the process group
-  // (reparented to PID 1 by init/systemd, common with Firefox content processes).
-  // Also checks PPid === Node PID for containerized environments without init.
-  if (process.platform === 'linux') {
-    const myPid = process.pid;
-    // Snapshot the current browser PID to avoid killing a newly launched browser
-    const currentBrowserPid = _lastBrowserPid;
-    try {
-      const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
-      const orphans = [];
-      for (const procPid of procDirs) {
-        const numPid = parseInt(procPid);
-        // Never kill ourselves, the old PID (already killed), or the new browser
-        if (numPid === myPid || numPid === pid || numPid === currentBrowserPid) continue;
-        try {
-          const status = fs.readFileSync(`/proc/${procPid}/status`, 'utf8');
-          const ppidMatch = status.match(/PPid:\s+(\d+)/);
-          const ppid = ppidMatch ? parseInt(ppidMatch[1]) : -1;
-          // Orphaned to init (PID 1) or reparented to us (Node is PID 1 in containers)
-          if (ppid === 1 || ppid === myPid) {
-            const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
-            // Firefox-specific: binary name or Gecko child process marker
-            if (/firefox-esr|firefox|camoufox|libxul\.so|GeckoChildProcess/i.test(cmdline)) {
-              orphans.push(numPid);
-            }
-          }
-        } catch { /* process vanished or permission denied */ }
-      }
-      if (orphans.length > 0) {
-        log('warn', 'killing orphaned browser child processes', { orphans, reason });
-        for (const orphanPid of orphans) {
-          try { process.kill(orphanPid, 'SIGKILL'); } catch { /* already dead */ }
-        }
-      }
-    } catch (err) {
-      log('warn', 'failed to scan for orphaned browser processes', { error: err.message });
-    }
-  }
 
   // Give the OS a moment to reclaim resources
   await new Promise(r => setTimeout(r, 300));
 }
 
-async function _forceKillBrowserProcesses(reason, excludePid = null) {
+async function _forceKillBrowserProcesses(reason, ownedBrowserProcesses = []) {
   if (process.platform !== 'linux') return;
-  const myPid = process.pid;
-  const victims = [];
+  let victims = [];
   try {
-    const procDirs = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d));
-    for (const procPid of procDirs) {
-      const numPid = parseInt(procPid);
-      if (numPid === myPid || numPid === excludePid) continue;
-      try {
-        const cmdline = fs.readFileSync(`/proc/${procPid}/cmdline`, 'utf8');
-        if (/camoufox-bin|\/usr\/bin\/Xvfb\b/.test(cmdline)) {
-          victims.push(numPid);
-        }
-      } catch { /* process vanished or permission denied */ }
-    }
+    victims = survivingOwnedBrowserProcesses(ownedBrowserProcesses).map(proc => proc.pid);
   } catch (err) {
     log('warn', 'failed to scan for browser survivor processes', { reason, error: err.message });
     return;
@@ -916,10 +984,7 @@ async function _forceKillBrowserProcesses(reason, excludePid = null) {
 
   if (victims.length > 0) {
     log('warn', 'killing browser survivor processes', { reason, victims });
-    for (const victimPid of victims) {
-      try { process.kill(victimPid, 'SIGKILL'); } catch { /* already dead */ }
-    }
-    await new Promise(r => setTimeout(r, 300));
+    await killProcessIds(victims, { signal: 'SIGKILL', delayMs: 300 });
   }
 }
 
@@ -952,7 +1017,7 @@ async function launchBrowserInstance() {
     try {
       if (os.platform() === 'linux') {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
+        vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
     } catch (err) {
@@ -974,6 +1039,11 @@ async function launchBrowserInstance() {
     });
 
     try {
+      if (CONFIG.disableDefaultAddons) {
+        log('info', 'excluding default UBO addon from launch', {
+          excludeAddons: ['UBO'],
+        });
+      }
       const options = await launchOptions({
         executable_path: externalCamoufox?.executablePath,
         headless: useVirtualDisplay ? false : true,
@@ -983,8 +1053,18 @@ async function launchBrowserInstance() {
         proxy: launchProxy,
         geoip: !!launchProxy,
         virtual_display: vdDisplay,
+        exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
+      // Playwright's launcher defaults handleSIGTERM/SIGINT/SIGHUP to true,
+      // registering its own process signal handlers that send Browser.close
+      // straight to Firefox over its debug transport the instant a signal
+      // arrives -- independent of and racing ahead of our own gracefulShutdown()
+      // sequencing (including the persistence plugin's shutdown checkpoint).
+      // Disable them so gracefulShutdown() is the sole authority over shutdown.
+      options.handleSIGTERM = false;
+      options.handleSIGINT = false;
+      options.handleSIGHUP = false;
       await pluginEvents.emitAsync('browser:launching', { options });
 
       candidateBrowser = await firefox.launch(options);
@@ -1016,6 +1096,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
       pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
@@ -1047,6 +1128,9 @@ async function launchBrowserInstance() {
 
 async function ensureBrowser() {
   clearBrowserIdleTimer();
+  if (_browserClosePromise) {
+    await _browserClosePromise;
+  }
   if (browser && !browser.isConnected()) {
     failuresTotal.labels('browser_disconnected', 'internal').inc();
     log('warn', 'browser disconnected, clearing dead sessions and relaunching', {
@@ -1177,7 +1261,7 @@ async function getSession(userId, { trace = false } = {}) {
       }
       const b = await ensureBrowser();
       const contextOptions = {
-        viewport: { width: 1280, height: 720 },
+        viewport: null,
         permissions: ['geolocation'],
       };
       // When geoip is active (proxy configured), camoufox auto-configures
@@ -1238,28 +1322,6 @@ function getTabGroup(session, listItemId) {
   return group;
 }
 
-function isDeadContextError(err) {
-  const msg = err && err.message || '';
-  return msg.includes('Target page, context or browser has been closed') ||
-         msg.includes('browser has been closed') ||
-         msg.includes('Context closed') ||
-         msg.includes('Browser closed');
-}
-
-function isTimeoutError(err) {
-  const msg = err && err.message || '';
-  return msg.includes('timed out after') ||
-         (msg.includes('Timeout') && msg.includes('exceeded'));
-}
-
-function isTabLockQueueTimeout(err) {
-  return err && err.message === 'Tab lock queue timeout';
-}
-
-function isTabDestroyedError(err) {
-  return err && err.message === 'Tab destroyed';
-}
-
 // Centralized error handler for route catch blocks.
 // Auto-destroys dead browser sessions and returns appropriate status codes.
 function isProxyError(err) {
@@ -1275,8 +1337,36 @@ function handleRouteError(err, req, res, extraFields = {}) {
 
   const userId = req.body?.userId || req.query?.userId;
   const tabId = req.body?.tabId || req.query?.tabId || req.params?.tabId;
+  let foundForContext = null;
+  if (userId && tabId) {
+    const session = sessions.get(normalizeUserId(userId));
+    foundForContext = session && findTab(session, tabId);
+  }
+  const pageUrl = safePageUrl(foundForContext?.tabState?.page);
+  const sentryContext = {
+    route: req.route?.path,
+    path: req.originalUrl,
+    method: req.method,
+    action,
+    reqId: req.reqId,
+    tabId,
+    userIdHash: hashIdentifier(userId),
+    urlDomain: urlDomain(pageUrl),
+    browserHealth: {
+      sessions: sessions.size,
+      tabs: _countTabs(),
+      browserPid: _browserPid(),
+      pageClosed: Boolean(foundForContext?.tabState?.page?.isClosed?.()),
+      pageCrashed: Boolean(foundForContext?.tabState?.crashed),
+    },
+    tabHealth: foundForContext?.tabState?.healthTracker?.snapshot?.(),
+  };
   if (tabId) {
-    pluginEvents.emit('tab:error', { userId, tabId, error: err });
+    pluginEvents.emit('tab:error', { userId, tabId, error: err, ...sentryContext });
+  }
+  if (isPageCrashedError(err)) {
+    if (foundForContext) destroyTab(sessions.get(normalizeUserId(userId)), tabId, 'page_crashed', userId);
+    return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
     destroySession(userId);
@@ -1324,17 +1414,17 @@ function handleRouteError(err, req, res, extraFields = {}) {
     if (session && tabId) {
       destroyTab(session, tabId, 'lock_queue', userId);
     }
-    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_destroyed', ...extraFields });
+    return res.status(503).json({ error: 'Tab unresponsive and has been destroyed. Open a new tab.', code: 'tab_unresponsive', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   // Tab was destroyed while this request was queued in the lock
   if (isTabDestroyedError(err)) {
-    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', ...extraFields });
+    return res.status(410).json({ error: 'Tab was destroyed. Open a new tab.', code: 'tab_destroyed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   // Dead context = session torn down (by proxy error, timeout, or reaper) while this op
   // was in flight. The ROOT CAUSE was already reported — this is a cascade error.
   // Return 503 (retriable) so the client retries with a fresh session.
   if (isDeadContextError(err)) {
-    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', ...extraFields });
+    return res.status(503).json({ error: 'Browser session expired. Retry to get a fresh session.', code: 'session_expired', retryable: true, recovery: 'retry', ...extraFields });
   }
   // --- Frustration detection: report when a tab hits a streak of failures ---
   // Individual failures are noise. 3+ consecutive = the site is persistently broken.
@@ -1460,7 +1550,11 @@ function tabNotFoundResponse(res, tabId) {
   // Only return 410 for tabs that look like valid UUIDs (plausibly created by this server),
   // belonged to this machine, and were lost in a recent browser restart.
   // Random/invalid strings like 'non-existent-tab' always get 404.
-  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(tabId) && fly.isLocalTab(tabId)) {
+  // Tab IDs may be Fly-prefixed: "{machineId}_{uuid}" — extract UUID portion for validation.
+  const uuidPart = tabId && tabId.includes('_') && !tabId.slice(0, tabId.indexOf('_')).includes('-')
+    ? tabId.slice(tabId.indexOf('_') + 1)
+    : tabId;
+  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(uuidPart) && fly.isLocalTab(tabId)) {
     return res.status(410).json({
       error: 'Tab no longer exists (browser was restarted). Create a new tab.',
       code: 'browser_restarted',
@@ -1471,7 +1565,7 @@ function tabNotFoundResponse(res, tabId) {
 
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
-  return {
+  const tabState = {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
@@ -1487,7 +1581,10 @@ function createTabState(page) {
     navigateAbort: null,
     pressureObservedAt: Date.now(),
     pressureObservedToolCalls: 0,
+    crashed: false,
   };
+  page?.on?.('crash', () => { tabState.crashed = true; });
+  return tabState;
 }
 
 /**
@@ -1510,8 +1607,8 @@ function attachPopupHandler(page, userId, sessionKey) {
     popupGroup.set(popupTabId, popupTabState);
     currentSession.lastAccess = Date.now();
     refreshActiveTabsGauge();
-    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: popupPage.url() });
-    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: popupPage.url() });
+    log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: safePageUrl(popupPage) });
+    pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: safePageUrl(popupPage) });
     // Recursively handle popups from the popup
     attachPopupHandler(popupPage, userId, sessionKey);
   });
@@ -2370,6 +2467,23 @@ app.get('/health', (req, res) => {
   const rssMb = Math.round(mem.rss / 1048576);
   const heapUsedMb = Math.round(mem.heapUsed / 1048576);
   const nativeMemMb = rssMb - heapUsedMb;
+
+  // Browser not running: distinguish intentional idle stop from unexpected death
+  if (!running && _lastBrowserStopReason && !INTENTIONAL_STOP_REASONS.has(_lastBrowserStopReason)) {
+    // Unexpected browser absence — schedule recovery and report unhealthy
+    scheduleBrowserWarmRetry();
+    return res.status(503).json({
+      ok: false,
+      engine: 'camoufox',
+      browserRunning: false,
+      reason: _lastBrowserStopReason,
+      activeTabs: 0,
+      activeSessions: sessions.size,
+      memory: { rssMb, heapUsedMb, nativeMemMb },
+      ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
+    });
+  }
+
   res.json({ 
     ok: true, 
     engine: 'camoufox',
@@ -2485,7 +2599,7 @@ app.get('/metrics', async (_req, res) => {
  *                 preserved:
  *                   type: object
  */
-app.post('/pressure/cleanup', authMiddleware(), async (req, res) => {
+app.post('/pressure/cleanup', async (req, res) => {
   try {
     const result = await camofoxPressureCleanup(req.body || {});
     log('info', 'pressure cleanup', {
@@ -2794,9 +2908,14 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
 
         const prewarmGoogleHome = async () => {
           if (!isGoogleSearch || tabState.visitedUrls.has('https://www.google.com/')) return;
-          await withPageLoadDuration('navigate', () => tabState.page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
-          tabState.visitedUrls.add('https://www.google.com/');
-          await tabState.page.waitForTimeout(1200);
+          const prewarmPage = await session.context.newPage();
+          try {
+            await withPageLoadDuration('navigate', () => prewarmPage.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+            tabState.visitedUrls.add('https://www.google.com/');
+            await prewarmPage.waitForTimeout(1200);
+          } finally {
+            await safePageClose(prewarmPage);
+          }
         };
 
         const recreateTabOnFreshContext = async () => {
@@ -3223,6 +3342,12 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page changed during the click; caller should take a fresh snapshot and retry with current refs.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
@@ -3241,6 +3366,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     if (!ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required' });
     }
+    const selectorErr = selectorValidationError(selector);
+    if (selectorErr) throw invalidSelectorError(selectorErr);
     
     const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
       const clickStart = Date.now();
@@ -3248,7 +3375,23 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
       // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
       const dispatchMouseSequence = async (locator) => {
-        const box = await locator.boundingBox();
+        // boundingBox() with no timeout inherits Playwright's 30s default, which
+        // silently eats the entire handler budget when the element detached after
+        // the failed click attempt (the page changed under us). Bound it to the
+        // remaining budget (capped at 3s) so the route fails fast with an
+        // actionable 422 instead of blowing HANDLER_TIMEOUT_MS into a 500.
+        // NOTE: the message deliberately avoids the 'timed out after' phrase so
+        // isTimeoutError() doesn't classify a detached element as a navigation
+        // timeout and destroy the whole session in handleRouteError().
+        const bboxTimeout = Math.max(500, Math.min(3000, remainingBudget()));
+        let box;
+        try {
+          box = await locator.boundingBox({ timeout: bboxTimeout });
+        } catch (e) {
+          const detachedErr = new Error(`Element not actionable: no bounding box within ${bboxTimeout}ms (element likely detached after page change). Call snapshot to refresh refs and retry.`);
+          detachedErr.statusCode = 422;
+          throw detachedErr;
+        }
         if (!box) throw new Error('Element not visible (no bounding box)');
         
         const x = box.x + box.width / 2;
@@ -3381,10 +3524,13 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'click_timeout' });
           found.tabState.lastSnapshot = null;
-          return res.status(500).json({
-            error: safeError(err),
+          return res.status(409).json({
+            error: 'Page changed during click. Call snapshot to see the current state and retry with current refs.',
+            code: 'page_changed',
+            retryable: true,
+            recovery: 'snapshot_then_retry',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
-            url: found.tabState.page.url(),
+            url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
           });
         }
@@ -3451,6 +3597,12 @@ app.post('/tabs/:tabId/click', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Page changed or target became invalid; caller should take a fresh snapshot and retry.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/type', async (req, res) => {
   const tabId = req.params.tabId;
@@ -3475,6 +3627,8 @@ app.post('/tabs/:tabId/type', async (req, res) => {
     if (mode === 'fill' && !ref && !selector) {
       return res.status(400).json({ error: 'ref or selector required for mode=fill' });
     }
+    const selectorErr = selectorValidationError(selector);
+    if (selectorErr) throw invalidSelectorError(selectorErr);
     const shouldSubmit = submit || pressEnter;
     
     await withTabLock(tabId, async () => {
@@ -3492,9 +3646,9 @@ app.post('/tabs/:tabId/type', async (req, res) => {
       
       if (mode === 'fill') {
         if (locator) {
-          await locator.fill(text, { timeout: 10000 });
+          await fillLocator(locator, text);
         } else {
-          await tabState.page.fill(selector, text, { timeout: 10000 });
+          await fillLocator(tabState.page.locator(selector), text);
         }
       } else {
         // keyboard mode -- char-by-char real key events (required for Ember/contenteditable)
@@ -3519,10 +3673,13 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         if (found?.tabState?.page && !found.tabState.page.isClosed()) {
           found.tabState.refs = await refreshTabRefs(found.tabState, { reason: 'type_timeout' });
           found.tabState.lastSnapshot = null;
-          return res.status(500).json({
-            error: safeError(err),
+          return res.status(409).json({
+            error: 'Page changed during type. Call snapshot to see the current state and retry with current refs.',
+            code: 'page_changed',
+            retryable: true,
+            recovery: 'snapshot_then_retry',
             hint: 'The page may have changed. Call snapshot to see the current state and retry.',
-            url: found.tabState.page.url(),
+            url: safePageUrl(found.tabState.page),
             refsCount: found.tabState.refs.size,
           });
         }
@@ -4390,7 +4547,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post('/tabs/:tabId/evaluate', authMiddleware(), express.json({ limit: '1mb' }), async (req, res) => {
+app.post('/tabs/:tabId/evaluate', express.json({ limit: '1mb' }), async (req, res) => {
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
@@ -4940,7 +5097,7 @@ app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, r
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.delete('/sessions/:userId', authMiddleware(), async (req, res) => {
+app.delete('/sessions/:userId', async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
     const session = sessions.get(userId);
@@ -5100,7 +5257,7 @@ setInterval(() => {
   if (sessions.size > 0 || !browser) return;
   const mem = process.memoryUsage();
   const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
-  const browserRssMb = browserProcessTreeRssMb(_browserPid());
+  const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
 
   if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
     log('warn', 'browser rss pressure, restarting browser', {
@@ -5835,9 +5992,9 @@ app.post('/act', async (req, res) => {
           
           if (mode === 'fill') {
             if (locator) {
-              await locator.fill(text, { timeout: 10000 });
+              await fillLocator(locator, text);
             } else {
-              await tabState.page.fill(selector, text, { timeout: 10000 });
+              await fillLocator(tabState.page.locator(selector), text);
             }
           } else {
             if (locator) {
@@ -6001,8 +6158,11 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
-  pluginEvents.emit('server:shutdown', { signal });
 
+  // Arm the watchdog and stop accepting new connections before anything
+  // that can block or reject -- a hung or failing server:shutdown listener
+  // must not disable the force-exit safety net or widen the window where
+  // the server still accepts new sessions.
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
@@ -6011,6 +6171,10 @@ async function gracefulShutdown(signal) {
 
   server.close();
   stopMemoryReporter();
+
+  await pluginEvents.emitAsync('server:shutdown', { signal }).catch((err) => {
+    log('error', 'server:shutdown listener failed', { error: err.message });
+  });
 
   await closeAllSessions(`shutdown:${signal}`, {
     clearDownloads: false,
@@ -6055,7 +6219,7 @@ const pluginCtx = {
   metricsRegistry: getRegister,
   createMetric,
   /** Factory for Xvfb virtual display. Plugins can replace this to customise resolution/args. */
-  createVirtualDisplay: () => new VirtualDisplay(),
+  createVirtualDisplay: () => new DefaultVirtualDisplay(),
   /** The upstream VirtualDisplay class -- plugins can subclass it. */
   VirtualDisplay,
 };
@@ -6067,15 +6231,17 @@ mountDocs(app);
 // --- Sentry Express error handler (after all routes, before app.listen) ---
 setupSentryErrorHandler(app);
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, CONFIG.bindHost || undefined, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
+  const address = server.address();
+  const bindHost = typeof address === 'object' && address ? address.address : CONFIG.bindHost;
+  pluginEvents.emit('server:started', { port: PORT, host: bindHost, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+    log('info', 'server started (fly)', { port: PORT, host: bindHost, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
-    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+    log('info', 'server started', { port: PORT, host: bindHost, pid: process.pid, nodeVersion: process.version });
   }
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {

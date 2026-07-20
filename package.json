@@ -1,6 +1,6 @@
 {
   "name": "@askjo/camofox-browser",
-  "version": "1.11.2",
+  "version": "1.12.1",
   "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
   "type": "module",
   "main": "server.js",
@@ -120,7 +120,7 @@
     "prepublishOnly": "npm run build",
     "start": "node server.js",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
-    "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/e2e",
+    "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.e2e.cjs --runInBand --forceExit",
     "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
     "test:live": "RUN_LIVE_TESTS=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit tests/live",
     "test:debug": "DEBUG_SERVER=1 NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
@@ -132,7 +132,7 @@
     "fetch-bin": "npx camoufox-js fetch"
   },
   "dependencies": {
-    "camoufox-js": ">=0.10.0",
+    "camoufox-js": "0.10.2",
     "express": "^4.18.2",
     "playwright-core": "^1.58.0",
     "prom-client": "^15.1.3",

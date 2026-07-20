@@ -35,6 +35,7 @@
  *   NOVNC_PORT=6080        noVNC web UI port
  *
  * Registers:
+ *   GET /vnc/status -- report watcher state and configured ports
  *   GET /sessions/:userId/storage_state -- export Playwright storageState as JSON
  *
  * Events emitted:
@@ -103,6 +104,21 @@ export async function register(app, ctx, pluginConfig = {}) {
     }
   });
 
+  // --- HTTP endpoint: GET /vnc/status ---
+  app.get('/vnc/status', (_req, res) => {
+    const watcherRunning = watcher.exitCode === null && !watcher.killed;
+    const vncStatus = watcher.getVncStatus();
+    res.json({
+      enabled: true,
+      running: watcherRunning && vncStatus.running,
+      watcherRunning,
+      ...(vncStatus.display ? { display: vncStatus.display } : {}),
+      vncPort: Number(vncConfig.vncPort),
+      novncPort: Number(vncConfig.novncPort),
+      path: '/vnc.html',
+    });
+  });
+
   // --- HTTP endpoint: GET /sessions/:userId/storage_state ---
   const authMiddleware = requireAuth(config);
 
@@ -114,7 +130,7 @@ export async function register(app, ctx, pluginConfig = {}) {
         return res.status(404).json({ error: `No active session for userId="${userId}"` });
       }
 
-      const state = await session.context.storageState();
+      const state = await session.context.storageState(ctx.persistenceStorageStateOptions);
 
       log('info', 'storage_state exported', {
         reqId: req.reqId,
@@ -129,7 +145,10 @@ export async function register(app, ctx, pluginConfig = {}) {
         origins: state.origins?.length || 0,
       });
 
-      events.emit('session:storage:export', { userId: String(userId) });
+      await events.emitAsync('session:storage:export', {
+        userId: String(userId),
+        storageState: state,
+      });
 
       res.json(state);
     } catch (err) {
@@ -138,5 +157,5 @@ export async function register(app, ctx, pluginConfig = {}) {
     }
   });
 
-  log('info', 'vnc plugin: registered GET /sessions/:userId/storage_state');
+  log('info', 'vnc plugin: registered VNC endpoints');
 }

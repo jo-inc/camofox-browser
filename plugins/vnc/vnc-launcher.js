@@ -4,6 +4,8 @@
  */
 
 import { spawn } from './spawn.js';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,7 +43,7 @@ export function resolveVncConfig(pluginConfig = {}, env = process.env) {
   return { enabled, resolution, vncPassword, viewOnly, vncPort, novncPort };
 }
 
-export function buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, novncPort }, env = process.env) {
+export function buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, novncPort, statusFile }, env = process.env) {
   return compactEnv({
     PATH: env.PATH,
     HOME: env.HOME,
@@ -51,6 +53,7 @@ export function buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, no
     VIEW_ONLY: viewOnly ? '1' : '0',
     VNC_PORT: vncPort,
     NOVNC_PORT: novncPort,
+    VNC_STATUS_FILE: statusFile,
   });
 }
 
@@ -60,8 +63,10 @@ export function buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, no
  */
 export function startWatcher({ resolution, vncPassword, viewOnly, vncPort, novncPort, log, events }) {
   const watcherPath = path.join(__dirname, 'vnc-watcher.sh');
+  const statusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-vnc-'));
+  const statusFile = path.join(statusDir, 'status');
   const watcher = spawn('sh', [watcherPath], {
-    env: buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, novncPort }),
+    env: buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, novncPort, statusFile }),
     stdio: ['ignore', 'inherit', 'inherit'],
     detached: false,
   });
@@ -71,9 +76,19 @@ export function startWatcher({ resolution, vncPassword, viewOnly, vncPort, novnc
   });
 
   watcher.on('exit', (code, signal) => {
+    fs.rmSync(statusDir, { recursive: true, force: true });
     log('warn', 'vnc watcher exited', { code, signal });
     events.emit('vnc:watcher:stopped', { code, signal });
   });
+
+  watcher.getVncStatus = () => {
+    try {
+      const [display, pid] = fs.readFileSync(statusFile, 'utf8').trim().split(' ');
+      return { running: true, display, pid: Number(pid) };
+    } catch {
+      return { running: false };
+    }
+  };
 
   log('info', 'vnc watcher started', { pid: watcher.pid });
   events.emit('vnc:watcher:started', { pid: watcher.pid });

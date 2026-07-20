@@ -395,6 +395,8 @@ describe('createReporter', () => {
     await reporter.reportStuckLoop(60000);
     reporter.startWatchdog();
     reporter.trackRoute('GET /test');
+    expect(typeof reporter.resetNativeMemBaseline).toBe('function');
+    reporter.resetNativeMemBaseline();
     reporter.stop();
   });
 

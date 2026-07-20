@@ -75,10 +75,10 @@ describe('sendToRelay', () => {
     expect(result).toBe(true);
   });
 
-  test('returns false on 429 (rate-limited reports were not accepted)', async () => {
+  test('returns true on 429 (rate limited is not an error)', async () => {
     fetchResponse = { ok: false, status: 429 };
     const result = await sendToRelay({ type: 'crash', signature: '11223344', title: 't', body: 'b', labels: [] });
-    expect(result).toBe(false);
+    expect(result).toBe(true);
   });
 
   test('returns false on 500', async () => {

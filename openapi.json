@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "camofox-browser",
-    "version": "1.11.2",
+    "version": "1.12.1",
     "description": "Anti-detection browser automation server for AI agents. Accessibility snapshots, element refs, session isolation, cookie import, proxy rotation, and structured logs.",
     "license": {
       "name": "MIT",
@@ -898,6 +898,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Page changed during the click; caller should take a fresh snapshot and retry with current refs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -978,6 +988,16 @@
           },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Page changed or target became invalid; caller should take a fresh snapshot and retry.",
             "content": {
               "application/json": {
                 "schema": {

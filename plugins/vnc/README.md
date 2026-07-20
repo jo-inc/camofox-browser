@@ -82,6 +82,24 @@ docker run -p 9377:9377 -p 6080:6080 \
 
 ## API
 
+### GET /vnc/status
+
+Report whether the VNC watcher and its x11vnc backend are running. This endpoint does not require authentication and exposes no password or session data.
+
+```json
+{
+  "enabled": true,
+  "running": true,
+  "watcherRunning": true,
+  "display": ":0",
+  "vncPort": 5900,
+  "novncPort": 6080,
+  "path": "/vnc.html"
+}
+```
+
+`running` becomes false while no owned X display is attached or while x11vnc is being restarted. `watcherRunning` distinguishes that state from the watcher process itself having exited.
+
 ### GET /sessions/:userId/storage_state
 
 Export the full Playwright storage state (cookies + localStorage origins) for a user's active browser context.
@@ -162,4 +180,4 @@ The plugin declares its apt dependencies in `apt.txt` — these are installed au
 | `vnc:watcher:started` | `{ pid }` | Watcher process spawned |
 | `vnc:watcher:stopped` | `{ code, signal }` | Watcher exited |
 | `vnc:storage:exported` | `{ userId, cookies, origins }` | Storage state exported via API |
-| `session:storage:export` | `{ userId }` | Emitted after export (persistence plugin listens) |
+| `session:storage:export` | `{ userId, storageState }` | Awaited after export; the persistence plugin writes the same snapshot to disk without serializing the browser again |

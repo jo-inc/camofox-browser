@@ -12,14 +12,27 @@
 
 set -e
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=vnc-watcher-lib.sh
+. "$SCRIPT_DIR/vnc-watcher-lib.sh"
+
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_RESOLUTION="${VNC_RESOLUTION:-1920x1080x24}"
+VNC_STATUS_FILE="${VNC_STATUS_FILE:-}"
 
 log() { printf '[vnc-watcher] %s\n' "$*" >&2; }
+clear_status() { [ -z "$VNC_STATUS_FILE" ] || rm -f "$VNC_STATUS_FILE"; }
+write_status() {
+  [ -z "$VNC_STATUS_FILE" ] || printf '%s %s\n' "$CURRENT_DISPLAY" "$X11VNC_PID" > "$VNC_STATUS_FILE"
+}
+trap clear_status EXIT
+trap 'exit 0' INT TERM
+clear_status
 
 CURRENT_DISPLAY=""
 X11VNC_PID=""
+SERVER_PID="$PPID"
 
 # Prepare password file if requested
 PASSFILE=""
@@ -40,17 +53,33 @@ if [ ! -d "$NOVNC_DIR" ]; then
 fi
 VNC_BIND="${VNC_BIND:-127.0.0.1}"
 log "Starting noVNC (websockify) on $VNC_BIND:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
-websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/var/log/novnc.log 2>&1 &
+websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/tmp/camofox-novnc.log 2>&1 &
 
 log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
+find_owned_display() {
+  # Camoufox normally starts Xvfb with -displayfd, so its display number is not
+  # present in argv. First identify this server's Xvfb child, then map its PID
+  # through Xvfb's lock file to the corresponding X socket. This retains the
+  # per-server ownership isolation needed when several Camofox servers share a
+  # process namespace.
+  XVFB_PID=$(ps -eo pid=,ppid=,args= 2>/dev/null | find_owned_xvfb_pid "$SERVER_PID" "$VNC_RESOLUTION")
+  [ -n "$XVFB_PID" ] || return 0
+  display_for_xvfb_pid "$XVFB_PID" /tmp /tmp/.X11-unix /proc
+}
+
 while true; do
-  # Find Xvfb with our patched resolution
-  FOUND=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
-    /\/Xvfb :[0-9]+/ && index($0, res) {
-      for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; exit }
-    }
-  ' | head -1)
+  # A browser restart commonly recreates Xvfb on the same display number.
+  # Clear stale state when this watcher's own x11vnc process has exited so the
+  # same display can be attached again.
+  if x11vnc_needs_reattach "$X11VNC_PID"; then
+    log "x11vnc exited; waiting to reattach"
+    clear_status
+    CURRENT_DISPLAY=""
+    X11VNC_PID=""
+  fi
+
+  FOUND=$(find_owned_display)
 
   if [ -n "$FOUND" ] && [ "$FOUND" != "$CURRENT_DISPLAY" ]; then
     # New or changed display -- (re)attach x11vnc
@@ -63,7 +92,7 @@ while true; do
     CURRENT_DISPLAY="$FOUND"
     log "Attaching x11vnc to DISPLAY=$CURRENT_DISPLAY"
 
-    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -rfbport $VNC_PORT -noxdamage -quiet -bg -o /var/log/x11vnc.log"
+    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -localhost -rfbport $VNC_PORT -noxdamage -quiet -bg -o /tmp/camofox-x11vnc.log"
     [ "${VIEW_ONLY:-0}" = "1" ] && X11VNC_ARGS="$X11VNC_ARGS -viewonly"
     if [ -n "$PASSFILE" ]; then
       X11VNC_ARGS="$X11VNC_ARGS -rfbauth $PASSFILE"
@@ -72,10 +101,22 @@ while true; do
     fi
 
     # shellcheck disable=SC2086
-    x11vnc $X11VNC_ARGS
+    if ! x11vnc $X11VNC_ARGS; then
+      log "x11vnc failed to start on DISPLAY=$CURRENT_DISPLAY; will retry"
+      CURRENT_DISPLAY=""
+      sleep 2
+      continue
+    fi
     sleep 1
-    X11VNC_PID=$(pgrep -f "x11vnc.*-display $CURRENT_DISPLAY" | head -1)
-    log "x11vnc running (pid=$X11VNC_PID) on DISPLAY=$CURRENT_DISPLAY"
+    X11VNC_PID=$(pgrep -f "x11vnc.*-display $CURRENT_DISPLAY" | head -1 || true)
+    if [ -n "$X11VNC_PID" ]; then
+      write_status
+      log "x11vnc running (pid=$X11VNC_PID) on DISPLAY=$CURRENT_DISPLAY"
+    else
+      log "x11vnc did not stay running on DISPLAY=$CURRENT_DISPLAY; will retry"
+      clear_status
+      CURRENT_DISPLAY=""
+    fi
   fi
 
   sleep 2

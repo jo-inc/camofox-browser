@@ -263,6 +263,8 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
 
+By default, storage state contains cookies and localStorage only. To also persist IndexedDB, set `"indexedDB": true` in the persistence plugin config. This captures all serializable IndexedDB records—not only authentication data—and may make snapshots significantly larger and checkpoints slower.
+
 ### Session Tracing
 
 Capture a Playwright trace of every action in a session: page screenshots, DOM snapshots, network requests, and console output. Output is a single `.zip` file you can open in Playwright's built-in Trace Viewer.
@@ -609,12 +611,14 @@ Reddit macros return JSON directly (no HTML parsing needed):
 |----------|-------------|---------|
 | `CAMOFOX_PORT` | Server port | `9377` |
 | `PORT` | Server port (fallback, for platforms like Fly.io, Railway) | `9377` |
+| `CAMOFOX_BIND_HOST` | Optional server bind host. Set to `127.0.0.1` for loopback-only access or `0.0.0.0` for IPv4 on all interfaces. When unset, Node uses its default all-interface binding. | - |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
 | `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |
 | `CAMOUFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
+| `CAMOFOX_DISABLE_DEFAULT_ADDONS` | Set to `1`/`true` to skip downloading and launching the default uBlock Origin (UBO) addon. Useful for deployments where the addons.mozilla.org download is unreliable or unwanted (a failed download otherwise leaves a broken addon cache that blocks startup). | `0` |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
 | `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
@@ -696,7 +700,7 @@ The persistence plugin saves cookies and localStorage to `~/.camofox/profiles/<h
 
 ### Network access
 
-Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on localhost:9377 (default), optionally protected by `CAMOFOX_ACCESS_KEY`.
+Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on port 9377, bound to all interfaces by default or to `CAMOFOX_BIND_HOST` when configured, optionally protected by `CAMOFOX_ACCESS_KEY`.
 
 ### Subprocess usage
 

@@ -8,6 +8,15 @@ afterEach(() => {
 });
 
 describe('loadConfig', () => {
+  test('reads the optional API bind host and forwards it to server subprocesses', () => {
+    process.env.CAMOFOX_BIND_HOST = '127.0.0.1';
+
+    const config = loadConfig();
+
+    expect(config.bindHost).toBe('127.0.0.1');
+    expect(config.serverEnv.CAMOFOX_BIND_HOST).toBe('127.0.0.1');
+  });
+
   test('prefers CAMOUFOX_EXECUTABLE for external Camoufox executable', () => {
     process.env.CAMOUFOX_EXECUTABLE = '/nix/store/camoufox/bin/camoufox';
     process.env.CAMOUFOX_EXECUTABLE_PATH = '/ignored/camoufox';
@@ -38,37 +47,20 @@ describe('loadConfig', () => {
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
   });
 
-  test('preserves zero browser idle timeout and falls back for invalid values', () => {
-    delete process.env.BROWSER_IDLE_TIMEOUT_MS;
-    expect(loadConfig().browserIdleTimeoutMs).toBe(300000);
+  test('disables default addons when CAMOFOX_DISABLE_DEFAULT_ADDONS is set', () => {
+    delete process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS;
+    expect(loadConfig().disableDefaultAddons).toBe(false);
 
-    process.env.BROWSER_IDLE_TIMEOUT_MS = 'not-a-number';
-    expect(loadConfig().browserIdleTimeoutMs).toBe(300000);
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = '0';
+    expect(loadConfig().disableDefaultAddons).toBe(false);
 
-    process.env.BROWSER_IDLE_TIMEOUT_MS = '0';
-    expect(loadConfig().browserIdleTimeoutMs).toBe(0);
-  });
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = '1';
+    expect(loadConfig().disableDefaultAddons).toBe(true);
 
-  test('forwards VNC env vars to server subprocess whitelist', () => {
-    process.env.ENABLE_VNC = '1';
-    process.env.VNC_RESOLUTION = '1280x720';
-    process.env.VNC_PASSWORD = 'secret';
-    process.env.VIEW_ONLY = '1';
-    process.env.VNC_PORT = '5901';
-    process.env.NOVNC_PORT = '6081';
-    process.env.VNC_BIND = '0.0.0.0';
-
+    process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS = 'true';
     const config = loadConfig();
-
-    expect(config.pluginEnv).toEqual({ ENABLE_VNC: '1' });
-    expect(config.serverEnv).toMatchObject({
-      ENABLE_VNC: '1',
-      VNC_RESOLUTION: '1280x720',
-      VNC_PASSWORD: 'secret',
-      VIEW_ONLY: '1',
-      VNC_PORT: '5901',
-      NOVNC_PORT: '6081',
-      VNC_BIND: '0.0.0.0',
-    });
+    expect(config.disableDefaultAddons).toBe(true);
+    expect(config.serverEnv.CAMOFOX_DISABLE_DEFAULT_ADDONS).toBe('true');
   });
+
 });

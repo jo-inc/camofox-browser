@@ -1,6 +1,6 @@
 # Persistence Plugin — Agent Guide
 
-Saves and restores per-user browser storage state (cookies + localStorage) across session restarts using Playwright's `storageState` API. Enabled by default — profiles persist to `~/.camofox/profiles/`.
+Saves and restores per-user browser storage state (cookies + localStorage, with optional IndexedDB) across session restarts using Playwright's `storageState` API. Enabled by default — profiles persist to `~/.camofox/profiles/`.
 
 ## How It Works
 
@@ -27,6 +27,8 @@ All hooks are async and awaited via `emitAsync()` — storage state is guarantee
 ## Configuration
 
 Enabled by default. Override profile directory with `CAMOFOX_PROFILE_DIR` env var or `"profileDir"` in plugin config. To disable: `"persistence": { "enabled": false }` in `camofox.config.json`.
+
+IndexedDB persistence is opt-in (`"indexedDB": true` in the persistence plugin config). It captures all serializable IndexedDB records, not only authentication data, and may make snapshots significantly larger and checkpoints slower.
 
 ## Original Contributors
 
