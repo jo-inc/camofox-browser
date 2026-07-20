@@ -3564,6 +3564,229 @@ app.post('/tabs/:tabId/click', async (req, res) => {
   }
 });
 
+// --- /tabs/:tabId/upload timeouts (ms) ---
+// UPLOAD_UI_TIMEOUT_MS is the default for the request's optional `timeout`: the
+// overall budget to wait for an upload UI to appear after the trigger is
+// activated -- either an in-app panel <input type=file> (preferred) or the
+// native file chooser. The panel-poll window sits UPLOAD_PANEL_MARGIN_MS inside
+// that budget so a native chooser that fires late is still caught after polling
+// stops. The remaining constants bound the individual Playwright calls.
+const UPLOAD_UI_TIMEOUT_MS = 12000;
+const UPLOAD_PANEL_MARGIN_MS = 2000;
+const UPLOAD_INPUT_TIMEOUT_MS = 4000; // setInputFiles() on an <input type=file>
+const UPLOAD_FOCUS_TIMEOUT_MS = 3000; // focus() the trigger before pressing Enter
+const UPLOAD_CLICK_TIMEOUT_MS = 4000; // forced click() fallback on the trigger
+const UPLOAD_PANEL_POLL_MS = 500; // interval between panel-input polls
+const UPLOAD_REFS_TIMEOUT_MS = 4000; // refreshTabRefs() before/after the upload
+const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a preview
+
+// Upload (file attach via filechooser / setInputFiles)
+/**
+ * @openapi
+ * /tabs/{tabId}/upload:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Attach a file to an upload control
+ *     description: >
+ *       Attaches a file to a file-upload control without going through the
+ *       native OS file dialog. Two strategies are tried in order: (1) if an
+ *       <input type="file"> is already present, call Playwright setInputFiles
+ *       on it directly (works for hidden inputs); (2) otherwise arm a
+ *       filechooser listener, activate the trigger element (ref or selector)
+ *       via keyboard (focus + Enter) then a forced click as fallback, and call
+ *       setFiles on the resulting chooser. The path(s) MUST be visible inside
+ *       the container (e.g. a bind-mounted directory).
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, path]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               path:
+ *                 description: "Absolute container-side path, or array of paths."
+ *                 oneOf:
+ *                   - type: string
+ *                   - type: array
+ *                     items:
+ *                       type: string
+ *               ref:
+ *                 type: string
+ *                 description: "Trigger element ref (e.g. e36). Optional when an input[type=file] already exists."
+ *               selector:
+ *                 type: string
+ *                 description: "Trigger element CSS/Playwright selector. Optional when an input[type=file] already exists."
+ *               timeout:
+ *                 type: integer
+ *                 default: 12000
+ *                 description: "Overall budget in ms to wait for an upload UI (in-app panel input or native file chooser) to appear after the trigger is activated. Ignored values (non-numeric or <= 0) fall back to the default."
+ *     responses:
+ *       200:
+ *         description: "File(s) attached."
+ *       400:
+ *         description: "Bad request (missing path/userId or file not found in container)."
+ *       404:
+ *         description: "Tab not found."
+ */
+app.post('/tabs/:tabId/upload', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, ref, selector } = req.body;
+    const { path: filePath } = req.body;
+    const uploadTimeout = Number.isFinite(req.body.timeout) && req.body.timeout > 0
+      ? req.body.timeout
+      : UPLOAD_UI_TIMEOUT_MS;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!filePath) return res.status(400).json({ error: 'path required (container-side file path)' });
+
+    const paths = Array.isArray(filePath) ? filePath : [filePath];
+    for (const p of paths) {
+      if (typeof p !== 'string' || !p) return res.status(400).json({ error: 'path entries must be non-empty strings' });
+      if (!fs.existsSync(p)) {
+        return res.status(400).json({ error: `file not found in container: ${p}`, code: 'file_not_found' });
+      }
+    }
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      const directInput = tabState.page.locator('input[type="file"]').first();
+      let attachedVia = null;
+
+      const trySetExistingInput = async () => {
+        try {
+          if (await directInput.count() > 0) {
+            await directInput.setInputFiles(paths, { timeout: UPLOAD_INPUT_TIMEOUT_MS });
+            return true;
+          }
+        } catch (e) {
+          log('info', 'upload: setInputFiles on existing input failed', { error: e.message });
+        }
+        return false;
+      };
+
+      // Strategy 1: an <input type=file> already exists right now (an upload
+      // panel was opened before this call) -> set files directly. setInputFiles
+      // works on hidden inputs and skips the OS dialog entirely.
+      if (await trySetExistingInput()) {
+        attachedVia = 'direct_input';
+      }
+
+      // Strategy 2: activate the trigger element, then handle EITHER UI path:
+      //   (a) the trigger opens the OS file chooser  -> answer the filechooser;
+      //   (b) the trigger opens an in-app upload panel that mounts a hidden
+      //       <input type=file> a beat later          -> setInputFiles on it.
+      // LinkedIn A/B-tests both behaviors for the same "Photo" control, so we
+      // arm the filechooser listener BEFORE clicking and then race it against
+      // polling for a freshly-mounted input. Whichever resolves first wins.
+      if (!attachedVia) {
+        let locator;
+        if (ref) {
+          locator = refToLocator(tabState.page, ref, tabState.refs);
+          if (!locator) {
+            try {
+              tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_upload', timeoutMs: UPLOAD_REFS_TIMEOUT_MS });
+            } catch (e) { /* proceed without refresh */ }
+            locator = refToLocator(tabState.page, ref, tabState.refs);
+          }
+          if (!locator) {
+            const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+            throw new StaleRefsError(ref, maxRef, tabState.refs.size);
+          }
+        } else if (selector) {
+          locator = tabState.page.locator(selector);
+        } else {
+          const err = new Error('No input[type=file] present and no ref/selector trigger provided.');
+          err.statusCode = 400;
+          throw err;
+        }
+
+        // Arm the filechooser listener FIRST (catch a no-quotes rejection so an
+        // unfired listener never crashes the handler), then activate the trigger.
+        const fcPromise = tabState.page
+          .waitForEvent('filechooser', { timeout: uploadTimeout })
+          .catch(() => null);
+        try {
+          await locator.focus({ timeout: UPLOAD_FOCUS_TIMEOUT_MS });
+          await tabState.page.keyboard.press('Enter');
+        } catch (e) {
+          try { await locator.click({ timeout: UPLOAD_CLICK_TIMEOUT_MS, force: true }); } catch (e2) { /* chooser/panel may still appear */ }
+        }
+
+        // The trigger may surface EITHER UI path (LinkedIn A/B-tests both, and
+        // its "Add media" control opens a native chooser AND mounts a hidden
+        // panel <input>). We must attach the file EXACTLY ONCE — attaching via
+        // both paths produces a duplicate ("1 of 2") image. So this is a
+        // PREFERENCE order, not a race:
+        //   1. Poll for an in-app <input type=file> and setInputFiles on it
+        //      (the reliable LinkedIn path -> via: panel_input).
+        //   2. Only if no panel input ever mounts, fall back to the native
+        //      chooser if it fired -> via: filechooser.
+        const panelWindow = Math.max(UPLOAD_PANEL_POLL_MS, uploadTimeout - UPLOAD_PANEL_MARGIN_MS);
+        const deadline = Date.now() + panelWindow;
+        while (!attachedVia && Date.now() < deadline) {
+          if (await trySetExistingInput()) { attachedVia = 'panel_input'; break; }
+          await tabState.page.waitForTimeout(UPLOAD_PANEL_POLL_MS);
+        }
+        if (!attachedVia) {
+          const fc = await fcPromise;
+          if (fc) {
+            try {
+              await fc.setFiles(paths);
+              attachedVia = 'filechooser';
+            } catch (e) {
+              log('info', 'upload: setFiles on filechooser failed', { error: e.message });
+            }
+          }
+        }
+        // If the panel path won, a native chooser may still have fired and be
+        // sitting on fcPromise. fcPromise is already .catch()'d to null so it
+        // can never reject; Playwright intercepts file choosers (no real OS
+        // dialog is left open), so an un-actioned chooser is harmless and needs
+        // no cancel() — which FileChooser doesn't expose in this PW version
+        // anyway. Nothing to do here; documented so nobody re-adds a second
+        // setFiles (that was the source of the duplicate-image bug).
+
+        if (!attachedVia) {
+          const err = new Error('Upload trigger did not open a file chooser or mount a file input.');
+          err.statusCode = 422;
+          throw err;
+        }
+      }
+
+      // Allow the page to process the upload / render a preview.
+      await tabState.page.waitForTimeout(UPLOAD_SETTLE_MS);
+
+      // Refresh refs so the caller's next snapshot reflects the post-upload UI.
+      try {
+        tabState.refs = await refreshTabRefs(tabState, { reason: 'post_upload', timeoutMs: UPLOAD_REFS_TIMEOUT_MS });
+      } catch (e) { tabState.refs = new Map(); }
+
+      return { ok: true, attached: paths, via: attachedVia, refsAvailable: tabState.refs.size > 0 };
+    }));
+
+    log('info', 'uploaded', { reqId: req.reqId, tabId, attached: paths, via: result.via });
+    pluginEvents.emit('tab:upload', { userId, tabId, paths });
+    res.json(result);
+  } catch (err) {
+    log('error', 'upload failed', { reqId: req.reqId, tabId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
 // Type
 /**
  * @openapi
