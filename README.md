@@ -639,10 +639,14 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `CAMOFOX_TRACES_TTL_HOURS` | Traces older than this are swept on startup | `24` |
 | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
+| `MAX_TABS_GLOBAL` | Max tabs globally and concurrent tab creations | `50` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle (0 = never) | `300000` (5min) |
 | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
+| `TAB_ADMISSION_MAX_ACTIVE` | Max concurrent tab creations globally | `4` |
+| `TAB_ADMISSION_MAX_ACTIVE_PER_USER` | Max concurrent tab creations per user | `2` |
+| `TAB_ADMISSION_QUEUE_LIMIT` | Max queued tab-creation requests before HTTP 429 | `8` |
 | `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
 | `PROXY_STRATEGY` | Proxy mode: `backconnect` (rotating sticky sessions) or blank (single endpoint) | - |
 | `PROXY_PROVIDER` | Provider name for session format (e.g. `decodo`) | `decodo` |
