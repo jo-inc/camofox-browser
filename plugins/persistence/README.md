@@ -33,6 +33,7 @@ CAMOFOX_PROFILE_DIR=/data/profiles
 - **Session create**: If a persisted `storageState` exists for the `userId`, it's restored into the new Playwright context.
 - **First run**: If no persisted state exists, bootstrap cookies from `CAMOFOX_COOKIES_DIR/cookies.txt` are imported (if present).
 - **Cookie import / session close / shutdown**: Storage state is checkpointed to disk via atomic tmp-write + rename.
+- **Session reset**: `DELETE /sessions/:userId/storage_state` closes the live context without checkpointing it, waits for in-flight writes, and deletes persisted state so the next session starts fresh.
 - **User isolation**: Each `userId` maps to a deterministic SHA256-hashed subdirectory under `profileDir`, so arbitrary userIds are path-safe.
 
 ## Docker

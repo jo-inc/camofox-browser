@@ -595,7 +595,8 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/sessions/:userId/cookies` | Add cookies to a user session (Playwright cookie objects) |
-| `GET` | `/sessions/:userId/storage_state` | Export cookies + localStorage ([VNC plugin](plugins/vnc/)) |
+| `GET` | `/sessions/:userId/storage_state` | Export persisted browser storage ([VNC plugin](plugins/vnc/)) |
+| `DELETE` | `/sessions/:userId/storage_state` | Reset the live session and delete its persisted browser storage ([persistence plugin](plugins/persistence/)) |
 
 ## Search Macros
 

@@ -67,32 +67,47 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   log('info', 'persistence plugin enabled', { profileDir, indexedDB });
 
-  // Track active sessions for checkpoint on close
+  // Track active sessions and serialize checkpoints per user. Resetting users
+  // skip new checkpoints until their live context and saved state are gone.
   const activeSessions = new Map(); // userId -> context
+  const checkpointPromises = new Map(); // userId -> latest queued checkpoint
+  const resettingUsers = new Set();
 
   /**
    * Checkpoint storage state to disk for a userId.
    */
   async function checkpoint(userId, context, reason, storageState) {
-    if (!context && !storageState) return;
-    const result = await persistStorageState({
-      profileDir,
-      userId,
-      context,
-      storageState,
-      logger,
-      indexedDB,
+    if ((!context && !storageState) || resettingUsers.has(userId)) return;
+
+    const previous = checkpointPromises.get(userId) || Promise.resolve();
+    const current = previous.catch(() => {}).then(async () => {
+      if (resettingUsers.has(userId)) return;
+      const result = await persistStorageState({
+        profileDir,
+        userId,
+        context,
+        storageState,
+        logger,
+        indexedDB,
+      });
+      if (result.persisted) {
+        log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
+      }
+      return result;
     });
-    if (result.persisted) {
-      log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
+    checkpointPromises.set(userId, current);
+    try {
+      return await current;
+    } finally {
+      if (checkpointPromises.get(userId) === current) checkpointPromises.delete(userId);
     }
-    return result;
   }
 
   // --- Lifecycle hooks ---
 
   // Before session context is created: inject storageState if we have one saved
   events.on('session:creating', async ({ userId, contextOptions }) => {
+    if (resettingUsers.has(userId)) return;
     const storageStatePath = await loadPersistedStorageState(profileDir, userId, logger);
     if (storageStatePath) {
       contextOptions.storageState = storageStatePath;
@@ -140,7 +155,9 @@ export async function register(app, ctx, pluginConfig = {}) {
   events.on('session:destroying', async ({ userId, reason }) => {
     const context = activeSessions.get(userId);
     if (context) {
-      await checkpoint(userId, context, reason).catch(() => {});
+      if (reason !== 'storage_reset') {
+        await checkpoint(userId, context, reason).catch(() => {});
+      }
       activeSessions.delete(userId);
     }
   });
@@ -158,24 +175,35 @@ export async function register(app, ctx, pluginConfig = {}) {
     activeSessions.clear();
   });
 
-  app.delete('/sessions/:userId/cookies', ctx.auth(), async (req, res) => {
+  app.delete('/sessions/:userId/storage_state', ctx.auth(), async (req, res) => {
     const userId = ctx.normalizeUserId(req.params.userId);
+    if (resettingUsers.has(userId)) {
+      return res.status(409).json({ error: 'storage state reset already in progress' });
+    }
+
+    resettingUsers.add(userId);
     try {
-      const context = activeSessions.get(userId);
-      const clearedLive = Boolean(context);
-      if (context) await context.clearCookies();
+      const clearedLive = await ctx.destroySession(userId, { reason: 'storage_reset' });
+      await checkpointPromises.get(userId)?.catch(() => {});
 
       const { storageStatePath, metaPath } = getUserPersistencePaths(profileDir, userId);
       const removedPersisted = await removeIfExists(storageStatePath);
       await removeIfExists(metaPath);
 
-      log('info', 'session cookies cleared', { reqId: req.reqId, userId, clearedLive, removedPersisted });
+      log('info', 'session storage state reset', {
+        reqId: req.reqId,
+        userId,
+        clearedLive,
+        removedPersisted,
+      });
       res.json({ ok: true, userId, clearedLive, removedPersisted });
     } catch (err) {
-      log('error', 'clear cookies failed', { reqId: req.reqId, userId, error: err.message });
+      log('error', 'storage state reset failed', { reqId: req.reqId, userId, error: err.message });
       res.status(500).json({ error: ctx.safeError(err) });
+    } finally {
+      resettingUsers.delete(userId);
     }
   });
 
-  log('info', 'persistence plugin: registered DELETE /sessions/:userId/cookies');
+  log('info', 'persistence plugin: registered DELETE /sessions/:userId/storage_state');
 }

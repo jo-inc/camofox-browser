@@ -1369,7 +1369,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Proxy errors mean the session is dead -- rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
@@ -1378,7 +1378,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('proxy_error').inc();
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Navigation-related timeouts can poison the proxy session (e.g., Cloudflare holding
   // the connection open for 30s). The browser context shares a single proxy session, so
@@ -1390,7 +1390,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('navigation_timeout').inc();
-    destroySession(userId);
+    destroySession(userId).catch(() => {});
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   // (for non-navigation timeouts like type, scroll that don't poison the proxy)
@@ -1523,13 +1523,14 @@ async function recycleOldestTab(session, reqId, userId) {
   return { recycledTabId: oldestTabId, recycledFromGroup: oldestGroupKey };
 }
 
-function destroySession(userId) {
+async function destroySession(userId, { reason = 'destroy_session' } = {}) {
   const key = normalizeUserId(userId);
   const session = sessions.get(key);
-  if (!session) return;
-  log('warn', 'destroying dead session', { userId: key });
+  if (!session) return false;
+  log('warn', 'destroying session', { userId: key, reason });
   sessions.delete(key);
-  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+  await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  return true;
 }
 
 function findTab(session, tabId) {
