@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// MCP 도구 호출 헬퍼 — create_tab/snapshot 등 실행 후 결과를 JSON으로 출력.
-// 사용: node scripts/mcp-call.mjs <tool_name> '<json_args>'
+// MCP tool-call helper — invoke one tool (e.g. create_tab/snapshot) and print
+// the result as JSON.
+// Usage: node scripts/mcp-call.mjs <tool_name> '<json-args>'
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,11 +70,11 @@ if (res.result?.isError) {
   console.error("TOOL ERROR:", res.result.content[0]?.text);
   process.exit(1);
 }
-// 결과 출력 (이미지 콘텐츠는 data 길이만)
+// Emit the result (for image content, only show the data length).
 const out = res.result.content.map((c) => {
   if (c.type === "image") return `[image: ${c.mimeType}, ${c.data.length} chars base64]`;
   if (c.type === "text") {
-    // text 안에 JSON이면 pretty, 아니면 그대로
+    // Pretty-print if the text is JSON, otherwise leave it as-is.
     try { return JSON.stringify(JSON.parse(c.text), null, 2); }
     catch { return c.text; }
   }

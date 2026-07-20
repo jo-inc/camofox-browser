@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// 단일 MCP 프로세스 안에서 도구들을 순차 호출 — 실제 Claude Code 사용(장기 프로세스,
-// 고정 userId)을 시뮬레이션. 스크립트 인자로 JSON 시퀀스를 받는다.
+// Run a sequence of tool calls inside a single MCP process — simulates real
+// Claude Code usage (long-lived process, fixed userId). Takes a JSON sequence
+// as a CLI argument.
 //
-// 사용: node scripts/mcp-run.mjs '[["camofox_create_tab",{"url":"..."}],["camofox_snapshot",{}]]'
-// snapshot의 tabId는 이전 create_tab 결과에서 자동 치환("${tabId}").
+// Usage: node scripts/mcp-run.mjs '[["camofox_create_tab",{"url":"..."}],["camofox_snapshot",{}]]'
+// A snapshot's tabId is auto-substituted from the prior create_tab result ("${tabId}").
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,18 +44,18 @@ const wait = async (id, ms = 60000) => {
   return results.get(id);
 };
 
-// 핸드셰이크
+// Handshake.
 send({ jsonrpc: "2.0", id: 1, method: "initialize",
   params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "cli", version: "0" } } });
 const init = await wait(1);
 if (!init) { console.error("init failed:", stderr); proc.kill(); process.exit(1); }
 send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
-const ctx = {}; // 직전 호출 결과에서 키값 보관 (tabId 등)
+const ctx = {}; // carries key values (e.g. tabId) from the previous call
 for (let i = 0; i < seq.length; i++) {
   let [name, args] = seq[i];
   args = args || {};
-  // ${var} 치환
+  // Substitute ${var} placeholders.
   const subst = (v) => typeof v === "string"
     ? v.replace(/\$\{(\w+)\}/g, (_, k) => (k in ctx ? String(ctx[k]) : `\${${k}}`))
     : v;
@@ -69,7 +70,7 @@ for (let i = 0; i < seq.length; i++) {
     console.log(`\n[${i}] ${name} → ERROR\n  ${res.result.content[0]?.text}`);
     continue;
   }
-  // 텍스트 콘텐츠에서 tabId 등 추출해 ctx에 보관
+  // Pull tabId (and similar) out of text content and stash it in ctx.
   for (const c of res.result.content) {
     if (c.type === "text") {
       try {
