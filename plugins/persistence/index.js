@@ -34,6 +34,7 @@ import {
   persistStorageState,
 } from '../../lib/persistence.js';
 import { importBootstrapCookies } from '../../lib/cookies.js';
+import { resolvePersistenceIndexedDB } from '../../lib/persistence-config.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log } = ctx;
@@ -47,7 +48,7 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   // IndexedDB capture is opt-in because it may persist large amounts of
   // application data and make checkpoints significantly slower.
-  const indexedDB = pluginConfig.indexedDB === true;
+  const indexedDB = resolvePersistenceIndexedDB(pluginConfig);
 
   const logger = {
     warn: (msg, fields = {}) => log('warn', msg, fields),
@@ -61,9 +62,16 @@ export async function register(app, ctx, pluginConfig = {}) {
   /**
    * Checkpoint storage state to disk for a userId.
    */
-  async function checkpoint(userId, context, reason) {
-    if (!context) return;
-    const result = await persistStorageState({ profileDir, userId, context, logger, indexedDB });
+  async function checkpoint(userId, context, reason, storageState) {
+    if (!context && !storageState) return;
+    const result = await persistStorageState({
+      profileDir,
+      userId,
+      context,
+      storageState,
+      logger,
+      indexedDB,
+    });
     if (result.persisted) {
       log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
     }
@@ -106,6 +114,14 @@ export async function register(app, ctx, pluginConfig = {}) {
     const context = activeSessions.get(userId);
     if (context) {
       await checkpoint(userId, context, 'cookie_import');
+    }
+  });
+
+  // When another plugin exports storage state, persist that exact snapshot so
+  // the browser is serialized only once and the exported/checkpointed data match.
+  events.on('session:storage:export', async ({ userId, storageState }) => {
+    if (storageState) {
+      await checkpoint(userId, undefined, 'storage_export', storageState);
     }
   });
 

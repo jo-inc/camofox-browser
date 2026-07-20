@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { jest } from '@jest/globals';
+import { createPluginEvents } from '../../lib/plugins.js';
 
 // Mock the launcher module -- index.js no longer imports child_process directly
 const mockWatcher = () => {
@@ -44,8 +45,7 @@ describe('vnc plugin', () => {
   let events, ctx, mockApp, routes;
 
   beforeEach(() => {
-    events = new EventEmitter();
-    events.setMaxListeners(50);
+    events = createPluginEvents();
     routes = {};
     mockApp = {
       get: jest.fn((path, ...handlers) => { routes[`GET ${path}`] = handlers; }),
@@ -53,6 +53,7 @@ describe('vnc plugin', () => {
     ctx = {
       events,
       config: {},
+      pluginConfigs: new Map(),
       log: jest.fn(),
       sessions: new Map(),
       safeError: (err) => typeof err === 'string' ? err : (err?.message || 'Internal error'),
@@ -153,7 +154,24 @@ describe('vnc plugin', () => {
     const res = { json: jest.fn() };
 
     await handler(req, res);
+    expect(ctx.sessions.get('user-1').context.storageState).toHaveBeenCalledWith(undefined);
     expect(res.json).toHaveBeenCalledWith(mockState);
+  });
+
+  test('storage_state endpoint includes IndexedDB when persistence opts in', async () => {
+    ctx.pluginConfigs.set('persistence', { indexedDB: true });
+    await register(mockApp, ctx, { enabled: true });
+
+    const storageState = jest.fn(async () => ({ cookies: [], origins: [] }));
+    ctx.sessions.set('user-1', { context: { storageState } });
+
+    const handler = routes['GET /sessions/:userId/storage_state'].at(-1);
+    await handler(
+      { params: { userId: 'user-1' }, reqId: 'test' },
+      { json: jest.fn() },
+    );
+
+    expect(storageState).toHaveBeenCalledWith({ indexedDB: true });
   });
 
   test('storage_state endpoint uses safeError on failure', async () => {
@@ -192,6 +210,10 @@ describe('vnc plugin', () => {
 
     expect(exported).toHaveLength(2);
     expect(exported[0]).toMatchObject({ userId: 'user-1' });
+    expect(exported[1]).toMatchObject({
+      userId: 'user-1',
+      storageState: { cookies: [], origins: [] },
+    });
   });
 
   test('watcher is killed on server:shutdown', async () => {

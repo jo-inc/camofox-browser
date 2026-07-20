@@ -68,6 +68,24 @@ describe('persistence plugin', () => {
     expect(saved.cookies[0].name).toBe('x');
   });
 
+  test('persists the exact state supplied by session:storage:export', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir, indexedDB: true });
+
+    const storageState = {
+      cookies: [],
+      origins: [{
+        origin: 'https://example.test',
+        localStorage: [],
+        indexedDB: [{ name: 'auth', version: 1, stores: [] }],
+      }],
+    };
+    await events.emitAsync('session:storage:export', { userId: 'user-export', storageState });
+
+    const { getUserPersistencePaths } = await import('../../lib/persistence.js');
+    const { storageStatePath } = getUserPersistencePaths(tmpDir, 'user-export');
+    expect(JSON.parse(await fs.readFile(storageStatePath, 'utf8'))).toEqual(storageState);
+  });
+
   test('checkpoints on session:destroying', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
 

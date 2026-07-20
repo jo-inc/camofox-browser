@@ -162,4 +162,4 @@ The plugin declares its apt dependencies in `apt.txt` — these are installed au
 | `vnc:watcher:started` | `{ pid }` | Watcher process spawned |
 | `vnc:watcher:stopped` | `{ code, signal }` | Watcher exited |
 | `vnc:storage:exported` | `{ userId, cookies, origins }` | Storage state exported via API |
-| `session:storage:export` | `{ userId }` | Emitted after export (persistence plugin listens) |
+| `session:storage:export` | `{ userId, storageState }` | Awaited after export; the persistence plugin writes the same snapshot to disk without serializing the browser again |

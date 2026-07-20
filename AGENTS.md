@@ -378,7 +378,7 @@ export function register(app, ctx) {
 | Event | Payload |
 |-------|---------|
 | `session:cookies:import` | `{ userId, count }` |
-| `session:storage:export` | `{ userId }` |
+| `session:storage:export` | `{ userId, storageState }` |
 
 #### Server
 | Event | Payload |
