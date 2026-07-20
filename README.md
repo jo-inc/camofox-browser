@@ -263,7 +263,7 @@ By default, camofox persists each user's cookies and localStorage to `~/.camofox
 
 Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the persistence plugin config. To disable persistence, set `"persistence": { "enabled": false }` in `camofox.config.json`.
 
-Storage state includes IndexedDB by default, so logins on sites that keep auth in IndexedDB (e.g. Firebase Auth) survive restarts. Set `CAMOFOX_PERSIST_INDEXEDDB=false` (or `"indexedDB": false` in the plugin config) to restore the previous cookies+localStorage-only behavior.
+By default, storage state contains cookies and localStorage only. To also persist IndexedDB, set `"indexedDB": true` in the persistence plugin config. This captures all serializable IndexedDB records—not only authentication data—and may make snapshots significantly larger and checkpoints slower.
 
 ### Session Tracing
 
@@ -619,7 +619,6 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
 | `CAMOFOX_PROFILE_DIR` | Directory for persisted session profiles | `~/.camofox/profiles` |
-| `CAMOFOX_PERSIST_INDEXEDDB` | Include IndexedDB in persisted storage state (`false` to disable) | `true` |
 | `CAMOFOX_TRACES_DIR` | Directory for session trace zips | `~/.camofox/traces` |
 | `CAMOFOX_TRACES_MAX_BYTES` | Max size per trace, removed on next startup if exceeded | `52428800` (50MB) |
 | `CAMOFOX_TRACES_TTL_HOURS` | Traces older than this are swept on startup | `24` |

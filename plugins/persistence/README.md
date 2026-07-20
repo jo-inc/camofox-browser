@@ -2,7 +2,7 @@
 
 Optional per-user browser storage state persistence for camofox-browser.
 
-Saves and restores cookies + localStorage + IndexedDB across session restarts, container deploys, and idle timeouts using Playwright's `storageState` API.
+Saves and restores cookies and localStorage across session restarts, container deploys, and idle timeouts using Playwright's `storageState` API. IndexedDB persistence is available as an opt-in.
 
 ## Configuration
 
@@ -20,14 +20,13 @@ In `camofox.config.json`:
 }
 ```
 
-Or override via environment variables:
+The profile directory can also be set via environment variable:
 
 ```
 CAMOFOX_PROFILE_DIR=/data/profiles
-CAMOFOX_PERSIST_INDEXEDDB=false
 ```
 
-- `indexedDB` (default: `true`) — `storageState()` also captures IndexedDB-backed data, so logins stored there (e.g. Firebase Auth and other SSO flows) survive restarts. Set to `false` to restore cookies+localStorage-only snapshots.
+- `indexedDB` (default: `false`) — set to `true` to capture IndexedDB through `storageState()`. This can preserve logins stored there, including Firebase Auth and other SSO flows. It captures all serializable IndexedDB records—not only authentication data—and may make snapshots significantly larger and checkpoints slower.
 
 ## How it works
 

@@ -15,20 +15,17 @@
  *     }
  *   }
  *
- * Or via environment variables (overrides config file):
+ * The profile directory can also be set via environment variable:
  *   CAMOFOX_PROFILE_DIR=/data/profiles
- *   CAMOFOX_PERSIST_INDEXEDDB=false
  *
  * Each userId gets a deterministic SHA256-hashed subdirectory under profileDir.
  * Storage state is checkpointed on cookie import, session close, and shutdown.
  * On session creation, saved state is restored into the new Playwright context
  * via the session:creating hook (mutates contextOptions.storageState).
  *
- * indexedDB (default: true): storageState() also captures IndexedDB-backed
- * data, so logins stored there (e.g. Firebase Auth and other SSO flows)
- * survive restarts too. Set "indexedDB": false (or
- * CAMOFOX_PERSIST_INDEXEDDB=false) to restore the previous
- * cookies+localStorage-only snapshots.
+ * indexedDB (default: false): opt in to capturing all serializable IndexedDB
+ * records in storageState(). This can preserve IndexedDB-backed logins, but
+ * may make snapshots significantly larger and checkpoints slower.
  */
 
 import {
@@ -48,12 +45,9 @@ export async function register(app, ctx, pluginConfig = {}) {
     return;
   }
 
-  // Resolve indexedDB: env var > plugin config > on (true)
-  const envIndexedDB = process.env.CAMOFOX_PERSIST_INDEXEDDB;
-  const indexedDB =
-    envIndexedDB !== undefined
-      ? !['false', '0', 'no'].includes(envIndexedDB.toLowerCase())
-      : pluginConfig.indexedDB !== false;
+  // IndexedDB capture is opt-in because it may persist large amounts of
+  // application data and make checkpoints significantly slower.
+  const indexedDB = pluginConfig.indexedDB === true;
 
   const logger = {
     warn: (msg, fields = {}) => log('warn', msg, fields),

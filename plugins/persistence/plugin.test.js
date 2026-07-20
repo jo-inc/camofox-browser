@@ -100,24 +100,8 @@ describe('persistence plugin', () => {
     }
   });
 
-  test('persists IndexedDB in storage state by default', async () => {
+  test('does not persist IndexedDB by default', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
-
-    const mockContext = {
-      storageState: jest.fn(async ({ path: p }) => {
-        await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
-      }),
-    };
-    await events.emitAsync('session:created', { userId: 'user-idb', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-idb', reason: 'test' });
-
-    expect(mockContext.storageState).toHaveBeenCalledWith(
-      expect.objectContaining({ indexedDB: true })
-    );
-  });
-
-  test('indexedDB: false opts out of IndexedDB persistence', async () => {
-    await register(mockApp, ctx, { profileDir: tmpDir, indexedDB: false });
 
     const mockContext = {
       storageState: jest.fn(async ({ path: p }) => {
@@ -127,25 +111,35 @@ describe('persistence plugin', () => {
     await events.emitAsync('session:created', { userId: 'user-no-idb', context: mockContext });
     await events.emitAsync('session:destroying', { userId: 'user-no-idb', reason: 'test' });
 
+    expect(ctx.log).toHaveBeenCalledWith(
+      'info',
+      'persistence plugin enabled',
+      expect.objectContaining({ indexedDB: false })
+    );
     expect(mockContext.storageState).toHaveBeenCalled();
     for (const [arg] of mockContext.storageState.mock.calls) {
       expect(arg.indexedDB).toBeUndefined();
     }
   });
 
-  test('CAMOFOX_PERSIST_INDEXEDDB=false overrides plugin config', async () => {
-    const orig = process.env.CAMOFOX_PERSIST_INDEXEDDB;
-    process.env.CAMOFOX_PERSIST_INDEXEDDB = 'false';
-    try {
-      await register(mockApp, ctx, { profileDir: tmpDir, indexedDB: true });
-      expect(ctx.log).toHaveBeenCalledWith(
-        'info',
-        'persistence plugin enabled',
-        expect.objectContaining({ indexedDB: false })
-      );
-    } finally {
-      if (orig === undefined) delete process.env.CAMOFOX_PERSIST_INDEXEDDB;
-      else process.env.CAMOFOX_PERSIST_INDEXEDDB = orig;
-    }
+  test('indexedDB: true opts in to IndexedDB persistence', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir, indexedDB: true });
+
+    const mockContext = {
+      storageState: jest.fn(async ({ path: p }) => {
+        await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
+      }),
+    };
+    await events.emitAsync('session:created', { userId: 'user-idb', context: mockContext });
+    await events.emitAsync('session:destroying', { userId: 'user-idb', reason: 'test' });
+
+    expect(ctx.log).toHaveBeenCalledWith(
+      'info',
+      'persistence plugin enabled',
+      expect.objectContaining({ indexedDB: true })
+    );
+    expect(mockContext.storageState).toHaveBeenCalledWith(
+      expect.objectContaining({ indexedDB: true })
+    );
   });
 });
