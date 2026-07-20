@@ -2,6 +2,7 @@
   "id": "camofox-browser",
   "name": "Camofox Browser",
   "version": "1.6.0",
+  "newPageTimeoutMs": 10000,
   "plugins": {
     "youtube": { "enabled": true },
     "persistence": { "enabled": true },

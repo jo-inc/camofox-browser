@@ -606,6 +606,18 @@ Reddit macros return JSON directly (no HTML parsing needed):
 - `@reddit_search` - search all of Reddit, returns JSON with 25 results
 - `@reddit_subreddit` - browse a subreddit (e.g., query `"programming"` -> `/r/programming.json`)
 
+## Browser Configuration
+
+Browser behavior can be tuned in `camofox.config.json`:
+
+```json
+{
+  "newPageTimeoutMs": 10000
+}
+```
+
+`newPageTimeoutMs` controls how long tab creation waits for Firefox to create a page. If the context is unresponsive, Camofox replaces only that user's context and retries once. The default is 10 seconds.
+
 ## Environment Variables
 
 | Variable | Description | Default |
