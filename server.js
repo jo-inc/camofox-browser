@@ -918,8 +918,17 @@ async function _closeBrowserFullyImpl(reason) {
     }
   } catch { /* best effort */ }
 
-  // Reset native memory baseline so next browser measures from fresh
-  reporter.resetNativeMemBaseline();
+  // Reset native memory baseline so next browser measures from fresh.
+  // Guard this call because older/stale reporter objects from partial deploys
+  // have caused idle-shutdown restart failures here.
+  if (typeof reporter.resetNativeMemBaseline === 'function') {
+    reporter.resetNativeMemBaseline();
+  } else {
+    log('warn', 'reporter.resetNativeMemBaseline unavailable; continuing browser close', {
+      reason,
+      reporterKeys: reporter && typeof reporter === 'object' ? Object.keys(reporter).sort() : [],
+    });
+  }
   _nativeMemBaseline = null;
 
   // Verify cleanup: check FD/handle counts dropped (after force-kill completes)
