@@ -32,6 +32,9 @@ export default async function globalSetup() {
   const cfg = loadConfig();
   const pluginDir = path.resolve(__dirname, '../..');
 
+  const uploadsDir = path.join(os.tmpdir(), `camofox-e2e-uploads-${process.pid}`);
+  fs.mkdirSync(uploadsDir, { recursive: true });
+
   const log = {
     info: (msg) => console.log(msg),
     error: (msg) => console.error(msg),
@@ -40,7 +43,7 @@ export default async function globalSetup() {
   const serverProcess = launchServer({
     pluginDir,
     port: serverPort,
-    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', DISPLAY },
+    env: { ...cfg.serverEnv, DEBUG_RESPONSES: 'false', DISPLAY, CAMOFOX_UPLOADS_DIR: uploadsDir },
     log,
   });
 
@@ -61,6 +64,7 @@ export default async function globalSetup() {
   fs.writeFileSync(ENV_FILE, JSON.stringify({
     serverUrl: `http://localhost:${serverPort}`,
     testSiteUrl,
+    uploadsDir,
     serverPid: serverProcess.pid,
   }));
 

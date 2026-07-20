@@ -5,6 +5,7 @@ import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
+import path from 'path';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
@@ -3709,6 +3710,240 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
+    handleRouteError(err, req, res);
+  }
+});
+
+// Set input files (upload)
+const SET_INPUT_FILES_TIMEOUT_MS = 10000;
+const DROPZONE_CLICK_TIMEOUT_MS = 10000;
+// Chooser wait must comfortably exceed the click timeout: a slow click that
+// only opens the chooser near its own deadline must not lose a race to an
+// equal-length chooser timer and report a false "no chooser".
+const DROPZONE_CHOOSER_TIMEOUT_MS = 15000;
+
+// Realpath the allowlist root once (the mount itself may be a symlink) so the
+// per-file containment check compares fully-resolved paths. Cached only on
+// success — if the dir doesn't exist yet we fall back without caching.
+let _uploadsRootReal = null;
+async function uploadsRootReal() {
+  if (_uploadsRootReal) return _uploadsRootReal;
+  const base = path.resolve(CONFIG.uploadsDir);
+  try {
+    _uploadsRootReal = await fs.promises.realpath(base);
+    return _uploadsRootReal;
+  } catch {
+    return base;
+  }
+}
+
+/**
+ * @openapi
+ * /tabs/{tabId}/set_input_files:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Attach files to a file input element
+ *     description: |
+ *       Programmatically selects files on an `<input type="file">` element via
+ *       Playwright's privileged setInputFiles channel (browsers forbid this
+ *       from page JS for security). File paths must resolve inside the
+ *       configured uploads directory (env `CAMOFOX_UPLOADS_DIR`, defaults to
+ *       `/home/node/cv-uploads`).
+ *
+ *       Two targeting modes:
+ *       - **Direct input** (default): pass `ref` from a snapshot (preferred) or a
+ *         CSS `selector` targeting the `<input type="file">`. Files are set
+ *         straight on the input via `setInputFiles`.
+ *       - **File chooser** (opt-in, for custom dropzone widgets such as
+ *         react-dropzone that read from the trusted file-chooser event rather
+ *         than the hidden input): pass `dropzoneRef` or `dropzoneSelector`
+ *         targeting the *visible* clickable dropzone element. The server clicks
+ *         it, intercepts the resulting file chooser, and supplies the same
+ *         sandboxed files through it. If both a direct and a dropzone target are
+ *         given, the dropzone (file-chooser) path takes precedence.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, files]
+ *             properties:
+ *               userId: { type: string }
+ *               ref:
+ *                 type: string
+ *                 description: Stable element ref from a snapshot targeting the file input (direct path).
+ *               selector:
+ *                 type: string
+ *                 description: CSS selector targeting the file input (direct path).
+ *               dropzoneRef:
+ *                 type: string
+ *                 description: Stable element ref for the visible dropzone element (file-chooser path).
+ *               dropzoneSelector:
+ *                 type: string
+ *                 description: CSS selector for the visible dropzone element (file-chooser path).
+ *               files:
+ *                 type: array
+ *                 items: { type: string }
+ *                 description: Absolute container paths inside the uploads dir.
+ *     responses:
+ *       200:
+ *         description: Files attached.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok: { type: boolean }
+ *                 via:
+ *                   type: string
+ *                   enum: [input, filechooser]
+ *                   description: Which mechanism attached the files.
+ *                 files:
+ *                   type: array
+ *                   items: { type: string }
+ *       400:
+ *         description: Bad request (missing userId/target/fields, path resolving outside uploads dir, non-file or unreadable path, or dropzone click opened no file chooser).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/set_input_files', async (req, res) => {
+  const tabId = req.params.tabId;
+
+  try {
+    const { userId, ref, selector, dropzoneRef, dropzoneSelector, files } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    if (!ref && !selector && !dropzoneRef && !dropzoneSelector) {
+      return res.status(400).json({ error: 'one of ref, selector, dropzoneRef, or dropzoneSelector required' });
+    }
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'files must be a non-empty array of paths' });
+    }
+
+    // Restrict to a single allowlisted directory so this endpoint can't be
+    // turned into an arbitrary-file-exfiltration channel via the browser.
+    // Containment is checked on the *realpath* — a symlink planted inside the
+    // uploads dir must not be able to point Playwright at files outside it.
+    const ALLOWED_ROOT = await uploadsRootReal();
+    const resolved = [];
+    for (const f of files) {
+      if (typeof f !== 'string') {
+        return res.status(400).json({ error: 'each file must be a string path' });
+      }
+      let real;
+      try {
+        real = await fs.promises.realpath(path.resolve(f));
+      } catch {
+        return res.status(400).json({ error: `file not found: ${f}` });
+      }
+      if (real !== ALLOWED_ROOT && !real.startsWith(ALLOWED_ROOT + path.sep)) {
+        return res.status(400).json({ error: `path outside allowed uploads dir (${ALLOWED_ROOT})` });
+      }
+      let stat;
+      try {
+        stat = await fs.promises.stat(real);
+      } catch {
+        return res.status(400).json({ error: `file not readable: ${f}` });
+      }
+      if (!stat.isFile()) {
+        return res.status(400).json({ error: `not a regular file: ${f}` });
+      }
+      try {
+        await fs.promises.access(real, fs.constants.R_OK);
+      } catch {
+        return res.status(400).json({ error: `file not readable: ${f}` });
+      }
+      resolved.push(real);
+    }
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    // Resolve a snapshot ref to a locator, auto-refreshing stale refs once.
+    const resolveRef = async (refId, reason) => {
+      let locator = refToLocator(tabState.page, refId, tabState.refs);
+      if (!locator) {
+        log('info', `auto-refreshing refs before ${reason}`, { ref: refId, hadRefs: tabState.refs.size });
+        tabState.refs = await refreshTabRefs(tabState, { reason });
+        locator = refToLocator(tabState.page, refId, tabState.refs);
+      }
+      if (!locator) {
+        const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
+        throw new StaleRefsError(refId, maxRef, tabState.refs.size);
+      }
+      return locator;
+    };
+
+    const via = await withTabLock(tabId, async () => {
+      // File-chooser path (opt-in): for custom dropzone widgets that read from
+      // the trusted file-chooser event rather than the hidden input. Click the
+      // visible dropzone, intercept the chooser, and feed it the *same*
+      // sandboxed paths so the uploads-dir restriction still applies.
+      if (dropzoneRef || dropzoneSelector) {
+        const target = dropzoneRef
+          ? await resolveRef(dropzoneRef, 'set_input_files_dropzone')
+          : tabState.page.locator(dropzoneSelector);
+
+        // Register the waiter before clicking so we can't miss a fast chooser.
+        const chooserPromise = tabState.page
+          .waitForEvent('filechooser', { timeout: DROPZONE_CHOOSER_TIMEOUT_MS })
+          .catch(() => null);
+        try {
+          await target.click({ timeout: DROPZONE_CLICK_TIMEOUT_MS });
+        } catch (clickErr) {
+          // Only force through a click that was blocked or timed out (dropzones
+          // often wrap the clickable region under an overlay). A strict-mode
+          // violation, detached node, or closed target won't be fixed by force
+          // and must surface with its real diagnostic.
+          if (!isTimeoutError(clickErr) && !clickErr.message?.includes('intercepts pointer events')) {
+            throw clickErr;
+          }
+          await target.click({ timeout: DROPZONE_CLICK_TIMEOUT_MS, force: true });
+        }
+
+        const chooser = await chooserPromise;
+        if (!chooser) {
+          const err = new Error('dropzone click did not open a file chooser; for a plain <input type="file"> use ref/selector instead of dropzoneRef/dropzoneSelector');
+          err.statusCode = 400;
+          throw err;
+        }
+        await chooser.setFiles(resolved, { timeout: SET_INPUT_FILES_TIMEOUT_MS });
+        return 'filechooser';
+      }
+
+      // Direct path: set files straight on the <input type="file">.
+      if (ref) {
+        const locator = await resolveRef(ref, 'set_input_files');
+        await locator.setInputFiles(resolved, { timeout: SET_INPUT_FILES_TIMEOUT_MS });
+      } else {
+        await tabState.page.setInputFiles(selector, resolved, { timeout: SET_INPUT_FILES_TIMEOUT_MS });
+      }
+      return 'input';
+    });
+
+    pluginEvents.emit('tab:set_input_files', { userId, tabId, files: resolved, ref, selector, dropzoneRef, dropzoneSelector, via });
+    res.json({ ok: true, via, files: resolved });
+  } catch (err) {
+    // Client errors (bad path, no chooser) shouldn't log at error level or skew error metrics.
+    const level = err.statusCode && err.statusCode < 500 ? 'info' : 'error';
+    log(level, 'set_input_files failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });

@@ -167,6 +167,10 @@ class BrowserClient {
     return this.request('GET', `/tabs/${tabId}/images?${params}`);
   }
   
+  async setInputFiles(tabId, options) {
+    return this.request('POST', `/tabs/${tabId}/set_input_files`, { userId: this.userId, ...options });
+  }
+
   async getStats(tabId) {
     return this.request('GET', `/tabs/${tabId}/stats?userId=${this.userId}`);
   }
