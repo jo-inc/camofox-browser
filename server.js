@@ -33,6 +33,7 @@ import {
 import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
+import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
@@ -483,6 +484,7 @@ const MAX_SESSIONS = CONFIG.maxSessions;
 const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
 const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
 const HANDLER_TIMEOUT_MS = CONFIG.handlerTimeoutMs;
+const NEW_PAGE_TIMEOUT_MS = CONFIG.newPageTimeoutMs;
 const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
@@ -1231,17 +1233,6 @@ async function getSession(userId, { trace = false } = {}) {
         await closeSession(key, session, { reason: 'dead_context', clearDownloads: true, clearLocks: true });
         session = null;
       }
-      // Detect zombie CDP connections — sync pages() may pass even when
-      // newPage() would hang. If no successful navigation in 120s, the
-      // context is likely stale and should be recreated proactively.
-      if (session && Date.now() - healthState.lastSuccessfulNav > 120_000) {
-        log('warn', 'session context possibly stale, recreating', {
-          userId: key,
-          lastNavAgeMs: Date.now() - healthState.lastSuccessfulNav,
-        });
-        await closeSession(key, session, { reason: 'stale_context', clearDownloads: true, clearLocks: true });
-        session = null;
-      }
     }
   }
   
@@ -1322,6 +1313,23 @@ async function getSession(userId, { trace = false } = {}) {
   }
   session.lastAccess = Date.now();
   return session;
+}
+
+async function createPageWithRecoveryForUser(userId, session, { trace = false } = {}) {
+  const key = normalizeUserId(userId);
+  return createPageWithSessionRecovery({
+    userId: key,
+    session,
+    trace,
+    timeoutMs: NEW_PAGE_TIMEOUT_MS,
+    withTimeout,
+    isTimeoutError,
+    isDeadContextError,
+    currentSession: () => sessions.get(key),
+    destroySession,
+    getSession,
+    log,
+  });
 }
 
 function getTabGroup(session, listItemId) {
@@ -2737,9 +2745,11 @@ app.post('/tabs', async (req, res) => {
         }
       }
       
+      const createdPage = await createPageWithRecoveryForUser(userId, session, { trace: !!trace });
+      session = createdPage.session;
+      const page = createdPage.page;
       const group = getTabGroup(session, resolvedSessionKey);
-      
-      const page = await session.context.newPage();
+
       const tabId = fly.makeTabId();
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);

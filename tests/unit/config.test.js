@@ -1,4 +1,7 @@
 import { describe, expect, test, afterEach } from '@jest/globals';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { loadConfig } from '../../lib/config.js';
 
 const ORIGINAL_ENV = { ...process.env };
@@ -45,6 +48,19 @@ describe('loadConfig', () => {
 
     process.env.BROWSER_RSS_RESTART_THRESHOLD_MB = '2048';
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
+  });
+
+  test('reads newPageTimeoutMs from camofox.config.json with a 10s fallback', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-config-'));
+    const configPath = path.join(dir, 'camofox.config.json');
+
+    fs.writeFileSync(configPath, JSON.stringify({ newPageTimeoutMs: 15000 }));
+    expect(loadConfig({ configPath }).newPageTimeoutMs).toBe(15000);
+
+    fs.writeFileSync(configPath, JSON.stringify({ newPageTimeoutMs: 0 }));
+    expect(loadConfig({ configPath }).newPageTimeoutMs).toBe(10000);
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   test('disables default addons when CAMOFOX_DISABLE_DEFAULT_ADDONS is set', () => {
