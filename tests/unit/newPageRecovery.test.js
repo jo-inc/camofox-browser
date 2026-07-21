@@ -73,6 +73,33 @@ describe('createPageWithSessionRecovery', () => {
     expect(replacement.context.newPage).toHaveBeenCalledTimes(1);
   });
 
+  test('reserves each session while its new-page attempt is pending', async () => {
+    const timeoutError = Object.assign(new Error('new page timed out'), { code: 'timeout' });
+    const oldSession = { id: 'old', context: { newPage: jest.fn().mockRejectedValue(timeoutError) } };
+    const page = { id: 'fresh-page' };
+    const replacement = { id: 'replacement', context: { newPage: jest.fn().mockResolvedValue(page) } };
+    const releases = [];
+    const reservePendingCreation = jest.fn(() => {
+      const release = jest.fn();
+      releases.push(release);
+      return release;
+    });
+
+    const result = await createPageWithSessionRecovery(recoveryOptions({
+      session: oldSession,
+      currentSession: () => oldSession,
+      destroySession: async () => {},
+      getSession: async () => replacement,
+      reservePendingCreation,
+    }));
+
+    expect(result).toEqual({ session: replacement, page });
+    expect(reservePendingCreation.mock.calls.map(([session]) => session.id)).toEqual(['old', 'replacement']);
+    expect(releases).toHaveLength(2);
+    expect(releases[0]).toHaveBeenCalledTimes(1);
+    expect(releases[1]).toHaveBeenCalledTimes(1);
+  });
+
   test('does not recover unrelated failures', async () => {
     const error = new Error('programming error');
     const session = { context: { newPage: jest.fn().mockRejectedValue(error) } };
