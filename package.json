@@ -44,6 +44,7 @@
     "dist/plugin.js",
     "tsconfig.json",
     "openclaw.plugin.json",
+    "mcp/",
     "bin/",
     "scripts/",
     "run.sh",
@@ -119,6 +120,8 @@
     "build": "tsc -p . || true; mkdir -p dist && cp plugin.js dist/plugin.js",
     "prepublishOnly": "npm run build",
     "start": "node server.js",
+    "mcp": "node mcp/server.mjs",
+    "test:mcp": "node scripts/test-mcp.mjs",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --runInBand --forceExit",
     "test:e2e": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.e2e.cjs --runInBand --forceExit",
     "test:plugins": "NODE_OPTIONS='--experimental-vm-modules' jest --forceExit plugins/",
@@ -138,6 +141,9 @@
     "prom-client": "^15.1.3",
     "swagger-jsdoc": "^6.2.8"
   },
+  "optionalDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "jest": "^29.7.0",
@@ -145,6 +151,7 @@
     "typescript": "^5.7.0"
   },
   "bin": {
-    "camofox-browser": "./bin/camofox-browser.js"
+    "camofox-browser": "./bin/camofox-browser.js",
+    "camofox-mcp": "./mcp/server.mjs"
   }
 }

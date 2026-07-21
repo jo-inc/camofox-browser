@@ -1,0 +1,42 @@
+{
+  "name": "@askjo/camofox-mcp",
+  "version": "1.12.1",
+  "description": "Standalone stdio MCP server exposing the camofox-browser REST API as MCP tools (Claude Code, Codex, agy, Cursor, opencode). Proxies to an already-running camofox-browser REST server — does not itself require the browser binary, Playwright, or the core server's dependencies.",
+  "type": "module",
+  "main": "server.mjs",
+  "license": "MIT",
+  "author": "Jo Inc <oss@askjo.ai>",
+  "homepage": "https://github.com/jo-inc/camofox-browser/tree/master/mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jo-inc/camofox-browser.git",
+    "directory": "mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/jo-inc/camofox-browser/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "camofox",
+    "camoufox",
+    "browser-automation",
+    "claude-code",
+    "codex",
+    "cursor",
+    "opencode"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "camofox-mcp": "./server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "README.md"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
