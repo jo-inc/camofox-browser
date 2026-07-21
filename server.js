@@ -1379,7 +1379,7 @@ async function getSession(userId, { trace = false } = {}) {
   return session;
 }
 
-async function createPageWithRecoveryForUser(userId, session, { trace = false } = {}) {
+async function createPageWithRecoveryForUser(userId, session, { trace = false, reservePendingCreation } = {}) {
   const key = normalizeUserId(userId);
   return createPageWithSessionRecovery({
     userId: key,
@@ -1393,6 +1393,7 @@ async function createPageWithRecoveryForUser(userId, session, { trace = false } 
     destroySession,
     getSession,
     log,
+    reservePendingCreation,
   });
 }
 
@@ -2822,14 +2823,15 @@ app.post('/tabs', async (req, res) => {
           let effectiveSession = initialSession;
           let group;
           let tabState;
-          const releasePendingCreation = reservePendingTabCreation(effectiveSession);
-          try {
-            return await withAbortableResource({
-              create: async () => {
-                const createdPage = await createPageWithRecoveryForUser(userId, effectiveSession, { trace: !!trace });
-                effectiveSession = createdPage.session;
-                return createdPage.page;
-              },
+          return withAbortableResource({
+            create: async () => {
+              const createdPage = await createPageWithRecoveryForUser(userId, effectiveSession, {
+                trace: !!trace,
+                reservePendingCreation: reservePendingTabCreation,
+              });
+              effectiveSession = createdPage.session;
+              return createdPage.page;
+            },
             signal,
             register: async (page) => {
               group = getTabGroup(effectiveSession, resolvedSessionKey);
@@ -2857,10 +2859,7 @@ app.post('/tabs', async (req, res) => {
               log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
               return { tabId, url: page.url() };
             },
-            });
-          } finally {
-            releasePendingCreation();
-          }
+          });
         };
 
         try {
