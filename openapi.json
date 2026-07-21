@@ -78,6 +78,27 @@
             "type": "string"
           }
         }
+      },
+      "TabAdmissionError": {
+        "type": "object",
+        "required": [
+          "error",
+          "code",
+          "retryAfter"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^tab_admission_"
+          },
+          "retryAfter": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
       }
     }
   },
@@ -483,11 +504,19 @@
             }
           },
           "429": {
-            "description": "Tab limit reached.",
+            "description": "Tab admission queue or capacity limit reached.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "$ref": "#/components/schemas/TabAdmissionError"
                 }
               }
             }

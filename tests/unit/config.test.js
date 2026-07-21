@@ -63,6 +63,55 @@ describe('loadConfig', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('rejects zero, negative, and malformed admission limits safely', () => {
+    process.env.HANDLER_TIMEOUT_MS = '0';
+    process.env.MAX_CONCURRENT_PER_USER = '3oops';
+    process.env.MAX_TABS_GLOBAL = '0';
+    process.env.MAX_TABS_PER_SESSION = '-5';
+    process.env.TAB_ADMISSION_MAX_ACTIVE = '0';
+    process.env.TAB_ADMISSION_MAX_ACTIVE_PER_USER = '-2';
+    process.env.TAB_ADMISSION_QUEUE_LIMIT = 'NaN';
+
+    const config = loadConfig();
+
+    expect(config.handlerTimeoutMs).toBe(30000);
+    expect(config.maxConcurrentPerUser).toBe(3);
+    expect(config.maxTabsGlobal).toBe(50);
+    expect(config.maxTabsPerSession).toBe(10);
+    expect(config.tabAdmissionMaxActive).toBe(4);
+    expect(config.tabAdmissionMaxActivePerUser).toBe(2);
+    expect(config.tabAdmissionQueueLimit).toBe(8);
+  });
+
+  test('accepts positive admission-control values', () => {
+    process.env.HANDLER_TIMEOUT_MS = '1500';
+    process.env.MAX_CONCURRENT_PER_USER = '4';
+    process.env.MAX_TABS_GLOBAL = '12';
+    process.env.MAX_TABS_PER_SESSION = '8';
+    process.env.TAB_ADMISSION_MAX_ACTIVE = '6';
+    process.env.TAB_ADMISSION_MAX_ACTIVE_PER_USER = '3';
+    process.env.TAB_ADMISSION_QUEUE_LIMIT = '5';
+
+    const config = loadConfig();
+
+    expect(config.handlerTimeoutMs).toBe(1500);
+    expect(config.maxConcurrentPerUser).toBe(4);
+    expect(config.maxTabsGlobal).toBe(12);
+    expect(config.maxTabsPerSession).toBe(8);
+    expect(config.tabAdmissionMaxActive).toBe(6);
+    expect(config.tabAdmissionMaxActivePerUser).toBe(3);
+    expect(config.tabAdmissionQueueLimit).toBe(5);
+    expect(config.serverEnv).toMatchObject({
+      HANDLER_TIMEOUT_MS: '1500',
+      MAX_CONCURRENT_PER_USER: '4',
+      MAX_TABS_GLOBAL: '12',
+      MAX_TABS_PER_SESSION: '8',
+      TAB_ADMISSION_MAX_ACTIVE: '6',
+      TAB_ADMISSION_MAX_ACTIVE_PER_USER: '3',
+      TAB_ADMISSION_QUEUE_LIMIT: '5',
+    });
+  });
+
   test('disables default addons when CAMOFOX_DISABLE_DEFAULT_ADDONS is set', () => {
     delete process.env.CAMOFOX_DISABLE_DEFAULT_ADDONS;
     expect(loadConfig().disableDefaultAddons).toBe(false);
@@ -78,5 +127,4 @@ describe('loadConfig', () => {
     expect(config.disableDefaultAddons).toBe(true);
     expect(config.serverEnv.CAMOFOX_DISABLE_DEFAULT_ADDONS).toBe('true');
   });
-
 });
