@@ -13,6 +13,8 @@ The MCP server is a thin stdio client over the camofox REST server. Two pieces:
 
 Registering the MCP server does **not** require being inside the camofox-browser checkout. The examples below work from any directory.
 
+`mcp/` is also an **independently installable package** (`@askjo/camofox-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox-js`, `playwright-core`, `express`, or the ~300MB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are imported from `../lib/mcp-tool-contracts.mjs`, the same canonical module the OpenClaw plugin (`plugin.ts`) uses, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
+
 ## 1. Start the REST server
 
 Clone the repo and start the server (one-time binary download on first run):
@@ -38,6 +40,14 @@ npm install -g @askjo/camofox-browser
 
 # Option C — npx (no install; pins to a published version)
 #   use `npx -y @askjo/camofox-browser mcp` wherever a command is expected below
+
+# Option D — MCP adapter only, no core server deps (lightest footprint)
+#   Skips camoufox-js/playwright-core/express and the browser binary download —
+#   use this if a camofox-browser REST server is already running (locally or
+#   remotely) and you only need the stdio adapter.
+git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser/mcp
+npm install   # installs only @modelcontextprotocol/sdk (~24MB, no postinstall)
+npm link      # camofox-mcp now resolves from any directory
 ```
 
 Verify the bin resolves from any directory:
@@ -145,7 +155,7 @@ For the other hosts, add the same keys to the `env` / `environment` field of tha
 claude mcp add camofox-browser -- node /Users/you/src/camofox-browser/mcp/server.mjs
 ```
 
-> ⚠️ Always prefer the `camofox-mcp` bin (options A/B/C above). The `node ./mcp/server.mjs` form is **path-dependent** — relative paths break outside the checkout.
+> ⚠️ Always prefer the `camofox-mcp` bin (options A/B/C/D above). The `node ./mcp/server.mjs` form is **path-dependent** — relative paths break outside the checkout.
 
 ## 4. Verify
 
@@ -194,6 +204,7 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 | `CAMOFOX_BASE_URL` | `http://localhost:9377` | REST server URL |
 | `CAMOFOX_USER_ID` | `mcp-<random>` | Session isolation (one MCP server = one camofox session) |
 | `CAMOFOX_SESSION_KEY` | `default` | Tab partition within the user |
+| `CAMOFOX_ACCESS_KEY` | _(unset)_ | Global bearer token gating the REST server (superkey). If set, forwarded as `Authorization: Bearer <key>` on **every** tool call automatically — must match the REST server's own `CAMOFOX_ACCESS_KEY`. Without this, a globally-authenticated REST server rejects all tool calls except cookie import. |
 | `CAMOFOX_API_KEY` | _(unset)_ | Self-chosen secret gating cookie import. Optional on localhost; required on remote/production and must match the REST server's `CAMOFOX_API_KEY`. Only affects `camofox_import_cookies`. |
 
 ## Troubleshooting
@@ -202,11 +213,25 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 - **`camofox_scroll` returns `{ok:true}` but the page doesn't move** — expected on lazy-load / virtual-scroll pages; the server's `mouse.wheel` no-ops there. Use `camofox_evaluate` with `window.scrollTo` / `scrollBy`.
 - **`422 strict mode violation ... resolved to N elements`** on `click` — CSS selector matched multiple elements. Re-snapshot and click by element ref.
 - **`403 Forbidden` on `camofox_import_cookies`** — key mismatch between REST server and MCP server, or hitting a remote server without `CAMOFOX_API_KEY`.
+- **`401`/`403` on every tool call, not just cookie import** — the REST server has `CAMOFOX_ACCESS_KEY` set. Set the same `CAMOFOX_ACCESS_KEY` in the MCP server's env (see table above) — it's forwarded automatically as `Authorization: Bearer` once set.
 
-## Smoke test (developer)
+## Testing (developer)
 
-A dependency-free smoke test exercises the handshake, all 11 tools, and schemas — no REST server required:
+Two layers, covering different things:
 
 ```bash
+# 1. Handshake + schema smoke test — spawns the real stdio server, checks
+#    initialize/tools/list return all 11 tools with the right shape.
+#    No REST server required.
 npm run test:mcp
+
+# 2. Mock-HTTP contract tests — verifies the actual REST traffic each tool
+#    produces: routes, methods, request bodies, CAMOFOX_ACCESS_KEY/CAMOFOX_API_KEY
+#    auth headers, cookie parsing (Netscape file → `{ cookies }` body, never a
+#    path), screenshot decoding, and error handling. Mocked REST server — no
+#    live camofox-browser process needed. This is what makes the "OpenClaw and
+#    MCP send identical requests" claim verifiable, not just asserted.
+NODE_OPTIONS='--experimental-vm-modules' npx jest tests/unit/mcp-contracts.test.js
 ```
+
+Both hosts (this MCP server and the OpenClaw plugin, `plugin.ts`) share one contract module, [`lib/mcp-tool-contracts.mjs`](../lib/mcp-tool-contracts.mjs) — tool schemas, REST routes, auth, and response shaping are defined once and imported by both, so they cannot drift out of sync.
