@@ -3,6 +3,8 @@ import {
   TabAdmissionController,
   TabCapacityReservations,
   awaitAbortableResource,
+  canReapEmptySession,
+  reservePendingTabCreation,
   sendTabAdmissionError,
   withAbortableResource,
 } from '../../lib/tab-admission.js';
@@ -200,6 +202,30 @@ describe('TabCapacityReservations', () => {
 
     release();
     expect(() => capacity.reserve('u2')).not.toThrow();
+  });
+});
+
+describe('pending tab creation and empty-session reaping', () => {
+  test('blocks empty-session reaping until every pending creation settles', () => {
+    const session = { tabGroups: new Map() };
+    expect(canReapEmptySession(session)).toBe(true);
+
+    const releaseFirst = reservePendingTabCreation(session);
+    const releaseSecond = reservePendingTabCreation(session);
+    expect(canReapEmptySession(session)).toBe(false);
+
+    releaseFirst();
+    releaseFirst();
+    expect(canReapEmptySession(session)).toBe(false);
+
+    releaseSecond();
+    expect(canReapEmptySession(session)).toBe(true);
+    expect(session._pendingTabCreations).toBe(0);
+  });
+
+  test('never reaps a session that already contains a tab group', () => {
+    const session = { tabGroups: new Map([['group', new Map()]]) };
+    expect(canReapEmptySession(session)).toBe(false);
   });
 });
 
