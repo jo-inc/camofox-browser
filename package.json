@@ -132,7 +132,7 @@
     "fetch-bin": "npx camoufox-js fetch"
   },
   "dependencies": {
-    "camoufox-js": "0.10.2",
+    "camoufox-js": "0.11.5",
     "express": "^4.18.2",
     "playwright-core": "^1.58.0",
     "prom-client": "^15.1.3",
