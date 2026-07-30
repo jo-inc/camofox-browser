@@ -26,9 +26,9 @@ describe('session:destroying event ordering', () => {
    *   3. pluginEvents.emitAsync('session:destroyed', ...)
    */
   async function simulateCloseSession(pluginEvents, session, userId, reason) {
-    await pluginEvents.emitAsync('session:destroying', { userId, reason });
+    await pluginEvents.emitAsync('session:destroying', { userId, reason, context: session.context });
     await session.context.close();
-    await pluginEvents.emitAsync('session:destroyed', { userId, reason });
+    await pluginEvents.emitAsync('session:destroyed', { userId, reason, context: session.context });
   }
 
   function makeMockContext() {
@@ -192,16 +192,14 @@ describe('persistence plugin with session:destroying', () => {
       activeSessions.set(userId, context);
     });
 
-    events.on('session:destroying', async ({ userId, reason }) => {
-      const context = activeSessions.get(userId);
-      if (context) {
+    events.on('session:destroying', async ({ userId, reason, context }) => {
+      if (context && activeSessions.get(userId) === context) {
         await checkpoint(userId, context, reason).catch(() => {});
-        activeSessions.delete(userId);
       }
     });
 
-    events.on('session:destroyed', async ({ userId }) => {
-      activeSessions.delete(userId);
+    events.on('session:destroyed', async ({ userId, context }) => {
+      if (context && activeSessions.get(userId) === context) activeSessions.delete(userId);
     });
 
     return { activeSessions, checkpointCalls };
@@ -220,9 +218,9 @@ describe('persistence plugin with session:destroying', () => {
   }
 
   async function simulateCloseSession(pluginEvents, session, userId, reason) {
-    await pluginEvents.emitAsync('session:destroying', { userId, reason });
+    await pluginEvents.emitAsync('session:destroying', { userId, reason, context: session.context });
     await session.context.close();
-    await pluginEvents.emitAsync('session:destroyed', { userId, reason });
+    await pluginEvents.emitAsync('session:destroyed', { userId, reason, context: session.context });
   }
 
   test('checkpoints successfully during destroying (context alive)', async () => {
@@ -242,19 +240,19 @@ describe('persistence plugin with session:destroying', () => {
     expect(activeSessions.has('user-1')).toBe(false);
   });
 
-  test('activeSessions cleaned up even if checkpoint was already done in destroying', async () => {
+  test('activeSessions remains retryable until verified destruction completes', async () => {
     const events = createPluginEvents();
     const context = makeMockContext();
     const { activeSessions } = setupPersistencePlugin(events);
 
     await events.emitAsync('session:created', { userId: 'user-1', context });
 
-    // destroying removes from activeSessions
-    await events.emitAsync('session:destroying', { userId: 'user-1', reason: 'test' });
-    expect(activeSessions.has('user-1')).toBe(false);
+    // Pre-close checkpointing must not forget a context whose close can fail.
+    await events.emitAsync('session:destroying', { userId: 'user-1', reason: 'test', context });
+    expect(activeSessions.has('user-1')).toBe(true);
 
-    // destroyed is a no-op (already removed) but doesn't error
-    await events.emitAsync('session:destroyed', { userId: 'user-1', reason: 'test' });
+    // Only verified post-close completion removes lifecycle tracking.
+    await events.emitAsync('session:destroyed', { userId: 'user-1', reason: 'test', context });
     expect(activeSessions.has('user-1')).toBe(false);
   });
 
@@ -267,7 +265,7 @@ describe('persistence plugin with session:destroying', () => {
     expect(activeSessions.has('user-1')).toBe(true);
 
     // Skip destroying, go straight to destroyed (backward compat scenario)
-    await events.emitAsync('session:destroyed', { userId: 'user-1', reason: 'test' });
+    await events.emitAsync('session:destroyed', { userId: 'user-1', reason: 'test', context });
     expect(activeSessions.has('user-1')).toBe(false);
   });
 
@@ -290,6 +288,25 @@ describe('persistence plugin with session:destroying', () => {
     expect(checkpointCalls).toEqual([]); // checkpoint failed, nothing recorded
     expect(activeSessions.has('user-1')).toBe(false); // but cleanup still happened
     expect(failingContext.close).toHaveBeenCalled(); // context still closed
+  });
+
+  test('stale lifecycle events cannot checkpoint or remove a replacement context', async () => {
+    const events = createPluginEvents();
+    const original = makeMockContext();
+    const replacement = makeMockContext();
+    const { activeSessions, checkpointCalls } = setupPersistencePlugin(events);
+
+    await events.emitAsync('session:created', { userId: 'user-1', context: original });
+    await events.emitAsync('session:created', { userId: 'user-1', context: replacement });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-1', reason: 'stale_close', context: original,
+    });
+    await events.emitAsync('session:destroyed', {
+      userId: 'user-1', reason: 'stale_close', context: original,
+    });
+
+    expect(checkpointCalls).toEqual([]);
+    expect(activeSessions.get('user-1')).toBe(replacement);
   });
 
   test('multiple sessions checkpoint independently', async () => {

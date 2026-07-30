@@ -105,6 +105,16 @@ export async function register(app, ctx, pluginConfig = {}) {
   });
 
   // --- HTTP endpoint: GET /vnc/status ---
+  /**
+   * @openapi
+   * /vnc/status:
+   *   get:
+   *     tags: [Browser]
+   *     summary: Read VNC helper status
+   *     responses:
+   *       200:
+   *         description: VNC helper status.
+   */
   app.get('/vnc/status', (_req, res) => {
     const watcherRunning = watcher.exitCode === null && !watcher.killed;
     const vncStatus = watcher.getVncStatus();
@@ -122,6 +132,25 @@ export async function register(app, ctx, pluginConfig = {}) {
   // --- HTTP endpoint: GET /sessions/:userId/storage_state ---
   const authMiddleware = requireAuth(config);
 
+  /**
+   * @openapi
+   * /sessions/{userId}/storage_state:
+   *   get:
+   *     tags: [Sessions]
+   *     summary: Export the live session storage state
+   *     parameters:
+   *       - in: path
+   *         name: userId
+   *         required: true
+   *         schema: { type: string }
+   *     responses:
+   *       200:
+   *         description: Current storage state.
+   *       404:
+   *         description: Session not found.
+   *       500:
+   *         description: Storage state export failed.
+   */
   app.get('/sessions/:userId/storage_state', authMiddleware, async (req, res) => {
     try {
       const userId = req.params.userId;

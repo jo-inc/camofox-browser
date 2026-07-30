@@ -19,7 +19,7 @@ class BrowserClient {
     try {
       const fetchOptions = {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
         signal: controller.signal
       };
       

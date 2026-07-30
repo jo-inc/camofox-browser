@@ -9,8 +9,9 @@ import { detectYtDlp, hasYtDlp, ensureYtDlp, ytDlpTranscript, parseJson3, parseV
 import { classifyError } from '../../lib/request-utils.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
-  const { log, config, sessions, ensureBrowser, getSession,
-          withUserLimit, safePageClose, normalizeUserId,
+  const { log, config, ensureBrowser, getSession,
+          destroySessionCoordinated, enterInternalSessionOperation,
+          withUserLimit, safePageClose,
           validateUrl, safeError, buildProxyUrl, proxyPool,
           failuresTotal } = ctx;
 
@@ -23,6 +24,32 @@ export async function register(app, ctx, pluginConfig = {}) {
   // Auth off by default -- matches pre-plugin behavior. Set { "auth": true } to require auth.
   const middleware = pluginConfig.auth === true ? ctx.auth() : (_req, _res, next) => next();
 
+  /**
+   * @openapi
+   * /youtube/transcript:
+   *   post:
+   *     tags: [Content]
+   *     summary: Extract a YouTube transcript
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [url]
+   *             properties:
+   *               url: { type: string, format: uri }
+   *               languages:
+   *                 type: array
+   *                 items: { type: string }
+   *     responses:
+   *       200:
+   *         description: Transcript extraction result.
+   *       400:
+   *         description: Invalid input URL.
+   *       500:
+   *         description: Transcript extraction failed.
+   */
   app.post('/youtube/transcript', middleware, async (req, res) => {
     const reqId = req.reqId;
     try {
@@ -76,11 +103,14 @@ export async function register(app, ctx, pluginConfig = {}) {
   // Browser fallback -- play video, intercept timedtext network response
   async function browserTranscript(reqId, url, videoId, lang) {
     return await withUserLimit('__yt_transcript__', async () => {
-      await ensureBrowser();
-      const session = await getSession('__yt_transcript__');
-      const page = await session.context.newPage();
-
+      const ytKey = '__yt_transcript__';
+      const finishOperation = enterInternalSessionOperation(ytKey);
+      let session = null;
+      let page = null;
       try {
+        await ensureBrowser();
+        session = await getSession(ytKey);
+        page = await session.context.newPage();
         await page.addInitScript(() => {
           const origPlay = HTMLMediaElement.prototype.play;
           HTMLMediaElement.prototype.play = function() { this.volume = 0; this.muted = true; return origPlay.call(this); };
@@ -184,20 +214,29 @@ export async function register(app, ctx, pluginConfig = {}) {
           available_languages: meta.languages,
         };
       } finally {
-        await safePageClose(page);
-        // Clean up transcript session if no live pages remain
-        const ytKey = normalizeUserId('__yt_transcript__');
-        const ytSession = sessions.get(ytKey);
-        if (ytSession && !ytSession._closing) {
+        try {
+          if (page) await safePageClose(page);
+        } finally {
+          finishOperation();
+        }
+        if (session) {
           try {
-            const remainingPages = ytSession.context.pages();
-            if (remainingPages.length === 0) {
-              ytSession._closing = true;
-              ytSession.context.close().catch(() => {});
-              sessions.delete(ytKey);
+            await destroySessionCoordinated(ytKey, 'youtube_transcript_cleanup', {
+              expectedSession: session,
+              shouldDestroy: current => {
+                try {
+                  return current.context.pages().length === 0;
+                } catch {
+                  return true;
+                }
+              },
+            });
+          } catch (closeError) {
+            if (closeError?.code !== 'session_deletion_inflight') {
+              log('warn', 'youtube transcript session cleanup failed', {
+                error: closeError.message,
+              });
             }
-          } catch {
-            sessions.delete(ytKey);
           }
         }
       }

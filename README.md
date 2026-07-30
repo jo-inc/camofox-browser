@@ -265,6 +265,26 @@ Override the directory with `CAMOFOX_PROFILE_DIR` or set `"profileDir"` in the p
 
 By default, storage state contains cookies and localStorage only. To also persist IndexedDB, set `"indexedDB": true` in the persistence plugin config. This captures all serializable IndexedDB records—not only authentication data—and may make snapshots significantly larger and checkpoints slower.
 
+### Exclusive Temporary Sessions
+
+Clients that must prove they created a previously absent session can atomically claim it while opening the first tab. Generate an opaque base64url-style owner token of 32–256 characters, send it in the initial claim body, and retain it until exact session cleanup. Never put owner tokens in query parameters; the server rejects that transport. Empty, non-scalar, `undefined`, and `null` user IDs are invalid, while IDs beginning with `__` are reserved for isolated server-internal sessions:
+
+```bash
+curl -X POST http://localhost:9377/tabs \
+  -H 'Authorization: Bearer YOUR_ACCESS_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"unique-temporary-id","sessionKey":"task1","exclusiveSession":true,"sessionOwnerToken":"CALLER_GENERATED_OPAQUE_OWNER_TOKEN"}'
+
+curl -X DELETE http://localhost:9377/sessions/unique-temporary-id \
+  -H 'Authorization: Bearer YOUR_ACCESS_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"sessionOwnerToken":"CALLER_GENERATED_OPAQUE_OWNER_TOKEN"}'
+```
+
+The claim fails with `409 session_ownership_conflict` if the session already exists, is being created, or is already claimed. Claimed sessions reject control requests without the matching token and are excluded from caller-triggered pressure cleanup. Send the token in the `X-Camofox-Session-Owner` header for subsequent requests; cleanup also accepts the request-body field shown above. The server stores only a SHA-256 digest of the token; abandoned claims are released only after their TTL has elapsed and the server confirms that no live session, in-flight creation, active control operation, or deletion reservation exists. Cleanup is serialized behind active control requests, blocks new requests while deletion runs, and rechecks live/in-flight state before releasing the claim. A disconnected client does not release its operation lease before the asynchronous handler completes. A browser context close error retains both the live session and claim unless the context independently proves it is already dead. Cleanup returns `409 session_creation_inflight` without releasing the claim when creation has not settled; retry after the active lifecycle operation finishes.
+
+`GET /capabilities` provides side-effect-free readback for `controlAccessKeyEnforced` and the atomic ownership contract. When `CAMOFOX_ACCESS_KEY` is configured, the global access-key middleware authenticates this route before it can report enforcement.
+
 ### Session Tracing
 
 Capture a Playwright trace of every action in a session: page screenshots, DOM snapshots, network requests, and console output. Output is a single `.zip` file you can open in Playwright's built-in Trace Viewer.

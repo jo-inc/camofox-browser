@@ -11,6 +11,8 @@ describe('persistence plugin', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'camofox-persist-plugin-'));
     events = createPluginEvents();
+    const sessionContexts = new Map();
+    events.on('session:created', ({ userId, context }) => sessionContexts.set(userId, context));
     mockApp = { delete: jest.fn() };
     ctx = {
       events,
@@ -20,8 +22,11 @@ describe('persistence plugin', () => {
       normalizeUserId: (u) => String(u),
       safeError: (err) => err.message,
       destroySession: jest.fn(async (userId, { reason } = {}) => {
-        await events.emitAsync('session:destroying', { userId: String(userId), reason });
-        await events.emitAsync('session:destroyed', { userId: String(userId), reason });
+        const key = String(userId);
+        const context = sessionContexts.get(key);
+        await events.emitAsync('session:destroying', { userId: key, reason, context });
+        await events.emitAsync('session:destroyed', { userId: key, reason, context });
+        sessionContexts.delete(key);
         return true;
       }),
     };
@@ -104,7 +109,9 @@ describe('persistence plugin', () => {
     };
 
     await events.emitAsync('session:created', { userId: 'user-3', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-3', reason: 'test' });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-3', reason: 'test', context: mockContext,
+    });
 
     expect(mockContext.storageState).toHaveBeenCalled();
   });
@@ -224,7 +231,9 @@ describe('persistence plugin', () => {
       }),
     };
     await events.emitAsync('session:created', { userId: 'user-no-idb', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-no-idb', reason: 'test' });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-no-idb', reason: 'test', context: mockContext,
+    });
 
     expect(ctx.log).toHaveBeenCalledWith(
       'info',
@@ -246,7 +255,9 @@ describe('persistence plugin', () => {
       }),
     };
     await events.emitAsync('session:created', { userId: 'user-idb', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-idb', reason: 'test' });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-idb', reason: 'test', context: mockContext,
+    });
 
     expect(ctx.log).toHaveBeenCalledWith(
       'info',

@@ -152,19 +152,21 @@ export async function register(app, ctx, pluginConfig = {}) {
   });
 
   // On session destroying (pre-close): checkpoint while context is still alive
-  events.on('session:destroying', async ({ userId, reason }) => {
-    const context = activeSessions.get(userId);
-    if (context) {
+  events.on('session:destroying', async ({ userId, reason, context }) => {
+    const trackedContext = activeSessions.get(userId);
+    if (context && trackedContext === context) {
       if (reason !== 'storage_reset') {
         await checkpoint(userId, context, reason).catch(() => {});
       }
-      activeSessions.delete(userId);
     }
   });
 
-  // On session destroyed (post-close): cleanup tracking if not already done
-  events.on('session:destroyed', async ({ userId }) => {
-    activeSessions.delete(userId);
+  // Keep tracking through verified close so a failed close can be retried and
+  // subsequent checkpoints still refer to the retained live context.
+  events.on('session:destroyed', async ({ userId, context }) => {
+    if (context && activeSessions.get(userId) === context) {
+      activeSessions.delete(userId);
+    }
   });
 
   // On shutdown: checkpoint all remaining sessions
@@ -175,6 +177,23 @@ export async function register(app, ctx, pluginConfig = {}) {
     activeSessions.clear();
   });
 
+  /**
+   * @openapi
+   * /sessions/{userId}/storage_state:
+   *   delete:
+   *     tags: [Sessions]
+   *     summary: Reset live and persisted session storage state
+   *     parameters:
+   *       - in: path
+   *         name: userId
+   *         required: true
+   *         schema: { type: string }
+   *     responses:
+   *       200:
+   *         description: Storage state reset completed.
+   *       500:
+   *         description: Storage state reset failed.
+   */
   app.delete('/sessions/:userId/storage_state', ctx.auth(), async (req, res) => {
     const userId = ctx.normalizeUserId(req.params.userId);
     if (resettingUsers.has(userId)) {

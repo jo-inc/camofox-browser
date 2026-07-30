@@ -3,7 +3,7 @@
  *
  * Covers:
  * 1. Tab reaper → empty session cleanup (with _closing flag)
- * 2. getSession() skips sessions marked _closing
+ * 2. getSession() refuses replacement while a session is _closing
  * 3. YT transcript cleanup uses context.pages() instead of tabGroups
  * 4. Session expiry sets _closing before teardown
  */
@@ -176,7 +176,9 @@ describe('getSession _closing flag handling', () => {
 
     if (session) {
       if (session._closing) {
-        session = null;
+        throw Object.assign(new Error('Session deletion is already in flight'), {
+          code: 'session_deletion_inflight',
+        });
       } else {
         try {
           session.context.pages();
@@ -205,19 +207,14 @@ describe('getSession _closing flag handling', () => {
     expect(result.context).toBe(existingContext);
   });
 
-  test('skips session with _closing flag and creates new one', () => {
+  test('rejects replacement while the existing session is closing', () => {
     const sessions = new Map();
     const oldContext = { pages: () => [] };
     sessions.set('user-1', { context: oldContext, tabGroups: new Map(), lastAccess: 0, _closing: true });
 
-    const newContext = { pages: () => [] };
-    const result = getSession(sessions, 'user-1', () => newContext);
-
-    expect(result.context).toBe(newContext);
-    expect(result.context).not.toBe(oldContext);
-    expect(result._closing).toBeUndefined();
-    // Old entry is replaced in the map
-    expect(sessions.get('user-1').context).toBe(newContext);
+    expect(() => getSession(sessions, 'user-1', () => { throw new Error('must not create'); }))
+      .toThrow(expect.objectContaining({ code: 'session_deletion_inflight' }));
+    expect(sessions.get('user-1').context).toBe(oldContext);
   });
 
   test('recreates session when context.pages() throws', () => {

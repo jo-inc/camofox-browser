@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "camofox-browser",
-    "version": "1.6.0",
+    "version": "1.13.0",
     "description": "Anti-detection browser automation server for AI agents. Accessibility snapshots, element refs, session isolation, cookie import, proxy rotation, and structured logs.",
     "license": {
       "name": "MIT",
@@ -55,11 +55,36 @@
     }
   ],
   "components": {
+    "parameters": {
+      "SessionOwnerTokenHeader": {
+        "name": "X-Camofox-Session-Owner",
+        "in": "header",
+        "required": false,
+        "description": "Exact owner token required for every control request after a session has been claimed. Never send this token in a query string.",
+        "schema": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
     "securitySchemes": {
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Bearer token matching CAMOFOX_API_KEY."
+        "description": "Bearer token matching CAMOFOX_API_KEY (per-route auth for sensitive endpoints like cookie import and traces)."
+      },
+      "AdminKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-admin-key",
+        "description": "Administrative key matching CAMOFOX_ADMIN_KEY. Required by POST /stop."
+      },
+      "AccessKeyAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token matching CAMOFOX_ACCESS_KEY. When set, gates all routes except /health, cookie import, and /stop. Acts as a superkey -- also accepted by endpoints that normally require CAMOFOX_API_KEY."
       }
     },
     "schemas": {
@@ -77,6 +102,66 @@
     }
   },
   "paths": {
+    "/capabilities": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Read control-plane security capabilities",
+        "description": "Side-effect-free readback. When controlAccessKeyEnforced is true, this response was gated by CAMOFOX_ACCESS_KEY.",
+        "responses": {
+          "200": {
+            "description": "Control-plane capability state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "controlAccessKeyEnforced",
+                    "atomicSessionOwnership"
+                  ],
+                  "properties": {
+                    "controlAccessKeyEnforced": {
+                      "type": "boolean"
+                    },
+                    "atomicSessionOwnership": {
+                      "type": "object",
+                      "required": [
+                        "version",
+                        "ownerTokenRetained",
+                        "ownerTokenHeader"
+                      ],
+                      "properties": {
+                        "version": {
+                          "type": "integer"
+                        },
+                        "ownerTokenRetained": {
+                          "type": "boolean"
+                        },
+                        "ownerTokenHeader": {
+                          "type": "string",
+                          "example": "X-Camofox-Session-Owner"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access key missing or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions/{userId}/cookies": {
       "post": {
         "tags": [
@@ -98,6 +183,9 @@
               "type": "string"
             },
             "description": "Session owner identifier."
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -192,6 +280,16 @@
           },
           "403": {
             "description": "Forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -296,6 +394,105 @@
         }
       }
     },
+    "/pressure/cleanup": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Proactive memory-pressure cleanup",
+        "description": "Closes tabs observed idle across multiple checks while preserving tabs\nwith active/queued operations. Never returns URLs, titles, cookies,\npage text, or user IDs. Defaults to dry-run mode.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dryRun": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When true, returns candidates without closing them."
+                  },
+                  "minIdleMs": {
+                    "type": "number",
+                    "default": 600000,
+                    "description": "Minimum idle time (ms) before a tab is eligible."
+                  },
+                  "maxTabsToClose": {
+                    "type": "number",
+                    "default": 4,
+                    "description": "Maximum tabs to close per invocation."
+                  },
+                  "minTabsPerSession": {
+                    "type": "number",
+                    "default": 1,
+                    "description": "Preserve at least this many tabs per session."
+                  },
+                  "closeEmptySessions": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Close sessions left with zero tabs after cleanup."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cleanup result with before/after counts and hashed metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "before": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "integer"
+                        },
+                        "tabs": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "integer"
+                        },
+                        "tabs": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "candidates": {
+                      "type": "integer"
+                    },
+                    "closed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "preserved": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs": {
       "post": {
         "tags": [
@@ -333,6 +530,19 @@
                   "trace": {
                     "type": "boolean",
                     "description": "Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session."
+                  },
+                  "exclusiveSession": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Atomically claim a previously absent, non-inflight session. Requires sessionOwnerToken."
+                  },
+                  "sessionOwnerToken": {
+                    "type": "string",
+                    "minLength": 32,
+                    "maxLength": 256,
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "writeOnly": true,
+                    "description": "Caller-generated opaque token used to authorize reuse and exact cleanup of an exclusively claimed session."
                   }
                 }
               }
@@ -352,6 +562,10 @@
                     },
                     "url": {
                       "type": "string"
+                    },
+                    "sessionOwned": {
+                      "type": "boolean",
+                      "description": "True when the session is protected by an active ownership claim."
                     }
                   }
                 }
@@ -359,7 +573,17 @@
             }
           },
           "400": {
-            "description": "Missing required fields.",
+            "description": "Missing or invalid request fields, including ownership inputs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session owner token mismatch.",
             "content": {
               "application/json": {
                 "schema": {
@@ -369,7 +593,7 @@
             }
           },
           "409": {
-            "description": "Cannot enable tracing on an existing session.",
+            "description": "Session ownership conflict, or tracing cannot be enabled on an existing session.",
             "content": {
               "application/json": {
                 "schema": {
@@ -388,7 +612,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ]
       },
       "get": {
         "tags": [
@@ -400,10 +629,14 @@
           {
             "name": "userId",
             "in": "query",
+            "required": true,
             "schema": {
               "type": "string"
             },
             "description": "Filter by session owner."
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -444,6 +677,36 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -463,6 +726,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -521,8 +787,28 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -588,6 +874,9 @@
                 "false"
               ]
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -624,8 +913,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -651,6 +970,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -694,8 +1016,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -722,6 +1074,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -785,8 +1140,28 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Page changed during the click; caller should take a fresh snapshot and retry with current refs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -813,6 +1188,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -872,8 +1250,28 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Page changed or target became invalid; caller should take a fresh snapshot and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -899,6 +1297,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -940,8 +1341,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -967,6 +1398,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -1011,8 +1445,146 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/viewport": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Set the page viewport size",
+        "description": "Physically resizes the page via Playwright's `page.setViewportSize`, triggering a real layout reflow. Use for responsive testing — `window.resizeTo()` is a no-op on non-popup windows.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Viewport set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "width": {
+                      "type": "integer"
+                    },
+                    "height": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Width or height missing or out of range."
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1038,6 +1610,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -1077,8 +1652,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1104,6 +1709,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -1143,8 +1751,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1170,6 +1808,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -1209,8 +1850,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1244,6 +1915,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1276,8 +1950,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1311,6 +2015,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1343,8 +2050,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1378,6 +2115,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1413,8 +2153,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1449,6 +2219,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1475,8 +2248,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1511,6 +2314,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1547,8 +2353,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1575,6 +2411,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -1627,8 +2466,28 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1655,6 +2514,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "requestBody": {
@@ -1752,6 +2614,16 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
             "content": {
@@ -1838,6 +2710,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1856,8 +2731,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1891,6 +2796,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1912,8 +2820,38 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1946,6 +2884,9 @@
               "type": "string"
             },
             "description": "Session owner identifier."
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -1981,8 +2922,28 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2034,6 +2995,9 @@
               "type": "string"
             },
             "description": "Trace zip filename."
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -2070,6 +3034,16 @@
           },
           "404": {
             "description": "Trace not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2119,6 +3093,9 @@
               "type": "string"
             },
             "description": "Trace zip filename."
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -2167,6 +3144,16 @@
               }
             }
           },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Server error.",
             "content": {
@@ -2195,8 +3182,31 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionOwnerToken": {
+                    "type": "string",
+                    "minLength": 32,
+                    "maxLength": 256,
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "writeOnly": true,
+                    "description": "Required only when the target session has an active exclusive ownership claim."
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Session destroyed.",
@@ -2210,14 +3220,48 @@
                     },
                     "closed": {
                       "type": "integer"
+                    },
+                    "claimReleased": {
+                      "type": "boolean",
+                      "description": "True when an exclusive ownership claim was released."
                     }
                   }
                 }
               }
             }
           },
+          "400": {
+            "description": "Invalid or conflicting session owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session owner token mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session creation is still in flight or deletion is already in progress; retry after the active lifecycle operation settles.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2322,8 +3366,33 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ]
       }
     },
     "/start": {
@@ -2374,7 +3443,7 @@
         "description": "Stops the browser and closes all sessions. Requires x-admin-key header.",
         "security": [
           {
-            "BearerAuth": []
+            "AdminKey": []
           }
         ],
         "responses": {
@@ -2466,6 +3535,16 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
             "content": {
@@ -2475,8 +3554,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ]
       }
     },
     "/snapshot": {
@@ -2528,6 +3622,9 @@
                 "false"
               ]
             }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
           }
         ],
         "responses": {
@@ -2551,8 +3648,28 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2637,6 +3754,16 @@
               }
             }
           },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tab not found.",
             "content": {
@@ -2646,6 +3773,197 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ]
+      }
+    },
+    "/sessions/{userId}/storage_state": {
+      "delete": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Reset live and persisted session storage state",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Storage state reset completed."
+          },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage state reset failed."
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Export the live session storage state",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/SessionOwnerTokenHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current storage state."
+          },
+          "400": {
+            "description": "Invalid or conflicting session owner token or user identifier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The claimed session requires its exact owner token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found."
+          },
+          "409": {
+            "description": "Session ownership, creation, or deletion lifecycle conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage state export failed."
+          }
+        }
+      }
+    },
+    "/vnc/status": {
+      "get": {
+        "tags": [
+          "Browser"
+        ],
+        "summary": "Read VNC helper status",
+        "responses": {
+          "200": {
+            "description": "VNC helper status."
+          }
+        }
+      }
+    },
+    "/youtube/transcript": {
+      "post": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Extract a YouTube transcript",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "languages": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transcript extraction result."
+          },
+          "400": {
+            "description": "Invalid input URL."
+          },
+          "500": {
+            "description": "Transcript extraction failed."
           }
         }
       }

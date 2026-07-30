@@ -37,6 +37,7 @@
   "files": [
     "server.js",
     "lib/",
+    "docs/",
     "plugins/",
     "camofox.config.json",
     "plugin.ts",
