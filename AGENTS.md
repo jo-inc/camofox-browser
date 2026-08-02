@@ -303,13 +303,13 @@ export function register(app, ctx) {
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `sessions` | `Map` | Live sessions: `userId -> { context, tabGroups, lastAccess }` |
+| `sessions` | `Map` | Live sessions: `userId -> { context, tabGroups, pageLeases, lastAccess, proxySessionId, requestProxy, tracePath }` |
 | `config` | `object` | Server CONFIG (port, apiKey, nodeEnv, proxy, etc.) |
 | `log` | `function` | `log(level, msg, fields)` -- structured JSON logging |
 | `events` | `EventEmitter` | Plugin event bus (29 events -- see below) |
 | `auth` | `function` | `auth()` returns Express middleware enforcing API key / loopback |
 | `ensureBrowser` | `async function` | Launch browser if not running, return browser instance |
-| `getSession` | `async function` | `getSession(userId)` -- get or create a session |
+| `getSession` | `async function` | `getSession(userId, { trace, requestProxy, inheritedRequestProxy })` -- get or create a session; request proxies are immutable per user session |
 | `destroySession` | `async function` | `destroySession(userId, { reason })` -- tear down and await a session close |
 | `withUserLimit` | `async function` | `withUserLimit(userId, fn)` -- run `fn` within per-user concurrency limit |
 | `safePageClose` | `async function` | `safePageClose(page)` -- close a page with timeout guard |
@@ -321,6 +321,8 @@ export function register(app, ctx) {
 | `failuresTotal` | `Counter` | Prometheus counter: `failuresTotal.labels(type, action).inc()` |
 | `createMetric` | `async function` | Create a Prometheus metric registered to the shared registry (see below) |
 | `metricsRegistry` | `function` | `metricsRegistry()` -- raw prom-client Registry or null |
+
+`session.requestProxy` is either a normalized Playwright proxy object or `null`. It may contain credentials. Automatic teardown can retain the same normalized object in the bounded, expiring recovery cache after the session closes. Treat both copies as sensitive: compare them with the request-proxy helpers, but do not add them to logs or HTTP responses. `POST /tabs` may expose only the boolean `proxied` state. The existing `session:creating` hook exposes `contextOptions` to trusted in-process plugins, including proxy credentials. `inheritedRequestProxy` is reserved for trusted internal recovery paths; HTTP handlers must pass untrusted input as `requestProxy` so validation and conflict handling run.
 
 ### Events (29)
 

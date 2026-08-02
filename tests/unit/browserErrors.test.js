@@ -98,6 +98,19 @@ describe('browser error normalization', () => {
     expect(isRetryableBrowserError(err)).toBe(false);
   });
 
+  test('preserves explicit recovery metadata without marking conflicts retryable', () => {
+    const err = Object.assign(new Error('existing session uses a different proxy'), {
+      statusCode: 409,
+      code: 'proxy_conflict',
+      recovery: 'delete_session',
+      retryable: false,
+    });
+    expect(browserErrorStatus(err)).toBe(409);
+    expect(browserErrorCode(err)).toBe('proxy_conflict');
+    expect(browserErrorRecovery(err)).toBe('delete_session');
+    expect(isRetryableBrowserError(err)).toBe(false);
+  });
+
   test('launch and user concurrency timeouts normalize to 503 retry', () => {
     const launch = new Error('Browser launch timeout (60s)');
     const concurrency = new Error('User concurrency limit reached, try again');
