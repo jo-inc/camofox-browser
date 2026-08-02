@@ -35,6 +35,8 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
+import { parseCaptureParams, parseWheelParams, CAPTURE_MAX_BODY_BYTES, REQUEST_MAX_BODY_BYTES_DEFAULT } from './lib/interaction-params.js';
+import { captureResponses, captureRequests } from './lib/network-capture.js';
 import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
@@ -4147,22 +4149,56 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
  *               deltaX:
  *                 type: number
  *                 default: 0
+ *                 description: Horizontal scroll delta (-100000..100000). At least one delta must be non-zero.
  *               deltaY:
  *                 type: number
  *                 default: 0
+ *                 description: Vertical scroll delta (-100000..100000). At least one delta must be non-zero.
  *     responses:
  *       200:
  *         description: Wheel dispatched.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 x:
+ *                   type: number
+ *                 y:
+ *                   type: number
+ *                 deltaX:
+ *                   type: number
+ *                 deltaY:
+ *                   type: number
  *       400:
- *         description: Missing userId or both deltas are zero.
+ *         description: Missing userId, invalid coordinates/deltas, or both deltas are zero.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       404:
  *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       422:
+ *         description: Ref is stale or the element has no bounding box.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
   try {
-    const { userId, ref, x, y, deltaX = 0, deltaY = 0 } = req.body;
+    const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
-    if (!deltaX && !deltaY) return res.status(400).json({ error: 'deltaX or deltaY required' });
+
+    const parsed = parseWheelParams(req.body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error, code: parsed.code });
+    const { ref, coords, deltaX, deltaY } = parsed.params;
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -4173,14 +4209,17 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     const result = await withTabLock(req.params.tabId, async () => {
+      const wheelStart = Date.now();
+      const remainingBudget = () => Math.max(0, HANDLER_TIMEOUT_MS - 2000 - (Date.now() - wheelStart));
       let targetX, targetY;
       if (ref) {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
           try {
-            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_wheel', timeoutMs: 4000 });
+            const preWheelBudget = Math.min(4000, remainingBudget());
+            tabState.refs = await refreshTabRefs(tabState, { reason: 'pre_wheel', timeoutMs: preWheelBudget });
           } catch (e) {
-            if (e.message !== 'pre_click_refs_timeout' && e.message !== 'buildRefs_timeout') throw e;
+            if (e.message !== 'pre_wheel_refs_timeout' && e.message !== 'buildRefs_timeout') throw e;
           }
           locator = refToLocator(tabState.page, ref, tabState.refs);
         }
@@ -4188,13 +4227,26 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
           const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
           throw new StaleRefsError(ref, maxRef, tabState.refs.size);
         }
-        const box = await locator.boundingBox();
+        // Same bounded lookup as the click path: an unbounded boundingBox()
+        // inherits Playwright's 30s default and eats the whole handler budget
+        // when the element detached, turning a 422 into a 500. The message
+        // avoids 'timed out after' so isTimeoutError() doesn't classify a
+        // detached element as a navigation timeout and destroy the session.
+        const bboxTimeout = Math.max(500, Math.min(3000, remainingBudget()));
+        let box;
+        try {
+          box = await locator.boundingBox({ timeout: bboxTimeout });
+        } catch {
+          const detachedErr = new Error(`Element not actionable: no bounding box within ${bboxTimeout}ms (element likely detached after page change). Call snapshot to refresh refs and retry.`);
+          detachedErr.statusCode = 422;
+          throw detachedErr;
+        }
         if (!box) throw new Error('Element not visible (no bounding box)');
         targetX = box.x + box.width / 2;
         targetY = box.y + box.height / 2;
-      } else if (typeof x === 'number' && typeof y === 'number') {
-        targetX = x;
-        targetY = y;
+      } else if (coords) {
+        targetX = coords.x;
+        targetY = coords.y;
       } else {
         const vs = tabState.page.viewportSize();
         targetX = vs.width / 2;
@@ -4220,10 +4272,116 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
 // Network response capture: attaches a Playwright page.on("response") listener for the
 // requested duration and returns all matching responses. Operates at the browser network
 // layer, bypassing any in-page JS, Service Worker, or closure-cached fetch references.
+/**
+ * @openapi
+ * /tabs/{tabId}/capture-network:
+ *   post:
+ *     tags: [Network]
+ *     summary: Capture matching network responses for a bounded window
+ *     description: >
+ *       Attaches a browser-level response listener for durationMs and returns every
+ *       response whose URL matches urlPattern, with its body. Runs below the page's
+ *       JavaScript, so it sees traffic that in-page fetch/XHR hooks miss (Service
+ *       Workers, closure-cached fetch references). Response bodies that are still
+ *       being read when the window closes are awaited before the response is sent;
+ *       a body that does not arrive within the grace period is returned as
+ *       "__BODY_PENDING__" and counted in pendingBodies.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               urlPattern:
+ *                 type: string
+ *                 default: graphql
+ *                 maxLength: 200
+ *                 description: Case-insensitive regular expression matched against the response URL.
+ *               durationMs:
+ *                 type: integer
+ *                 default: 15000
+ *                 minimum: 100
+ *                 maximum: 60000
+ *               maxCaptures:
+ *                 type: integer
+ *                 default: 100
+ *                 minimum: 1
+ *                 maximum: 500
+ *               maxBodyBytes:
+ *                 type: integer
+ *                 default: 1000000
+ *                 minimum: 1024
+ *                 maximum: 5000000
+ *                 description: Bodies longer than this are truncated with a "__TRUNCATED__" marker.
+ *     responses:
+ *       200:
+ *         description: Captured responses.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 captureCount:
+ *                   type: integer
+ *                 droppedByLimit:
+ *                   type: integer
+ *                   description: Matching responses discarded because maxCaptures was reached.
+ *                 pendingBodies:
+ *                   type: integer
+ *                   description: Captures whose body did not finish reading within the grace period.
+ *                 captures:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       url:
+ *                         type: string
+ *                       status:
+ *                         type: integer
+ *                       len:
+ *                         type: integer
+ *                       body:
+ *                         type: string
+ *       400:
+ *         description: Missing userId, invalid urlPattern, or a limit out of range.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Missing or invalid bearer token.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/capture-network', authMiddleware(), express.json({ limit: '64kb' }), async (req, res) => {
   try {
-    const { userId, urlPattern = 'graphql', durationMs = 15000, maxBodyBytes = 1000000, maxCaptures = 100 } = req.body;
+    const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const parsed = parseCaptureParams(req.body, { maxBodyBytesDefault: CAPTURE_MAX_BODY_BYTES.default });
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error, code: parsed.code });
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -4233,28 +4391,10 @@ app.post('/tabs/:tabId/capture-network', authMiddleware(), express.json({ limit:
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
-    const re = new RegExp(urlPattern, 'i');
-    const captures = [];
-    const handler = async (response) => {
-      try {
-        const url = response.url();
-        if (!re.test(url)) return;
-        if (captures.length >= maxCaptures) return;
-        const status = response.status();
-        let body = '';
-        try { body = await response.text(); } catch (e) { body = `__BODY_ERROR__:${e.message}`; }
-        if (body.length > maxBodyBytes) body = body.slice(0, maxBodyBytes) + '__TRUNCATED__';
-        captures.push({ url, status, len: body.length, body });
-      } catch (e) {
-        captures.push({ err: e.message });
-      }
-    };
-    tabState.page.on('response', handler);
-    await new Promise(r => setTimeout(r, Math.min(durationMs, 60000)));
-    tabState.page.off('response', handler);
+    const { captures, captureCount, droppedByLimit, pendingBodies } = await captureResponses(tabState.page, parsed.params);
 
-    pluginEvents.emit('tab:capture-network', { userId, tabId: req.params.tabId, captureCount: captures.length });
-    res.json({ ok: true, captureCount: captures.length, captures });
+    pluginEvents.emit('tab:capture-network', { userId, tabId: req.params.tabId, captureCount });
+    res.json({ ok: true, captureCount, droppedByLimit, pendingBodies, captures });
   } catch (err) {
     log('error', 'capture-network failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
@@ -4266,10 +4406,114 @@ app.post('/tabs/:tabId/capture-network', authMiddleware(), express.json({ limit:
 // Operates at the browser network layer, so it sees requests even when in-page hooks
 // on window.fetch / XMLHttpRequest are bypassed (e.g. when the bundle captured the
 // original references in a closure before any user JS could run).
+/**
+ * @openapi
+ * /tabs/{tabId}/capture-requests:
+ *   post:
+ *     tags: [Network]
+ *     summary: Capture matching outgoing requests for a bounded window
+ *     description: >
+ *       Attaches a browser-level request listener for durationMs and returns every
+ *       request whose URL matches urlPattern, with its POST body and (optionally)
+ *       its headers. Runs below the page's JavaScript, so it sees requests even when
+ *       in-page hooks on window.fetch / XMLHttpRequest are bypassed.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               urlPattern:
+ *                 type: string
+ *                 default: graphql
+ *                 maxLength: 200
+ *                 description: Case-insensitive regular expression matched against the request URL.
+ *               durationMs:
+ *                 type: integer
+ *                 default: 15000
+ *                 minimum: 100
+ *                 maximum: 60000
+ *               maxCaptures:
+ *                 type: integer
+ *                 default: 100
+ *                 minimum: 1
+ *                 maximum: 500
+ *               maxBodyBytes:
+ *                 type: integer
+ *                 default: 200000
+ *                 minimum: 1024
+ *                 maximum: 5000000
+ *               includeHeaders:
+ *                 type: boolean
+ *                 default: true
+ *     responses:
+ *       200:
+ *         description: Captured requests.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 captureCount:
+ *                   type: integer
+ *                 droppedByLimit:
+ *                   type: integer
+ *                   description: Matching requests discarded because maxCaptures was reached.
+ *                 captures:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       url:
+ *                         type: string
+ *                       method:
+ *                         type: string
+ *                       len:
+ *                         type: integer
+ *                       body:
+ *                         type: string
+ *                       headers:
+ *                         type: object
+ *       400:
+ *         description: Missing userId, invalid urlPattern, or a limit out of range.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Missing or invalid bearer token.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/capture-requests', authMiddleware(), express.json({ limit: '64kb' }), async (req, res) => {
   try {
-    const { userId, urlPattern = 'graphql', durationMs = 15000, maxBodyBytes = 200000, maxCaptures = 100, includeHeaders = true } = req.body;
+    const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const parsed = parseCaptureParams(req.body, { maxBodyBytesDefault: REQUEST_MAX_BODY_BYTES_DEFAULT });
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error, code: parsed.code });
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -4279,28 +4523,10 @@ app.post('/tabs/:tabId/capture-requests', authMiddleware(), express.json({ limit
     const { tabState } = found;
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
-    const re = new RegExp(urlPattern, 'i');
-    const captures = [];
-    const handler = (request) => {
-      try {
-        const url = request.url();
-        if (!re.test(url)) return;
-        if (captures.length >= maxCaptures) return;
-        const method = request.method();
-        let body = request.postData() || '';
-        if (body.length > maxBodyBytes) body = body.slice(0, maxBodyBytes) + '__TRUNCATED__';
-        const headers = includeHeaders ? request.headers() : {};
-        captures.push({ url, method, len: body.length, body, headers });
-      } catch (e) {
-        captures.push({ err: e.message });
-      }
-    };
-    tabState.page.on('request', handler);
-    await new Promise(r => setTimeout(r, Math.min(durationMs, 60000)));
-    tabState.page.off('request', handler);
+    const { captures, captureCount, droppedByLimit } = await captureRequests(tabState.page, parsed.params);
 
-    pluginEvents.emit('tab:capture-requests', { userId, tabId: req.params.tabId, captureCount: captures.length });
-    res.json({ ok: true, captureCount: captures.length, captures });
+    pluginEvents.emit('tab:capture-requests', { userId, tabId: req.params.tabId, captureCount });
+    res.json({ ok: true, captureCount, droppedByLimit, captures });
   } catch (err) {
     log('error', 'capture-requests failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
@@ -4310,6 +4536,71 @@ app.post('/tabs/:tabId/capture-requests', authMiddleware(), express.json({ limit
 // Persistent init script that runs before every navigation in the tab's page context.
 // Useful for installing fetch/XHR hooks that must catch the very first request after
 // a full-page reload, where evaluate() injection arrives too late.
+/**
+ * @openapi
+ * /tabs/{tabId}/init-script:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Register a script that runs before every navigation
+ *     description: >
+ *       Adds a persistent init script to the tab's page. It executes in the page
+ *       context before any page script on every subsequent navigation, which is the
+ *       only reliable way to install fetch/XHR hooks that must catch the first
+ *       request after a full reload. Scripts accumulate: each call adds one more,
+ *       and they are dropped when the tab is destroyed. Requires the same bearer
+ *       token as /tabs/{tabId}/evaluate, since the script runs arbitrary JS.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, script]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               script:
+ *                 type: string
+ *                 description: JavaScript source evaluated in the page context before every navigation.
+ *     responses:
+ *       200:
+ *         description: Init script registered.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 scriptLen:
+ *                   type: integer
+ *       400:
+ *         description: Missing userId or empty script.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Missing or invalid bearer token.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '256kb' }), async (req, res) => {
   try {
     const { userId, script } = req.body;
