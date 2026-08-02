@@ -40,7 +40,7 @@ jobs:
           npm install --no-save jest-junit
           node --experimental-vm-modules node_modules/.bin/jest \
             --testPathPatterns='tests/unit|plugins' \
-            --testPathIgnorePatterns='security\.test|tabRecycling\.test|cookies\.test' \
+            --testPathIgnorePatterns='security\.test|tabRecycling\.test|cookies\.test|requestProxyApi\.test' \
             --forceExit
         env:
           CI: true
@@ -92,7 +92,7 @@ jobs:
         run: |
           xvfb-run --auto-servernum \
             node --experimental-vm-modules node_modules/.bin/jest \
-              --testPathPatterns='tests/unit/(security|tabRecycling|cookies)\.test' \
+              --testPathPatterns='tests/unit/(security|tabRecycling|cookies|requestProxyApi)\.test' \
               --runInBand --forceExit
         env:
           CI: true

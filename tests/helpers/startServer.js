@@ -81,9 +81,14 @@ function getServerPort() {
   return serverPort;
 }
 
+function getServerProcessPid() {
+  return serverProcess?.pid || null;
+}
+
 export {
   startServer,
   stopServer,
   getServerUrl,
-  getServerPort
+  getServerPort,
+  getServerProcessPid,
 };

@@ -58,6 +58,34 @@ describe('createPageWithSessionRecovery', () => {
     expect(destroySession).not.toHaveBeenCalled();
   });
 
+  test('inherits the request proxy through replacement-session creation', async () => {
+    const timeoutError = Object.assign(new Error('new page timed out'), { code: 'timeout' });
+    const requestProxy = {
+      server: 'http://gw.example.com:10000',
+      username: 'user',
+      password: 'pass',
+    };
+    const oldSession = {
+      requestProxy,
+      context: { newPage: jest.fn().mockRejectedValue(timeoutError) },
+    };
+    const page = { id: 'fresh-page' };
+    const replacement = { context: { newPage: jest.fn().mockResolvedValue(page) } };
+    const getSession = jest.fn(async () => replacement);
+
+    await createPageWithSessionRecovery(recoveryOptions({
+      session: oldSession,
+      currentSession: () => oldSession,
+      destroySession: async () => {},
+      getSession,
+    }));
+
+    expect(getSession).toHaveBeenCalledWith('user-1', {
+      trace: false,
+      inheritedRequestProxy: requestProxy,
+    });
+  });
+
   test('retries only once', async () => {
     const timeoutError = Object.assign(new Error('new page timed out'), { code: 'timeout' });
     const oldSession = { context: { newPage: jest.fn().mockRejectedValue(timeoutError) } };
@@ -72,6 +100,8 @@ describe('createPageWithSessionRecovery', () => {
 
     expect(oldSession.context.newPage).toHaveBeenCalledTimes(1);
     expect(replacement.context.newPage).toHaveBeenCalledTimes(1);
+    expect(oldSession.pageLeases.size).toBe(0);
+    expect(replacement.pageLeases.size).toBe(0);
   });
 
   test('does not recover unrelated failures', async () => {
@@ -87,5 +117,6 @@ describe('createPageWithSessionRecovery', () => {
     }))).rejects.toBe(error);
 
     expect(destroySession).not.toHaveBeenCalled();
+    expect(session.pageLeases.size).toBe(0);
   });
 });

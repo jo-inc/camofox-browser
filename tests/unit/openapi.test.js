@@ -137,6 +137,19 @@ describe('OpenAPI spec', () => {
     expect(createTab.requestBody.content['application/json']).toBeDefined();
   });
 
+  test('POST /tabs documents request-proxy validation and conflicts', () => {
+    const createTab = spec.paths['/tabs']?.post;
+    const schema = createTab.requestBody.content['application/json'].schema;
+    expect(schema.properties.proxy).toMatchObject({ type: 'object', required: ['server'] });
+    expect(schema.properties.proxy.properties.server.description).toContain('http, https, socks4, or socks5');
+    expect(schema.properties.proxy.properties.password.writeOnly).toBe(true);
+    const responseSchema = createTab.responses['200'].content['application/json'].schema;
+    expect(responseSchema.properties.proxied).toMatchObject({ type: 'boolean' });
+    expect(createTab.responses['409']).toBeDefined();
+    expect(createTab.description).toContain('Automatic recovery');
+    expect(createTab.description).toContain('global `PROXY_*`');
+  });
+
   test('legacy routes are marked deprecated', () => {
     const legacyPaths = {
       '/act': 'post',

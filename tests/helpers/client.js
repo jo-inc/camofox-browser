@@ -60,9 +60,10 @@ class BrowserClient {
   }
   
   // Tab management
-  async createTab(url = null, { retries = 2 } = {}) {
+  async createTab(url = null, { retries = 2, proxy = undefined } = {}) {
     const body = { userId: this.userId, sessionKey: this.sessionKey };
     if (url) body.url = url;
+    if (proxy !== undefined) body.proxy = proxy;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
