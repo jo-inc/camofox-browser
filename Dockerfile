@@ -8,6 +8,9 @@ ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
+    # Build toolchain for native npm addons (e.g. better-sqlite3)
+    build-essential \
+    python3 \
     # Firefox dependencies
     libgtk-3-0 \
     libdbus-glib-1-2 \
@@ -38,8 +41,6 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
-    # yt-dlp runtime dependency
-    python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-bake Camoufox browser binary into image (downloaded at build time)
@@ -65,6 +66,7 @@ RUN npm ci --omit=dev
 COPY server.js ./
 COPY camofox.config.json ./
 COPY lib/ ./lib/
+COPY mcp/ ./mcp/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 
