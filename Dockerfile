@@ -8,6 +8,7 @@ ARG ARCH=x86_64
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
+    build-essential \
     # Firefox dependencies
     libgtk-3-0 \
     libdbus-glib-1-2 \
