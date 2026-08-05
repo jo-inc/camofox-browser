@@ -9,6 +9,8 @@ ARG TARGETARCH
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
+    make \
+    g++ \
     # Firefox dependencies
     libgtk-3-0 \
     libdbus-glib-1-2 \
@@ -65,7 +67,9 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --production
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --omit=dev \
+    && rm -rf node_modules/better-sqlite3/prebuilds \
+    && npm rebuild better-sqlite3 --build-from-source
 
 COPY server.js ./
 COPY camofox.config.json ./
