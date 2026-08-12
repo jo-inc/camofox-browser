@@ -5,7 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from '../../lib/tmp-cleanup.js';
+import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles, removeXvfbDisplayFiles } from '../../lib/tmp-cleanup.js';
 
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-test-'));
@@ -157,5 +157,56 @@ describe('cleanupStaleFirefoxProfiles', () => {
   it('handles nonexistent tmpDir gracefully', () => {
     const result = cleanupStaleFirefoxProfiles({ tmpDir: '/tmp/camofox-nonexistent-dir-xyz' });
     expect(result.scanned).toBe(0);
+  });
+});
+
+describe('removeXvfbDisplayFiles', () => {
+  it('removes both the socket and lock file for the given display', () => {
+    const socketDir = makeTmpDir();
+    const lockDir = makeTmpDir();
+    const socket = path.join(socketDir, 'X99');
+    const lock = path.join(lockDir, '.X99-lock');
+    fs.writeFileSync(socket, '');
+    fs.writeFileSync(lock, '12345');
+
+    removeXvfbDisplayFiles(99, { socketDir, lockDir });
+
+    expect(fs.existsSync(socket)).toBe(false);
+    expect(fs.existsSync(lock)).toBe(false);
+    fs.rmSync(socketDir, { recursive: true, force: true });
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+
+  it('removes whichever of the two exists, leaving unrelated displays alone', () => {
+    const socketDir = makeTmpDir();
+    const lockDir = makeTmpDir();
+    const targetSocket = path.join(socketDir, 'X42');
+    const otherSocket = path.join(socketDir, 'X0');
+    fs.writeFileSync(targetSocket, '');
+    fs.writeFileSync(otherSocket, '');
+    // No .X42-lock written -- only the socket exists for this display.
+
+    removeXvfbDisplayFiles(42, { socketDir, lockDir });
+
+    expect(fs.existsSync(targetSocket)).toBe(false);
+    expect(fs.existsSync(otherSocket)).toBe(true);
+    fs.rmSync(socketDir, { recursive: true, force: true });
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+
+  it('does not throw when neither file exists', () => {
+    const socketDir = makeTmpDir();
+    const lockDir = makeTmpDir();
+    expect(() => removeXvfbDisplayFiles(7777, { socketDir, lockDir })).not.toThrow();
+    fs.rmSync(socketDir, { recursive: true, force: true });
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+
+  it.each([null, undefined])('is a no-op for displayNum=%p', (displayNum) => {
+    const socketDir = makeTmpDir();
+    const lockDir = makeTmpDir();
+    expect(() => removeXvfbDisplayFiles(displayNum, { socketDir, lockDir })).not.toThrow();
+    fs.rmSync(socketDir, { recursive: true, force: true });
+    fs.rmSync(lockDir, { recursive: true, force: true });
   });
 });

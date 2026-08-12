@@ -31,7 +31,7 @@ import {
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
-import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
+import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles, removeXvfbDisplayFiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
@@ -794,6 +794,17 @@ class DefaultVirtualDisplay extends VirtualDisplay {
       return patched;
     }
     return args;
+  }
+
+  kill() {
+    const displayNum = this._display;
+    const proc = this.proc;
+    super.kill();
+    if (proc && proc.exitCode === null && proc.signalCode === null) {
+      proc.once('exit', () => removeXvfbDisplayFiles(displayNum));
+    } else {
+      removeXvfbDisplayFiles(displayNum);
+    }
   }
 }
 

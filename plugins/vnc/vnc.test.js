@@ -34,11 +34,18 @@ jest.unstable_mockModule('../../lib/auth.js', () => ({
   requireAuth: () => (_req, _res, next) => next(),
 }));
 
+const mockRemoveXvfbDisplayFiles = jest.fn();
+jest.unstable_mockModule('../../lib/tmp-cleanup.js', () => ({
+  removeXvfbDisplayFiles: mockRemoveXvfbDisplayFiles,
+}));
+
 // Minimal VirtualDisplay mock (real class has side-effects that break in test)
 class MockVirtualDisplay {
   get xvfb_args() {
     return ['-screen', '0', '1x1x24', '-ac', '-nolisten', 'tcp'];
   }
+
+  kill() {}
 }
 
 const { register } = await import('./index.js');
@@ -61,6 +68,7 @@ describe('vnc plugin', () => {
       VirtualDisplay: MockVirtualDisplay,
       createVirtualDisplay: () => new MockVirtualDisplay(),
     };
+    mockRemoveXvfbDisplayFiles.mockClear();
     mockStartWatcher.mockClear();
     mockStartWatcher.mockImplementation(mockWatcher);
     mockResolveVncConfig.mockClear();
@@ -159,6 +167,45 @@ describe('vnc plugin', () => {
     const args = vd.xvfb_args;
     const screenIdx = args.indexOf('0');
     expect(args[screenIdx + 1]).toBe('1920x1080x32');
+  });
+
+  test('kill() defers socket cleanup until the Xvfb process actually exits', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    const vd = ctx.createVirtualDisplay();
+    vd._display = 99;
+    const proc = new EventEmitter();
+    proc.exitCode = null;
+    proc.signalCode = null;
+    vd.proc = proc;
+
+    vd.kill();
+    expect(mockRemoveXvfbDisplayFiles).not.toHaveBeenCalled();
+
+    proc.emit('exit');
+    expect(mockRemoveXvfbDisplayFiles).toHaveBeenCalledWith(99);
+  });
+
+  test('kill() cleans up immediately if the process already exited', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    const vd = ctx.createVirtualDisplay();
+    vd._display = 42;
+    vd.proc = { exitCode: 0, signalCode: null };
+
+    vd.kill();
+    expect(mockRemoveXvfbDisplayFiles).toHaveBeenCalledWith(42);
+  });
+
+  test('kill() cleans up immediately when there is no tracked process', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    const vd = ctx.createVirtualDisplay();
+    vd._display = 7;
+    vd.proc = null;
+
+    vd.kill();
+    expect(mockRemoveXvfbDisplayFiles).toHaveBeenCalledWith(7);
   });
 
   test('storage_state endpoint returns 404 for unknown user', async () => {

@@ -46,6 +46,7 @@
 
 import { resolveVncConfig, startWatcher } from './vnc-launcher.js';
 import { requireAuth } from '../../lib/auth.js';
+import { removeXvfbDisplayFiles } from '../../lib/tmp-cleanup.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log, sessions, VirtualDisplay, safeError } = ctx;
@@ -71,6 +72,17 @@ export async function register(app, ctx, pluginConfig = {}) {
         return patched;
       }
       return args;
+    }
+
+    kill() {
+      const displayNum = this._display;
+      const proc = this.proc;
+      super.kill();
+      if (proc && proc.exitCode === null && proc.signalCode === null) {
+        proc.once('exit', () => removeXvfbDisplayFiles(displayNum));
+      } else {
+        removeXvfbDisplayFiles(displayNum);
+      }
     }
   }
 
