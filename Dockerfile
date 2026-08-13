@@ -38,8 +38,10 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
-    # yt-dlp runtime dependency
-    python3-minimal \
+    # Native-module build tools (better-sqlite3 has no prebuilt for node22/arm64)
+    build-essential \
+    # yt-dlp runtime dependency + node-gyp interpreter
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-bake Camoufox browser binary into image (downloaded at build time)
@@ -61,11 +63,17 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
 RUN npm ci --omit=dev
+# better-sqlite3 ships prebuildify prebuilds built against glibc 2.38, but this
+# base (node:22-slim = Debian bookworm) ships glibc 2.36, so the shipped
+# linux-arm64.node fails to load at runtime. Drop the prebuilds and compile
+# from source against the container's own glibc instead.
+RUN cd node_modules/better-sqlite3 && rm -rf prebuilds && npm run build-release
 
 COPY server.js ./
 COPY camofox.config.json ./
 COPY lib/ ./lib/
 COPY plugins/ ./plugins/
+COPY mcp/ ./mcp/
 COPY scripts/ ./scripts/
 
 # Install default plugin dependencies (apt packages + post-install hooks)
