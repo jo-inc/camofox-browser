@@ -662,6 +662,18 @@ Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts do
 
 When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error -- so long-running agent sessions don't hit dead ends.
 
+### Virtual display and Wayland desktops
+
+On Linux the browser is launched headful inside a private Xvfb display rather than in true headless mode: Xvfb provides GLX, so WebGL works via Mesa llvmpipe instead of returning "no context" (a strong bot signal). The window is real but exists only on the virtual display -- nothing should ever appear on your desktop.
+
+Two host-environment leaks can break that invisibility, and both are handled:
+
+1. **Wayland backend bypass.** Firefox selects its display backend *before* honoring `DISPLAY`. If the service inherits `WAYLAND_DISPLAY` from a Wayland session (Hyprland, GNOME, KDE -- and desktops like omarchy also export `MOZ_ENABLE_WAYLAND=1` session-wide), the Wayland backend wins, `DISPLAY=:N` (the Xvfb) is ignored, and the browser opens a visible window on your real compositor -- tiling into the active workspace and kicking neighbors out of fullscreen. The server therefore launches the browser with a sanitized environment (`lib/display-env.js`): `WAYLAND_DISPLAY` and `XDG_SESSION_TYPE` removed, `MOZ_ENABLE_WAYLAND=0` and `GDK_BACKEND=x11` forced. Playwright replaces the child environment with the provided one, so removal is genuine. Your desktop session is never modified.
+
+2. **Xvfb display-number collision.** `camoufox-js` runs `Xvfb -displayfd`, letting the X server pick a display number starting at `:0`. On a Wayland desktop, `:0` belongs to Xwayland but the *abstract-namespace* socket for it is typically unclaimed, so Xvfb can steal the display out from under the compositor and break every X11 app on the desktop. If you run the server as a desktop service, pin Xvfb to a private display range (a `PATH` shim intercepting the Xvfb invocation works; see the systemd notes in the deployment kit) or run the whole stack in a container.
+
+To verify the browser is invisible on a Hyprland desktop: create a tab, then check `hyprctl clients -j` -- no `camoufox` client should be listed, while screenshots through the API keep working.
+
 ## Security Model
 
 This section documents the security boundaries of camofox-browser for users and automated security reviewers.

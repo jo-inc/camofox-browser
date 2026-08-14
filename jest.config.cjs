@@ -14,9 +14,12 @@ module.exports = {
     '**/scripts/**/*.test.js'
   ],
   
-  // Ignore patterns
+  // Ignore patterns. E2E suites need the globalSetup in jest.config.e2e.cjs
+  // (it writes /tmp/camofox-e2e-env.json); without it they fail at import, so
+  // they only run via `npm run test:e2e` -- same split CI uses.
   testPathIgnorePatterns: [
-    '/node_modules/'
+    '/node_modules/',
+    '/tests/e2e/'
   ],
   
   // Setup and teardown
