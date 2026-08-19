@@ -20,6 +20,43 @@ describe('loadConfig', () => {
     expect(config.serverEnv.CAMOFOX_BIND_HOST).toBe('127.0.0.1');
   });
 
+  test('configures and forwards browser locale and timezone settings', () => {
+    process.env.CAMOFOX_LOCALE = ' ru-RU ';
+    process.env.CAMOFOX_LOCALES = ' ru-RU,ru ';
+    process.env.CAMOFOX_TIMEZONE = ' Europe/Moscow ';
+
+    const config = loadConfig();
+
+    expect(config.locale).toBe('ru-RU');
+    expect(config.locales).toBe('ru-RU,ru');
+    expect(config.timezoneId).toBe('Europe/Moscow');
+    expect(config.serverEnv.CAMOFOX_LOCALE).toBe(' ru-RU ');
+    expect(config.serverEnv.CAMOFOX_LOCALES).toBe(' ru-RU,ru ');
+    expect(config.serverEnv.CAMOFOX_TIMEZONE).toBe(' Europe/Moscow ');
+  });
+
+  test('keeps compatible browser locale and timezone defaults', () => {
+    delete process.env.CAMOFOX_LOCALE;
+    delete process.env.CAMOFOX_LOCALES;
+    delete process.env.CAMOFOX_TIMEZONE;
+
+    const config = loadConfig();
+
+    expect(config.locale).toBe('en-US');
+    expect(config.locales).toBe('en-US');
+    expect(config.timezoneId).toBe('America/Los_Angeles');
+  });
+
+  test('derives the context locale from the launch locale list', () => {
+    delete process.env.CAMOFOX_LOCALE;
+    process.env.CAMOFOX_LOCALES = ' ru-RU,ru ';
+
+    const config = loadConfig();
+
+    expect(config.locale).toBe('ru-RU');
+    expect(config.locales).toBe('ru-RU,ru');
+  });
+
   test('prefers CAMOUFOX_EXECUTABLE for external Camoufox executable', () => {
     process.env.CAMOUFOX_EXECUTABLE = '/nix/store/camoufox/bin/camoufox';
     process.env.CAMOUFOX_EXECUTABLE_PATH = '/ignored/camoufox';
