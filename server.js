@@ -6453,7 +6453,7 @@ async function gracefulShutdown(signal) {
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
-  }, 10000);
+  }, CONFIG.shutdownTimeoutMs);
   forceTimeout.unref();
 
   server.close();

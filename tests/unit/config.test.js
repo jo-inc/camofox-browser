@@ -69,6 +69,24 @@ describe('loadConfig', () => {
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
   });
 
+  test('uses a positive shutdown watchdog timeout and forwards it to server subprocesses', () => {
+    delete process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS;
+    expect(loadConfig().shutdownTimeoutMs).toBe(45000);
+
+    process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS = '60000';
+    const configured = loadConfig();
+    expect(configured.shutdownTimeoutMs).toBe(60000);
+    expect(configured.serverEnv.CAMOFOX_SHUTDOWN_TIMEOUT_MS).toBe('60000');
+
+    for (const value of ['0', '-1', 'not-a-number', 'Infinity', '2147483648', '9007199254740992']) {
+      process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS = value;
+      expect(loadConfig().shutdownTimeoutMs).toBe(45000);
+    }
+
+    process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS = '2147483647';
+    expect(loadConfig().shutdownTimeoutMs).toBe(2147483647);
+  });
+
   test('reads newPageTimeoutMs from camofox.config.json with a 10s fallback', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-config-'));
     const configPath = path.join(dir, 'camofox.config.json');
