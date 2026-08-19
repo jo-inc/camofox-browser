@@ -169,6 +169,50 @@ function createTestApp() {
     res.json({ ok: true });
   });
   
+  // Page with a low-level drag target. The endpoint test asserts browser mouse
+  // events arrive at the page and that the final mouseup lands in the target.
+  app.get('/drag', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Drag Test</title>
+      <style>
+        body { margin: 0; font-family: sans-serif; }
+        #source, #target { position: absolute; top: 100px; width: 100px; height: 80px; }
+        #source { left: 40px; background: #4a90e2; color: white; }
+        #target { left: 400px; background: #ddd; border: 2px dashed #555; }
+      </style>
+      </head>
+      <body>
+        <div id="source">Drag source</div>
+        <div id="target">Drop target</div>
+        <p id="status">idle</p>
+        <script>
+          const source = document.getElementById('source');
+          const target = document.getElementById('target');
+          const status = document.getElementById('status');
+          let pressed = false;
+          let moves = 0;
+          source.addEventListener('mousedown', () => {
+            pressed = true;
+            moves = 0;
+            status.textContent = 'pressed';
+          });
+          document.addEventListener('mousemove', () => {
+            if (pressed) moves += 1;
+          });
+          document.addEventListener('mouseup', (event) => {
+            if (!pressed) return;
+            pressed = false;
+            const box = target.getBoundingClientRect();
+            const landed = event.clientX >= box.left && event.clientX <= box.right &&
+              event.clientY >= box.top && event.clientY <= box.bottom;
+            status.textContent = (landed ? 'dropped:' : 'missed:') + moves;
+          });
+        </script>
+      </body></html>
+    `);
+  });
+
   // Page with clickable button
   app.get('/click', (req, res) => {
     res.send(`

@@ -555,6 +555,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 |--------|----------|-------------|
 | `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots) |
 | `POST` | `/tabs/:id/click` | Click element by ref or CSS selector |
+| `POST` | `/tabs/:id/drag` | Perform an atomic trusted mouse drag from `{start:{x,y}}` to `{end:{x,y}}`; optional `steps`, `durationMs`, and `button` |
 | `POST` | `/tabs/:id/type` | Type text into element |
 | `POST` | `/tabs/:id/press` | Press a keyboard key |
 | `POST` | `/tabs/:id/scroll` | Scroll page (up/down/left/right) |

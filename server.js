@@ -35,6 +35,7 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
+import { runTrustedDrag, trustedDragTimeoutMs, validateTrustedDragRequest } from './lib/trusted-drag.js';
 import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
@@ -3593,6 +3594,162 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         log('warn', 'post-timeout refresh failed', { error: refreshErr.message });
       }
     }
+    handleRouteError(err, req, res);
+  }
+});
+
+// Atomic trusted pointer drag
+/**
+ * @openapi
+ * /tabs/{tabId}/drag:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Perform an atomic trusted mouse drag
+ *     description: >
+ *       Dispatches one low-level Playwright mouse gesture: move to `start`, press
+ *       `button`, move through deterministic interpolated points to `end` over
+ *       `durationMs`, and release the button. This is an atomic gesture rather
+ *       than a generic replacement for the individual mouse actions.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         description: Managed tab identifier.
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [userId, start, end]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *                 minLength: 1
+ *                 description: Non-empty user/session identifier.
+ *               start:
+ *                 type: object
+ *                 additionalProperties: false
+ *                 required: [x, y]
+ *                 properties:
+ *                   x:
+ *                     type: number
+ *                     description: Starting horizontal viewport coordinate.
+ *                   y:
+ *                     type: number
+ *                     description: Starting vertical viewport coordinate.
+ *               end:
+ *                 type: object
+ *                 additionalProperties: false
+ *                 required: [x, y]
+ *                 properties:
+ *                   x:
+ *                     type: number
+ *                     description: Ending horizontal viewport coordinate.
+ *                   y:
+ *                     type: number
+ *                     description: Ending vertical viewport coordinate.
+ *               steps:
+ *                 type: integer
+ *                 default: 12
+ *                 minimum: 1
+ *                 maximum: 24
+ *                 description: Number of interpolated moves after pressing the button.
+ *               durationMs:
+ *                 type: integer
+ *                 default: 800
+ *                 minimum: 1
+ *                 maximum: 5000
+ *                 description: Total delay, in milliseconds, distributed across the interpolated moves.
+ *               button:
+ *                 type: string
+ *                 enum: [left, right, middle]
+ *                 default: left
+ *                 description: Mouse button held for the gesture.
+ *     responses:
+ *       200:
+ *         description: Completed atomic drag gesture.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [ok, start, end, steps, durationMs, button]
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 start:
+ *                   type: object
+ *                 end:
+ *                   type: object
+ *                 steps:
+ *                   type: integer
+ *                 durationMs:
+ *                   type: integer
+ *                 button:
+ *                   type: string
+ *       400:
+ *         description: Invalid request body or drag options.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Drag failed in the browser.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/drag', async (req, res) => {
+  const tabId = req.params.tabId;
+
+  try {
+    const validation = validateTrustedDragRequest(req.body);
+    if (!validation.ok) return res.status(400).json({ error: validation.error });
+
+    const { userId, ...dragOptions } = validation.value;
+    // Keep centralized timeout/dead-page handling on the same normalized ID
+    // used by session lookup and concurrency accounting.
+    req.body.userId = userId;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    // Camoufox may humanize each low-level mouse call. Keep the gesture budget
+    // below the lock acquisition timeout so a queued request cannot time out
+    // first and tear down the tab while this drag is still running.
+    const dragTimeoutMs = trustedDragTimeoutMs(
+      dragOptions,
+      HANDLER_TIMEOUT_MS,
+      TAB_LOCK_TIMEOUT_MS,
+    );
+    const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
+      try {
+        return await runTrustedDrag(tabState.page, dragOptions);
+      } finally {
+        // A pointer gesture can change rendered content without navigation.
+        // Never return a snapshot or refs captured before the gesture.
+        tabState.lastSnapshot = null;
+        tabState.refs = new Map();
+      }
+    }, dragTimeoutMs));
+
+    res.json(result);
+  } catch (err) {
+    log('error', 'drag failed', { reqId: req.reqId, tabId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
