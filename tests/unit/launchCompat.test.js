@@ -36,16 +36,41 @@ describe('launch compatibility source contract', () => {
 
   test('does not configure a fixed default browser context viewport', () => {
     const googleProbeOptions = sourceBetween(
-      'context = await candidateBrowser.newContext({',
+      'async function probeGoogleSearch(candidateBrowser) {',
       'const page = await context.newPage();'
     );
     const sessionContextOptions = sourceBetween(
-      'const contextOptions = {',
-      '// When geoip is active'
+      'const b = await ensureBrowser();',
+      'let sessionProxy = null;'
     );
 
     expect(googleProbeOptions).toContain('viewport: null');
     expect(sessionContextOptions).toContain('viewport: null');
     expect(`${googleProbeOptions}\n${sessionContextOptions}`).not.toMatch(/viewport\s*:\s*\{\s*width\s*:/);
+  });
+
+  test('does not grant geolocation or use fixed coordinates in direct sessions', () => {
+    const googleProbeOptions = sourceBetween(
+      'async function probeGoogleSearch(candidateBrowser) {',
+      'const page = await context.newPage();'
+    );
+    const sessionContextOptions = sourceBetween(
+      'const b = await ensureBrowser();',
+      'let sessionProxy = null;'
+    );
+
+    expect(googleProbeOptions).toContain('...contextIdentityOptions({');
+    expect(sessionContextOptions).toContain('...contextIdentityOptions({');
+    expect(sessionContextOptions).not.toContain('geolocation:');
+    expect(sessionContextOptions).not.toContain('37.7749');
+  });
+
+  test('uses configured locales for direct Camoufox launch identity', () => {
+    const launchOptionsBlock = sourceBetween(
+      'const options = await launchOptions({',
+      'options.proxy = normalizePlaywrightProxy(options.proxy);'
+    );
+
+    expect(launchOptionsBlock).toContain('locale: launchLocale({ hasProxy: !!proxyPool, locales: CONFIG.locales })');
   });
 });
