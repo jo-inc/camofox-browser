@@ -5,6 +5,7 @@ import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
+import { log } from './lib/log.js';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
@@ -103,21 +104,7 @@ const {
   sessionsExpiredTotal, tabsReapedTotal, tabsRecycledTotal,
 } = await initMetrics({ enabled: CONFIG.prometheusEnabled });
 
-// --- Structured logging ---
-function log(level, msg, fields = {}) {
-  const entry = {
-    ts: new Date().toISOString(),
-    level,
-    msg,
-    ...fields,
-  };
-  const line = JSON.stringify(entry);
-  if (level === 'error') {
-    process.stderr.write(line + '\n');
-  } else {
-    process.stdout.write(line + '\n');
-  }
-}
+
 
 const app = express();
 const globalJsonParser = express.json({ limit: '100kb' });
