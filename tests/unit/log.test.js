@@ -5,7 +5,9 @@
  */
 import { describe, expect, test } from '@jest/globals';
 
-import { formatLogLine } from '../../lib/log.js';
+import { formatLogLine, syslogPrefixEnabled } from '../../lib/log.js';
+
+const PREFIXED = { CAMOFOX_LOG_SYSLOG_PREFIX: '1' };
 
 describe('formatLogLine', () => {
   test('emits one parseable JSON object', () => {
@@ -22,5 +24,33 @@ describe('formatLogLine', () => {
   test('never spans more than one line, whatever the message contains', () => {
     const line = formatLogLine('info', 'a\nb\r\nc', { detail: 'x\ny' });
     expect(line.split('\n')).toHaveLength(1);
+  });
+});
+
+describe('syslog priority prefix', () => {
+  test('is off unless explicitly enabled', () => {
+    expect(syslogPrefixEnabled({})).toBe(false);
+    expect(syslogPrefixEnabled({ CAMOFOX_LOG_SYSLOG_PREFIX: '0' })).toBe(false);
+    expect(formatLogLine('error', 'boom', {}, {})).not.toMatch(/^</);
+  });
+
+  test.each([
+    ['error', 3],
+    ['warn', 4],
+    ['info', 6],
+    ['debug', 7],
+  ])('maps %s to <%i>', (level, priority) => {
+    expect(formatLogLine(level, 'm', {}, PREFIXED)).toMatch(new RegExp(`^<${priority}>`));
+  });
+
+  test('an unknown level falls back to info', () => {
+    expect(formatLogLine('trace', 'm', {}, PREFIXED)).toMatch(/^<6>/);
+  });
+
+  test('the JSON body still parses once the prefix is stripped', () => {
+    const line = formatLogLine('error', 'boom', { reqId: 'abc', code: 500 }, PREFIXED);
+    expect(JSON.parse(line.replace(/^<\d+>/, ''))).toMatchObject({
+      level: 'error', msg: 'boom', reqId: 'abc', code: 500,
+    });
   });
 });
