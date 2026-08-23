@@ -153,20 +153,8 @@
     "typescript": "^5.7.0"
   },
   "overrides": {
-    "@jest/reporters": {
-      "glob": "13.0.6"
-    },
     "babel-plugin-istanbul": {
       "test-exclude": "8.0.0"
-    },
-    "jest-config": {
-      "glob": "13.0.6"
-    },
-    "jest-runtime": {
-      "glob": "13.0.6"
-    },
-    "swagger-jsdoc": {
-      "glob": "13.0.6"
     }
   },
   "bin": {
