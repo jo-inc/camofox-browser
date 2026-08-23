@@ -9,6 +9,8 @@ FROM node:22-trixie-slim AS camofox-browser
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
 ARG ARCH=x86_64
+ARG YT_DLP_VERSION=2026.08.19
+ARG YT_DLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
 
 # Install dependencies for Camoufox (Firefox-based)
 RUN apt-get update && apt-get install -y \
@@ -62,7 +64,8 @@ RUN mkdir -p /root/.cache/camoufox \
     && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
 
 # Install yt-dlp for YouTube transcript extraction (no browser needed)
-RUN curl -L -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
+RUN curl -fL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp" \
+    && printf '%s  %s\n' "$YT_DLP_SHA256" /usr/local/bin/yt-dlp | sha256sum -c - \
     && chmod 755 /usr/local/bin/yt-dlp
 
 WORKDIR /app
