@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       - run: npm ci
 
@@ -40,20 +40,8 @@ jobs:
         env:
           CI: true
 
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-
       - name: Install browser
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps firefox
-
-      - name: Install browser system deps (cache hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps firefox
 
       - name: E2E tests
         run: |
@@ -86,6 +74,7 @@ jobs:
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Verify tag matches package versions
         run: |
