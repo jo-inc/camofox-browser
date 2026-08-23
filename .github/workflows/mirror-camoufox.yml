@@ -5,14 +5,15 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   mirror:
     name: Mirror latest Camoufox browser release
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: write # creates the camoufox-backup-* mirror release in this repository
     env:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM_REPOSITORY: daijro/camoufox
@@ -53,12 +54,15 @@ jobs:
       - name: Skip an already mirrored release
         id: existing
         shell: bash
+        env:
+          MIRROR_TAG: ${{ steps.upstream.outputs.mirror_tag }}
+          SOURCE_TAG: ${{ steps.upstream.outputs.source_tag }}
         run: |
           set -euo pipefail
 
-          if gh release view "${{ steps.upstream.outputs.mirror_tag }}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          if gh release view "$MIRROR_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Camoufox release ${{ steps.upstream.outputs.source_tag }} is already mirrored."
+            echo "Camoufox release ${SOURCE_TAG} is already mirrored."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -66,6 +70,12 @@ jobs:
       - name: Download browser archives and create checksums
         if: steps.existing.outputs.skip != 'true'
         shell: bash
+        env:
+          MIRROR_TAG: ${{ steps.upstream.outputs.mirror_tag }}
+          SOURCE_TAG: ${{ steps.upstream.outputs.source_tag }}
+          SOURCE_URL: ${{ steps.upstream.outputs.source_url }}
+          ASSET_COUNT: ${{ steps.upstream.outputs.asset_count }}
+          TOTAL_BYTES: ${{ steps.upstream.outputs.total_bytes }}
         run: |
           set -euo pipefail
 
@@ -98,7 +108,7 @@ jobs:
           jq \
             --arg source_repository "$UPSTREAM_REPOSITORY" \
             --arg mirrored_at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg mirror_tag "${{ steps.upstream.outputs.mirror_tag }}" \
+            --arg mirror_tag "$MIRROR_TAG" \
             '{
               sourceRepository: $source_repository,
               sourceRelease: {
@@ -118,22 +128,25 @@ jobs:
             }' upstream-release.json > "$assets_dir/manifest.json"
 
           cat > release-notes.md <<EOF
-          Backup of [${{ steps.upstream.outputs.source_tag }}](${{ steps.upstream.outputs.source_url }}) from \`${UPSTREAM_REPOSITORY}\`.
+          Backup of [${SOURCE_TAG}](${SOURCE_URL}) from \`${UPSTREAM_REPOSITORY}\`.
 
           This is an availability backup. Verify the archive against \`SHA256SUMS\` before use.
 
-          - Mirrored archives: ${{ steps.upstream.outputs.asset_count }}
-          - Total source size: ${{ steps.upstream.outputs.total_bytes }} bytes
+          - Mirrored archives: ${ASSET_COUNT}
+          - Total source size: ${TOTAL_BYTES} bytes
           EOF
 
       - name: Publish backup release
         if: steps.existing.outputs.skip != 'true'
         shell: bash
+        env:
+          MIRROR_TAG: ${{ steps.upstream.outputs.mirror_tag }}
+          SOURCE_TAG: ${{ steps.upstream.outputs.source_tag }}
         run: |
           set -euo pipefail
 
-          gh release create "${{ steps.upstream.outputs.mirror_tag }}" \
+          gh release create "$MIRROR_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Camoufox backup ${{ steps.upstream.outputs.source_tag }}" \
+            --title "Camoufox backup ${SOURCE_TAG}" \
             --notes-file release-notes.md \
             camoufox-assets/*
