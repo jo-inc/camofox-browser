@@ -1684,6 +1684,16 @@ function findTab(session, tabId) {
 // 410 Gone tells clients the tab existed but the browser crashed — create a new one.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// How long after a browser launch we treat an unknown-but-plausible tab ID as
+// "lost in a restart" (→ 410 browser_restarted) instead of a plain 404.
+// Must exceed the longest expected gap between the client's last successful
+// call and its next call after a restart: the health probe probes at most 60s
+// apart, closeBrowserFully + relaunch can take a few minutes on slow disks,
+// and clients (agents) routinely pause for minutes between tool calls. 30
+// minutes covers all of that without leaving stale tabs masquerading as
+// "restarted" forever.
+const BROWSER_RESTARTED_WINDOW_MS = 30 * 60_000;
+
 function tabNotFoundResponse(res, tabId) {
   // Only return 410 for tabs that look like valid UUIDs (plausibly created by this server),
   // belonged to this machine, and were lost in a recent browser restart.
@@ -1692,7 +1702,7 @@ function tabNotFoundResponse(res, tabId) {
   const uuidPart = tabId && tabId.includes('_') && !tabId.slice(0, tabId.indexOf('_')).includes('-')
     ? tabId.slice(tabId.indexOf('_') + 1)
     : tabId;
-  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < 300_000) && UUID_RE.test(uuidPart) && fly.isLocalTab(tabId)) {
+  if (_lastBrowserRestartAt && (Date.now() - _lastBrowserRestartAt < BROWSER_RESTARTED_WINDOW_MS) && UUID_RE.test(uuidPart) && fly.isLocalTab(tabId)) {
     return res.status(410).json({
       error: 'Tab no longer exists (browser was restarted). Create a new tab.',
       code: 'browser_restarted',
@@ -5579,9 +5589,15 @@ setInterval(() => {
         }
         if (tabState.toolCalls === tabState._lastReaperToolCalls) {
           const idleMs = now - tabState._lastReaperCheck;
-          if (idleMs >= TAB_INACTIVITY_MS) {
+          // A crashed page keeps holding a content-process slot for as long as
+          // it stays registered; waiting out the full idle timeout only delays
+          // the leak. Reap crashed tabs after a short quiet period instead —
+          // long enough that an in-flight call which just surfaced the crash
+          // (and will retry on a new tab) has time to finish.
+          const reapAfterMs = tabState.crashed ? Math.min(60_000, TAB_INACTIVITY_MS) : TAB_INACTIVITY_MS;
+          if (idleMs >= reapAfterMs) {
             tabsReapedTotal.inc();
-            log('info', 'tab reaped (inactive)', { userId, tabId, listItemId, idleMs, toolCalls: tabState.toolCalls });
+            log('info', 'tab reaped (inactive)', { userId, tabId, listItemId, idleMs, toolCalls: tabState.toolCalls, crashed: !!tabState.crashed });
             safePageClose(tabState.page);
             group.delete(tabId);
             { const _l = tabLocks.get(tabId); if (_l) _l.drain(); tabLocks.delete(tabId); }
@@ -5636,44 +5652,73 @@ setInterval(() => {
   if (reaped > 0) log('warn', 'orphan page reaper closed leaked pages', { reaped });
 }, 60_000);
 
-// Idle memory pressure restart -- when all sessions are gone, kill the browser
-// process immediately if either Node native memory or the Camoufox process tree
-// is large. This prevents idle Firefox children from holding most of the VM RAM
-// while Node reports zero sessions/tabs.
-setInterval(() => {
-  if (sessions.size > 0 || !browser) return;
-  const mem = process.memoryUsage();
-  const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
-  const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
+// Memory pressure restart -- when either Node native (non-heap) memory or the
+// Camoufox process tree grows past its threshold, restart the browser to
+// release the leaked memory.
+//
+// Idle phase (no sessions): kill the browser directly; the next request
+// relaunches it. This prevents idle Firefox children from holding most of the
+// VM RAM while Node reports zero sessions/tabs.
+//
+// Active phase (sessions open): close the sessions first so in-flight and
+// follow-up requests see a clean 503 (session_expired) instead of a half-dead
+// context, and clients recreate their session on retry. Without this branch,
+// a leaking browser with a live session would never be restarted until the
+// session went idle, and could OOM the host in the meantime.
+//
+// Note: if the threshold is hit while sessions are routinely reopened at the
+// same scale, this will restart in a loop — the log lines below make that
+// visible; in that case raise BROWSER_RSS_RESTART_THRESHOLD_MB.
+setInterval(async () => {
+  try {
+    if (!browser) return;
+    const idle = sessions.size === 0;
+    const mem = process.memoryUsage();
+    const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
+    const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
 
-  if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
-    log('warn', 'browser rss pressure, restarting browser', {
-      browserRssMb,
-      thresholdMb: CONFIG.browserRssRestartThresholdMb,
-    });
-    browserRestartsTotal.labels('browser_rss_pressure').inc();
-    closeBrowserFully('browser_rss_pressure').catch((err) => {
-      log('error', 'browser rss pressure browser close failed', { error: err.message });
-    });
-    return;
-  }
+    let reason = null;
+    if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
+      reason = 'browser_rss_pressure';
+      log('warn', 'browser rss pressure, restarting browser', {
+        browserRssMb,
+        thresholdMb: CONFIG.browserRssRestartThresholdMb,
+        idle,
+        sessions: sessions.size,
+      });
+    } else if (idle) {
+      // Native-memory baseline is only meaningful within one browser launch
+      // cycle (it is reset in closeBrowserFully), so track it when idle.
+      if (_nativeMemBaseline === null) {
+        _nativeMemBaseline = nativeMemMb;
+        return;
+      }
+      const growth = nativeMemMb - _nativeMemBaseline;
+      if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
+        reason = 'memory_pressure';
+        log('warn', 'native memory pressure, restarting browser', {
+          baselineMb: _nativeMemBaseline,
+          currentMb: nativeMemMb,
+          growthMb: growth,
+          thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
+        });
+      }
+    }
+    if (!reason) return;
 
-  if (_nativeMemBaseline === null) {
-    _nativeMemBaseline = nativeMemMb;
-    return;
-  }
-  const growth = nativeMemMb - _nativeMemBaseline;
-  if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
-    log('warn', 'native memory pressure, restarting browser', {
-      baselineMb: _nativeMemBaseline,
-      currentMb: nativeMemMb,
-      growthMb: growth,
-      thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
+    browserRestartsTotal.labels(reason).inc();
+    if (!idle) {
+      try {
+        await closeAllSessions(`memory_pressure:${reason}`, { clearDownloads: true, clearLocks: true });
+      } catch (err) {
+        log('warn', 'memory pressure session close failed', { error: err.message });
+      }
+    }
+    closeBrowserFully(reason).catch((err) => {
+      log('error', 'memory pressure browser close failed', { reason, error: err.message });
     });
-    browserRestartsTotal.labels('memory_pressure').inc();
-    closeBrowserFully('memory_pressure').catch((err) => {
-      log('error', 'memory pressure browser close failed', { error: err.message });
-    });
+  } catch (err) {
+    log('warn', 'memory pressure check failed', { error: err.message });
   }
 }, 30_000);
 
