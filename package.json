@@ -117,7 +117,7 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p . || true; mkdir -p dist && cp plugin.js dist/plugin.js",
+    "build": "tsc -p . && mkdir -p dist && cp plugin.js dist/plugin.js",
     "prepublishOnly": "npm run build",
     "start": "node server.js",
     "mcp": "node mcp/server.mjs",
