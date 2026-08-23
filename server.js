@@ -42,6 +42,7 @@ import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
 import { killProcessIds } from './lib/browser-processes.js';
+import { createHealthProbe } from './lib/health-probe.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses } from './lib/process-ownership.js';
 import {
   safePageUrl, urlDomain, hashIdentifier,
@@ -757,6 +758,12 @@ const healthState = {
   activeOps: 0,
   lastSuccessfulNav: Date.now(),
 };
+
+// One long-lived probe context. `newContext` is a thunk, not a bound value:
+// `browser` is reassigned by restartBrowser(), and the probe must follow it.
+const healthProbe = createHealthProbe({
+  newContext: () => browser.newContext({ viewport: null }),
+});
 
 function getUserNavHealth(userId) {
   const key = normalizeUserId(userId);
@@ -6518,18 +6525,13 @@ setInterval(async () => {
     log('warn', 'health probe forced despite active ops', { activeOps: healthState.activeOps, timeSinceSuccessMs: timeSinceSuccess });
   }
   
-  let testContext;
   try {
-    testContext = await browser.newContext({ viewport: null });
-    const page = await testContext.newPage();
-    await page.goto('about:blank', { timeout: 5000 });
-    await page.close();
-    await testContext.close();
+    await healthProbe.probe();
     healthState.lastSuccessfulNav = Date.now();
   } catch (err) {
     failuresTotal.labels('health_probe', 'internal').inc();
     log('warn', 'health probe failed', { error: err.message, timeSinceSuccessMs: timeSinceSuccess });
-    if (testContext) await testContext.close().catch(() => {});
+    await healthProbe.dispose();
     restartBrowser('health probe failed').catch(() => {});
   }
 }, 60_000);
