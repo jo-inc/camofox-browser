@@ -148,6 +148,42 @@ describe('lib/downloads', () => {
     });
   });
 
+  describe('download failure cleanup', () => {
+    test('removes persisted artifact when download reports failure', async () => {
+      let handler;
+      let stagingPath;
+      const tabState = {
+        downloads: [],
+        downloadEventSequence: 0,
+        visitedUrls: new Set(),
+        page: { on: (_event, callback) => { handler = callback; } },
+      };
+      const download = {
+        suggestedFilename: () => 'failed.txt',
+        url: () => 'https://example.com/failed.txt',
+        saveAs: async (filePath) => {
+          stagingPath = filePath;
+          await fs.writeFile(filePath, 'failed content');
+        },
+        failure: async () => 'download canceled',
+      };
+
+      attachDownloadListener(tabState, 'tab-1', () => {});
+      await handler(download);
+
+      const downloadId = path.basename(stagingPath, '.staging');
+      const persistedPath = path.join(DOWNLOAD_ROOT, `${downloadId}.bin`);
+      await expect(fs.stat(persistedPath)).rejects.toThrow();
+      expect(tabState.downloads[0]).toMatchObject({
+        id: downloadId,
+        state: 'failed',
+        failure: 'download canceled',
+        filePath: null,
+      });
+      await expect(readDownloadContent(tabState, downloadId, '')).resolves.toBeNull();
+    });
+  });
+
   describe('click fallback guard', () => {
     test('does not reject after a click emits a download event', async () => {
       const tabState = { downloadEventSequence: 0 };
