@@ -25,6 +25,8 @@ import {
   captureFetchedResource,
   MAX_FETCHED_RESOURCE_BYTES,
   getDownloadsList,
+  readDownloadContent,
+  sanitizeFilename,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
 import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
@@ -5048,7 +5050,14 @@ app.post('/tabs/:tabId/fetch-current-resource', async (req, res) => {
     }
     const pathname = new URL(url).pathname;
     const filename = pathname.split('/').pop() || 'document.pdf';
-    const download = await captureFetchedResource(tabState, { url, mimeType, filename, body });
+    const download = await captureFetchedResource(tabState, {
+      url,
+      mimeType,
+      filename,
+      body,
+      userId,
+      tabId: req.params.tabId,
+    });
     tabState.toolCalls++;
     session.lastAccess = Date.now();
     res.json({ tabId: req.params.tabId, download });
@@ -5118,7 +5127,11 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
     const { tabState } = found;
     tabState.toolCalls++;
 
-    const downloads = await getDownloadsList(tabState, { includeData, maxBytes });
+    const downloads = await getDownloadsList(tabState, {
+      includeData,
+      maxBytes,
+      downloadUrl: (downloadId) => `/tabs/${encodeURIComponent(req.params.tabId)}/downloads/${encodeURIComponent(downloadId)}/content?userId=${encodeURIComponent(userId)}`,
+    });
 
     if (consume) {
       await clearTabDownloads(tabState);
@@ -5129,6 +5142,60 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
     failuresTotal.labels(classifyError(err), 'downloads').inc();
     log('error', 'downloads failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/downloads/{downloadId}/content:
+ *   get:
+ *     tags: [Content]
+ *     summary: Fetch a completed download
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *       - name: downloadId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Raw download bytes.
+ *         content:
+ *           application/octet-stream:
+ *             schema: { type: string, format: binary }
+ *       404:
+ *         description: Download is unknown, expired, failed, or unavailable.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ */
+app.get('/tabs/:tabId/downloads/:downloadId/content', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    const result = await readDownloadContent(found.tabState, req.params.downloadId, userId);
+    if (!result) return res.status(404).json({ error: 'Download not found' });
+    const filename = sanitizeFilename(result.record.filename || result.record.suggestedFilename);
+    res.set({
+      'Content-Type': result.record.mimeType || 'application/octet-stream',
+      'Content-Length': String(result.data.length),
+      'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control': 'no-store',
+    });
+    return res.send(result.data);
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'download_content').inc();
+    log('error', 'download content failed', { reqId: req.reqId, error: err.message });
+    return res.status(404).json({ error: 'Download not found' });
   }
 });
 

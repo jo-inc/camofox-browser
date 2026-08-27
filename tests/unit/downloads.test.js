@@ -6,7 +6,12 @@ import {
   attachDownloadListener,
   clickWithDownloadGuard,
   downloadEventOccurredSince,
+  captureFetchedResource,
   getDownloadsList,
+  readDownloadContent,
+  cleanupExpiredDownloads,
+  MAX_DOWNLOAD_ARTIFACT_BYTES,
+  DOWNLOAD_ROOT,
 } from '../../lib/downloads.js';
 
 import fs from 'node:fs/promises';
@@ -248,6 +253,49 @@ describe('lib/downloads', () => {
 
       const result = await getDownloadsList(tabState, { includeData: true });
       expect(result[0].readError).toBeDefined();
+    });
+    test('returns fetch metadata and enforces owner for content', async () => {
+      const downloadId = `content-${Date.now()}`;
+      const tmpFile = path.join(DOWNLOAD_ROOT, `${downloadId}.bin`);
+      await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
+      await fs.writeFile(tmpFile, Buffer.from('raw bytes'));
+      const tabState = { downloads: [{ id: downloadId, owner: 'alice', state: 'completed', filePath: tmpFile, createdAt: new Date().toISOString() }] };
+      await expect(readDownloadContent(tabState, downloadId, 'bob')).resolves.toBeNull();
+      const result = await readDownloadContent(tabState, downloadId, 'alice');
+      expect(result.data.toString()).toBe('raw bytes');
+      await fs.unlink(tmpFile);
+    });
+
+    test('persists fetched resources as owned artifacts', async () => {
+      const tabState = { downloads: [] };
+      const download = await captureFetchedResource(tabState, {
+        url: 'https://example.com/report.pdf',
+        mimeType: 'application/pdf',
+        filename: 'report.pdf',
+        body: Buffer.from('%PDF-test'),
+        userId: 'alice',
+        tabId: 'tab-1',
+      });
+
+      expect(download.tabId).toBe('tab-1');
+      expect(download.state).toBe('completed');
+      await expect(readDownloadContent(tabState, download.id, 'bob')).resolves.toBeNull();
+      const result = await readDownloadContent(tabState, download.id, 'alice');
+      expect(result.data.toString()).toBe('%PDF-test');
+      await clearTabDownloads(tabState);
+    });
+
+    test('removes expired artifacts', async () => {
+      const tmpFile = path.join(os.tmpdir(), `camofox-test-expired-${Date.now()}.bin`);
+      await fs.writeFile(tmpFile, 'expired');
+      const tabState = { downloads: [{ id: 'expired', filePath: tmpFile, expiresAt: new Date(Date.now() - 1).toISOString() }] };
+      await cleanupExpiredDownloads(tabState);
+      expect(tabState.downloads).toEqual([]);
+      await expect(fs.stat(tmpFile)).rejects.toThrow();
+    });
+
+    test('publishes the bounded artifact size', () => {
+      expect(MAX_DOWNLOAD_ARTIFACT_BYTES).toBe(50 * 1024 * 1024);
     });
   });
 });
