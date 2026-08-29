@@ -15,7 +15,7 @@ All hooks are async and awaited via `emitAsync()` — storage state is guarantee
 
 ## Key Files
 
-- `index.js` — lifecycle hooks (no routes, no `child_process`)
+- `index.js` — lifecycle hooks and the `DELETE /sessions/:userId/storage_state` route (no `child_process`)
 - `persistence.test.js` — unit tests for `lib/persistence.js` helpers
 - `plugin.test.js` — integration tests for plugin lifecycle hooks
 
