@@ -4,9 +4,11 @@ Saves and restores per-user browser storage state (cookies + localStorage, with 
 
 ## How It Works
 
-- `session:creating` hook → loads saved `storage_state.json` into `contextOptions.storageState`
-- `session:created` hook → imports bootstrap cookies if no persisted state exists
-- `session:cookies:import` / `session:destroyed` / `server:shutdown` → checkpoints state to disk
+- `session:creating` hook → loads saved `storage-state.json` into `contextOptions.storageState`
+- `session:created` hook → imports bootstrap cookies if no persisted state exists, and checkpoints them
+- `session:cookies:import` / `session:storage:export` / `session:destroying` / `server:shutdown` → checkpoints state to disk
+- `session:destroyed` hook → clears session tracking only; the checkpoint happens on `session:destroying`, while the context is still alive
+- `session:storage:export` is emitted by the [vnc plugin](../vnc/)'s `GET /sessions/:userId/storage_state`, so on-demand checkpointing requires that plugin to be enabled
 - `DELETE /sessions/:userId/storage_state` → closes the live context without checkpointing and removes persisted state
 
 All hooks are async and awaited via `emitAsync()` — storage state is guaranteed loaded before the context is created.
@@ -22,7 +24,7 @@ All hooks are async and awaited via `emitAsync()` — storage state is guarantee
 ```
 ~/.camofox/profiles/
 └── <sha256(userId)>/
-    └── storage_state.json
+    └── storage-state.json
 ```
 
 ## Configuration
