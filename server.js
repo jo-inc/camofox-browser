@@ -13,7 +13,6 @@ import {
   createRequestProxyRecoveryCache,
   redactProxy,
   resolveRequestProxy,
-  shouldPreserveRequestProxy,
 } from './lib/request-proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins } from './lib/plugins.js';
@@ -24,6 +23,7 @@ import {
   clearTabDownloads,
   clearSessionDownloads,
   attachDownloadListener,
+  clickWithDownloadGuard,
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
@@ -38,9 +38,17 @@ import {
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
-import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
+import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles, removeXvfbDisplayFiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
+import {
+  canPreserveSessionRecovery,
+  createLifecycleEpoch,
+  createSessionLifecycleTracker,
+  isAutomaticSessionTeardown,
+  publishSessionIfCurrent,
+  runSessionCloseOnce,
+} from './lib/session-lifecycle.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
 import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
@@ -502,6 +510,7 @@ const HANDLER_TIMEOUT_MS = CONFIG.handlerTimeoutMs;
 const NEW_PAGE_TIMEOUT_MS = CONFIG.newPageTimeoutMs;
 const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
+const PAGE_FORCE_CLOSE_TIMEOUT_MS = 1000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
 const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const NATIVE_MEM_RESTART_THRESHOLD_MB = CONFIG.nativeMemRestartThresholdMb;
@@ -572,11 +581,17 @@ function getTabLock(tabId) {
 
 // Timeout is INSIDE the lock so each operation gets its full budget
 // regardless of how long it waited in the queue.
-async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS) {
+async function withTabLock(tabId, operation, timeoutMs = HANDLER_TIMEOUT_MS, onTimeout) {
   const lock = getTabLock(tabId);
   await lock.acquire(TAB_LOCK_TIMEOUT_MS);
   try {
     return await withTimeout(operation(), timeoutMs, 'action');
+  } catch (err) {
+    if (onTimeout && isTimeoutError(err)) {
+      await onTimeout();
+      throw Object.assign(err, { code: 'tab_timeout', statusCode: 410 });
+    }
+    throw err;
   } finally {
     lock.release();
   }
@@ -638,7 +653,12 @@ async function safePageClose(page) {
     ]);
   } catch (e) {
     log('warn', 'page close timed out or failed, force-closing', { error: e.message });
-    try { await page.close({ runBeforeUnload: false }); } catch (_) {}
+    try {
+      await Promise.race([
+        page.close({ runBeforeUnload: false }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('page force-close timed out')), PAGE_FORCE_CLOSE_TIMEOUT_MS)),
+      ]);
+    } catch (_) {}
     page.removeAllListeners();
   }
 }
@@ -740,36 +760,74 @@ function scheduleBrowserWarmRetry(delayMs = 5000) {
 }
 
 // --- Browser health tracking ---
+// Per-user navigation health. Each user gets an independent failure counter so
+// interleaved failures from different users don't corrupt each other's
+// recovery state. Process-global fields (activeOps, isRecovering,
+// lastSuccessfulNav) remain on the shared object for the health probe and
+// /health endpoint.
+const userNavHealth = new Map();
 const healthState = {
-  consecutiveNavFailures: 0,
-  lastSuccessfulNav: Date.now(),
   isRecovering: false,
   activeOps: 0,
+  lastSuccessfulNav: Date.now(),
 };
 
-function recordNavSuccess() {
-  healthState.consecutiveNavFailures = 0;
+function getUserNavHealth(userId) {
+  const key = normalizeUserId(userId);
+  let h = userNavHealth.get(key);
+  if (!h) {
+    h = { consecutiveNavFailures: 0 };
+    userNavHealth.set(key, h);
+  }
+  return h;
+}
+
+function deleteUserNavHealth(userId) {
+  userNavHealth.delete(normalizeUserId(userId));
+}
+
+function recordNavSuccess(userId) {
+  if (userId) {
+    const h = getUserNavHealth(userId);
+    h.consecutiveNavFailures = 0;
+  }
   healthState.lastSuccessfulNav = Date.now();
 }
 
-function recordNavFailure() {
-  healthState.consecutiveNavFailures++;
-  return healthState.consecutiveNavFailures >= FAILURE_THRESHOLD;
+function recordNavFailure(userId) {
+  if (!userId) return false;
+  const h = getUserNavHealth(userId);
+  h.consecutiveNavFailures++;
+  return h.consecutiveNavFailures >= FAILURE_THRESHOLD;
+}
+
+async function recoverUserSession(userId, reason) {
+  const key = normalizeUserId(userId);
+  log('warn', 'recovering user session after nav failure threshold', {
+    userId: key, reason, failures: getUserNavHealth(key).consecutiveNavFailures,
+  });
+  browserRestartsTotal.labels('nav_failure_recovery').inc();
+  await destroySession(key, { reason: `nav_failure_recovery:${reason}` });
+  deleteUserNavHealth(key);
 }
 
 async function restartBrowser(reason) {
   if (healthState.isRecovering) return;
   healthState.isRecovering = true;
   browserRestartsTotal.labels(reason).inc();
-  log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
+  const totalFailures = Array.from(userNavHealth.values())
+    .reduce((sum, h) => sum + h.consecutiveNavFailures, 0);
+  log('error', 'restarting browser', { reason, totalFailures });
   pluginEvents.emit('browser:restart', { reason });
   try {
     await closeAllSessions(`browser_restart:${reason}`, { clearDownloads: true, clearLocks: true });
+    userNavHealth.clear();
     await closeBrowserFully(`browser_restart:${reason}`);
     pluginEvents.emit('browser:closed', { reason });
-    browserLaunchPromise = null;
+    // Do NOT clear browserLaunchPromise here — ensureBrowser() owns the
+    // single-flight primitive. Clearing it manually opens a window where a
+    // concurrent request can start a second launch. See #8554.
     await ensureBrowser();
-    healthState.consecutiveNavFailures = 0;
     healthState.lastSuccessfulNav = Date.now();
     log('info', 'browser restarted successfully');
   } catch (err) {
@@ -809,6 +867,17 @@ class DefaultVirtualDisplay extends VirtualDisplay {
       return patched;
     }
     return args;
+  }
+
+  kill() {
+    const proc = this.proc;
+    if (!proc || this.xvfbDisplayFilesCleanupRegistered) return super.kill();
+
+    this.xvfbDisplayFilesCleanupRegistered = true;
+    const cleanup = () => removeXvfbDisplayFiles(this.display);
+    if (proc.exitCode === null) proc.once('exit', cleanup);
+    else cleanup();
+    return super.kill();
   }
 }
 
@@ -877,6 +946,7 @@ function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
  */
 async function closeBrowserFully(reason) {
   if (_browserClosePromise) return _browserClosePromise;
+  invalidateBrowserLifecycle();
   _browserClosePromise = _closeBrowserFullyImpl(reason);
   try {
     return await _browserClosePromise;
@@ -1029,10 +1099,10 @@ async function launchBrowserInstance() {
 
     let localVirtualDisplay = null;
     let vdDisplay = undefined;
+    const useDesktopWindow = CONFIG.interactiveMode === 'desktop';
     let candidateBrowser = null;
-
     try {
-      if (os.platform() === 'linux') {
+      if (os.platform() === 'linux' && !useDesktopWindow) {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
         vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
@@ -1053,6 +1123,7 @@ async function launchBrowserInstance() {
       proxySession: launchProxy?.sessionId || null,
       proxyPoolSize: proxyPool?.size || 0,
       virtualDisplay: useVirtualDisplay,
+      interactiveMode: CONFIG.interactiveMode,
     });
 
     try {
@@ -1063,7 +1134,7 @@ async function launchBrowserInstance() {
       }
       const options = await launchOptions({
         executable_path: externalCamoufox?.executablePath,
-        headless: useVirtualDisplay ? false : true,
+        headless: useVirtualDisplay ? false : !useDesktopWindow,
         os: hostOS,
         humanize: true,
         enable_cache: true,
@@ -1113,6 +1184,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      activateBrowserLifecycle();
       _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
@@ -1122,6 +1194,7 @@ async function launchBrowserInstance() {
         attempt,
         maxAttempts,
         virtualDisplay: useVirtualDisplay,
+        interactiveMode: CONFIG.interactiveMode,
         proxyMode: proxyPool?.mode || null,
         proxyServer: launchProxy?.server || null,
         proxySession: launchProxy?.sessionId || null,
@@ -1172,6 +1245,9 @@ function normalizeUserId(userId) {
 }
 
 const sessionCreations = new Map();
+const browserLifecycle = createLifecycleEpoch();
+let browserLifecycleClosing = false;
+const sessionLifecycle = createSessionLifecycleTracker();
 const recoverableRequestProxies = createRequestProxyRecoveryCache({
   ttlMs: Math.max(SESSION_TIMEOUT_MS, TAB_INACTIVITY_MS) + 60_000,
   maxEntries: Math.max(64, MAX_SESSIONS * 2),
@@ -1179,11 +1255,19 @@ const recoverableRequestProxies = createRequestProxyRecoveryCache({
 
 function updateRecoverableRequestProxy(userId, session, reason) {
   const key = normalizeUserId(userId);
-  if (shouldPreserveRequestProxy(reason)) {
+  if (canPreserveSessionRecovery(sessionLifecycle, key, session, reason)) {
     if (session?.requestProxy) recoverableRequestProxies.remember(key, session.requestProxy);
-    return;
   }
-  recoverableRequestProxies.delete(key);
+}
+
+function invalidateBrowserLifecycle() {
+  browserLifecycleClosing = true;
+  browserLifecycle.advance();
+}
+
+function activateBrowserLifecycle() {
+  browserLifecycle.advance();
+  browserLifecycleClosing = false;
 }
 
 function clearSessionLocks(session) {
@@ -1200,45 +1284,63 @@ function clearSessionLocks(session) {
   refreshTabLockQueueDepth();
 }
 
-async function closeSession(userId, session, {
+function closeSession(userId, session, {
   reason = 'session_closed',
   clearDownloads = true,
   clearLocks = true,
 } = {}) {
-  if (!session) return;
-
-  const key = normalizeUserId(userId);
-  updateRecoverableRequestProxy(key, session, reason);
-
-  // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
-  // (410) instead of messy "Target page closed" (500) errors.
-  if (clearLocks) {
-    clearSessionLocks(session);
-  }
-
-  if (clearDownloads) {
-    await clearSessionDownloads(session).catch(() => {});
-  }
-
-  await pluginEvents.emitAsync('session:destroying', { userId: key, reason });
-  if (session.tracePath) {
-    try {
-      await session.context.tracing.stop({ path: session.tracePath });
-      log('info', 'tracing saved', { userId: key, path: session.tracePath });
-    } catch (err) {
-      log('warn', 'tracing.stop failed', { userId: key, error: err.message });
+  return runSessionCloseOnce(session, async () => {
+    const key = normalizeUserId(userId);
+    const automatic = isAutomaticSessionTeardown(reason);
+    if (!automatic && sessionLifecycle.isCurrent(key, session.generation)) {
+      recoverableRequestProxies.delete(key);
+      session._closeInvalidationGeneration = sessionLifecycle.invalidate(key);
     }
-  }
+    if (automatic) updateRecoverableRequestProxy(key, session, reason);
 
-  await session.context.close().catch(() => {});
-  if (sessions.get(key) === session) sessions.delete(key);
-  await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
+    // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
+    // (410) instead of messy "Target page closed" (500) errors.
+    if (clearLocks) {
+      clearSessionLocks(session);
+    }
 
-  refreshActiveTabsGauge();
+    if (clearDownloads) {
+      await clearSessionDownloads(session).catch(() => {});
+    }
+
+    const lifecyclePayload = {
+      userId: key,
+      reason,
+      context: session.context,
+      generation: session.generation,
+    };
+    await pluginEvents.emitAsync('session:destroying', lifecyclePayload);
+    if (session.tracePath) {
+      try {
+        await session.context.tracing.stop({ path: session.tracePath });
+        log('info', 'tracing saved', { userId: key, path: session.tracePath });
+      } catch (err) {
+        log('warn', 'tracing.stop failed', { userId: key, error: err.message });
+      }
+    }
+
+    await session.context.close().catch(() => {});
+    if (sessions.get(key) === session) sessions.delete(key);
+    await pluginEvents.emitAsync('session:destroyed', lifecyclePayload);
+
+    sessionLifecycle.release(key, session.generation);
+    if (session._closeInvalidationGeneration !== undefined) {
+      sessionLifecycle.release(key, session._closeInvalidationGeneration);
+      delete session._closeInvalidationGeneration;
+    }
+
+    refreshActiveTabsGauge();
+  });
 }
 
 async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
-  if (!shouldPreserveRequestProxy(reason)) recoverableRequestProxies.clear();
+  invalidateBrowserLifecycle();
+  if (!isAutomaticSessionTeardown(reason)) recoverableRequestProxies.clear();
   const openSessions = Array.from(sessions.entries());
   for (const [userId, session] of openSessions) {
     await closeSession(userId, session, { reason, clearDownloads, clearLocks });
@@ -1294,7 +1396,10 @@ async function getSession(userId, {
   }
   
   if (!session) {
+    let creationGeneration = null;
     session = await coalesceInflight(sessionCreations, key, async () => {
+      const generation = sessionLifecycle.begin(key);
+      creationGeneration = generation;
       if (sessions.size >= MAX_SESSIONS) {
         throw Object.assign(
           new Error('Maximum concurrent sessions reached'),
@@ -1319,6 +1424,13 @@ async function getSession(userId, {
         }
       }
       const b = await ensureBrowser();
+      const browserGeneration = browserLifecycle.current();
+      const browserIsCurrent = () => (
+        !browserLifecycleClosing &&
+        browserLifecycle.isCurrent(browserGeneration) &&
+        browser === b &&
+        b.isConnected()
+      );
       const contextOptions = {
         viewport: null,
         permissions: ['geolocation'],
@@ -1348,7 +1460,15 @@ async function getSession(userId, {
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
-      await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
+      await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions, generation });
+      if (!sessionLifecycle.isCurrent(key, generation) || !browserIsCurrent()) {
+        throw Object.assign(new Error('Session was deleted while it was being created'), {
+          statusCode: 409,
+          code: 'session_invalidated',
+          recovery: 'retry',
+          retryable: true,
+        });
+      }
       const context = await b.newContext(contextOptions);
 
       let tracePath = null;
@@ -1372,10 +1492,35 @@ async function getSession(userId, {
         proxySessionId: sessionProxy?.sessionId || null,
         requestProxy: normalizedRequestProxy,
         tracePath,
+        generation,
       };
-      sessions.set(key, created);
-      recoverableRequestProxies.delete(key);
-      await pluginEvents.emitAsync('session:created', { userId: key, context });
+      const published = await publishSessionIfCurrent({
+        sessions,
+        userId: key,
+        session: created,
+        generation,
+        lifecycle: sessionLifecycle,
+        isStillCurrent: browserIsCurrent,
+        onCreated: async () => {
+          recoverableRequestProxies.delete(key);
+          await pluginEvents.emitAsync('session:created', { userId: key, context, generation });
+        },
+        onStale: (stale, cause) => closeSession(key, stale, {
+          reason: cause === 'external_invalidated'
+            ? 'browser_restart:session_creation_invalidated'
+            : 'session_creation_invalidated',
+          clearDownloads: true,
+          clearLocks: true,
+        }),
+      });
+      if (!published) {
+        throw Object.assign(new Error('Session was deleted while it was being created'), {
+          statusCode: 409,
+          code: 'session_invalidated',
+          recovery: 'retry',
+          retryable: true,
+        });
+      }
       log('info', 'session created', {
         userId: key,
         proxyMode: proxyPool?.mode || null,
@@ -1383,6 +1528,11 @@ async function getSession(userId, {
         proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
       });
       return created;
+    }).catch((err) => {
+      if (creationGeneration !== null) {
+        sessionLifecycle.release(key, creationGeneration);
+      }
+      throw err;
     });
   }
   if (hasRequestProxy || recoveryProxy) {
@@ -1501,11 +1651,12 @@ function handleRouteError(err, req, res, extraFields = {}) {
   // one poisoned page kills all subsequent navigations in that context. Destroy the
   // entire session so the next request gets a fresh BrowserContext + proxy.
   const NAVIGATION_TIMEOUT_ACTIONS = new Set(['click', 'navigate', 'open_url']);
-  if (isTimeoutError(err) && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
+  if (isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action)) {
     log('warn', 'navigation timeout — destroying session for fresh proxy', {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('navigation_timeout').inc();
+    recordNavFailure(userId);
     destroySession(userId, { reason: 'navigation_timeout' }).catch(() => {});
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
@@ -1605,6 +1756,31 @@ function destroyTab(session, tabId, reason, userId) {
   return false;
 }
 
+async function destroyTimedOutTab(session, tabId, reason, userId) {
+  const found = session && findTab(session, tabId);
+  if (!found) return;
+  const { tabState, group, listItemId } = found;
+  log('warn', 'destroying timed-out tab', { tabId, listItemId, toolCalls: tabState.toolCalls, reason });
+  try {
+    await safePageClose(tabState.page);
+    await clearTabDownloads(tabState);
+  } catch (err) {
+    log('warn', 'timed-out tab cleanup failed', { tabId, error: err.message });
+  } finally {
+    group.delete(tabId);
+    if (group.size === 0) session.tabGroups.delete(listItemId);
+    const lock = tabLocks.get(tabId);
+    if (lock) {
+      lock.drain();
+      tabLocks.delete(tabId);
+      refreshTabLockQueueDepth();
+    }
+    refreshActiveTabsGauge();
+    tabsDestroyedTotal.labels(reason).inc();
+    pluginEvents.emit('tab:destroyed', { userId: userId || null, tabId, reason });
+  }
+}
+
 /**
  * Recycle the oldest (least-used) tab in a session to free a slot.
  * Closes the old tab's page and removes it from its group.
@@ -1641,14 +1817,30 @@ async function recycleOldestTab(session, reqId, userId) {
 
 async function destroySession(userId, { reason = 'destroy_session' } = {}) {
   const key = normalizeUserId(userId);
+  const automatic = isAutomaticSessionTeardown(reason);
+  let invalidationGeneration = null;
+  if (!automatic) {
+    invalidationGeneration = sessionLifecycle.invalidate(key);
+    recoverableRequestProxies.delete(key);
+    await sessionCreations.get(key)?.catch(() => {});
+  }
   const session = sessions.get(key);
   if (!session) {
-    if (!shouldPreserveRequestProxy(reason)) recoverableRequestProxies.delete(key);
+    if (invalidationGeneration !== null) {
+      sessionLifecycle.release(key, invalidationGeneration);
+    }
     return false;
   }
   log('warn', 'destroying session', { userId: key, reason });
   sessions.delete(key);
-  await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  deleteUserNavHealth(key);
+  try {
+    await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  } finally {
+    if (invalidationGeneration !== null) {
+      sessionLifecycle.release(key, invalidationGeneration);
+    }
+  }
   return true;
 }
 
@@ -1690,6 +1882,7 @@ function createTabState(page) {
     refs: new Map(),
     visitedUrls: new Set(),
     downloads: [],
+    downloadEventSequence: 0,
     toolCalls: 0,
     consecutiveTimeouts: 0,
     consecutiveFailures: 0,
@@ -1921,10 +2114,10 @@ async function rotateGoogleTab(userId, sessionKey, tabId, previousTabState, reas
     proxySession: session.proxySessionId || null,
   });
 
-  await withPageLoadDuration('navigate', () => page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+  await withPageLoadDuration('navigate', () => navigatePage(page, 'https://www.google.com/'));
   tabState.visitedUrls.add('https://www.google.com/');
   await page.waitForTimeout(1200);
-  await withPageLoadDuration('navigate', () => page.goto(tabState.lastRequestedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+  await withPageLoadDuration('navigate', () => navigatePage(page, tabState.lastRequestedUrl));
   tabState.visitedUrls.add(tabState.lastRequestedUrl);
   return { session, tabState };
 }
@@ -1950,6 +2143,15 @@ async function withPageLoadDuration(action, fn) {
   }
 }
 
+async function navigatePage(page, url, { timeout = 30000 } = {}) {
+  const response = await page.goto(url, { waitUntil: 'commit', timeout });
+  const contentType = response?.headers()?.['content-type']?.toLowerCase() || '';
+  if (!contentType.startsWith('image/')) {
+    await page.waitForLoadState('domcontentloaded', { timeout });
+  }
+  return response;
+}
+
 
 
 async function waitForPageReady(page, options = {}) {
@@ -1960,6 +2162,7 @@ async function waitForPageReady(page, options = {}) {
     settleMs = 200,
     hydrationPollMs = 250,
     hydrationTimeoutMs = Math.min(timeout, 10000),
+    dismissConsent = false,
   } = options;
   
   try {
@@ -1994,8 +2197,9 @@ async function waitForPageReady(page, options = {}) {
       await page.waitForTimeout(settleMs);
     }
     
-    // Auto-dismiss common consent/privacy dialogs
-    await dismissConsentDialogs(page);
+    if (dismissConsent) {
+      await dismissConsentDialogs(page);
+    }
     
     return true;
   } catch (err) {
@@ -2005,33 +2209,15 @@ async function waitForPageReady(page, options = {}) {
 }
 
 async function dismissConsentDialogs(page) {
-  // Common consent/privacy dialog selectors (matches Swift WebView.swift patterns)
+  // Restrict this opt-in behavior to consent-manager controls. Broad dialog,
+  // modal, and aria-label selectors can close application UI unrelated to consent.
   const dismissSelectors = [
-    // OneTrust (very common)
-    '#onetrust-banner-sdk button#onetrust-accept-btn-handler',
-    '#onetrust-banner-sdk button#onetrust-reject-all-handler',
-    '#onetrust-close-btn-container button',
-    // Generic patterns
-    'button[data-test="cookie-accept-all"]',
-    'button[aria-label="Accept all"]',
-    'button[aria-label="Accept All"]',
-    'button[aria-label="Close"]',
-    'button[aria-label="Dismiss"]',
-    // Dialog close buttons
-    'dialog button:has-text("Close")',
-    'dialog button:has-text("Accept")',
-    'dialog button:has-text("I Accept")',
-    'dialog button:has-text("Got it")',
-    'dialog button:has-text("OK")',
-    // GDPR/CCPA specific
-    '[class*="consent"] button[class*="accept"]',
-    '[class*="consent"] button[class*="close"]',
-    '[class*="privacy"] button[class*="close"]',
-    '[class*="cookie"] button[class*="accept"]',
-    '[class*="cookie"] button[class*="close"]',
-    // Overlay close buttons
-    '[class*="modal"] button[class*="close"]',
-    '[class*="overlay"] button[class*="close"]',
+    '#onetrust-banner-sdk #onetrust-accept-btn-handler',
+    '#onetrust-banner-sdk #onetrust-reject-all-handler',
+    '#onetrust-banner-sdk #onetrust-close-btn-container button',
+    '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+    '#CybotCookiebotDialogBodyButtonDecline',
+    '#qc-cmp2-ui button[mode="primary"]',
   ];
   
   for (const selector of dismissSelectors) {
@@ -2612,7 +2798,8 @@ app.get('/health', (req, res) => {
     browserRunning: running,
     activeTabs: getTotalTabCount(),
     activeSessions: sessions.size,
-    consecutiveFailures: healthState.consecutiveNavFailures,
+    consecutiveFailures: Array.from(userNavHealth.values())
+      .reduce((sum, h) => sum + h.consecutiveNavFailures, 0),
     memory: { rssMb, heapUsedMb, nativeMemMb },
     ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
   });
@@ -2902,7 +3089,8 @@ app.post('/tabs', async (req, res) => {
         if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
         tabState.lastRequestedUrl = url;
         try {
-          await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          await withPageLoadDuration('open_url', () => navigatePage(page, url));
+          recordNavSuccess(userId);
         } catch (navErr) {
           if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
             log('warn', 'tab create navigate failed, retrying with fresh proxy', {
@@ -2924,8 +3112,12 @@ app.post('/tabs', async (req, res) => {
             releasePageLease(session, retryLease);
             attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
-            await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+            await withPageLoadDuration('open_url', () => navigatePage(retryPage, url));
+            recordNavSuccess(userId);
           } else {
+            if (recordNavFailure(userId)) {
+              await recoverUserSession(userId, 'tab_create_nav_failure');
+            }
             throw navErr;
           }
         }
@@ -3053,7 +3245,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         const navigateCurrentPage = async () => {
           tabState.lastRequestedUrl = targetUrl;
           const ac = tabState.navigateAbort = new AbortController();
-          const gotoP = withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          const gotoP = withPageLoadDuration('navigate', () => navigatePage(tabState.page, targetUrl));
           try {
             await Promise.race([
               gotoP,
@@ -3074,7 +3266,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
           const prewarm = await createLeasedPage(session);
           const prewarmPage = prewarm.page;
           try {
-            await withPageLoadDuration('navigate', () => prewarmPage.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }));
+            await withPageLoadDuration('navigate', () => navigatePage(prewarmPage, 'https://www.google.com/'));
             tabState.visitedUrls.add('https://www.google.com/');
             await prewarmPage.waitForTimeout(1200);
           } finally {
@@ -3113,6 +3305,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         // get a fresh proxy, and retry once before failing to the caller.
         try {
           await navigateCurrentPage();
+          recordNavSuccess(userId);
         } catch (navErr) {
           if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
             log('warn', 'navigate failed, retrying with fresh proxy session', {
@@ -3122,7 +3315,11 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
             await recreateTabOnFreshContext();
             if (isGoogleSearch) await prewarmGoogleHome();
             await navigateCurrentPage();
+            recordNavSuccess(userId);
           } else {
+            if (recordNavFailure(userId)) {
+              await recoverUserSession(userId, 'navigate_failure');
+            }
             throw navErr;
           }
         }
@@ -3433,14 +3630,14 @@ app.get('/tabs/:tabId/snapshot', async (req, res) => {
  */
 app.post('/tabs/:tabId/wait', async (req, res) => {
   try {
-    const { userId, timeout = 10000, waitForNetwork = true } = req.body;
+    const { userId, timeout = 10000, waitForNetwork = true, dismissConsent = false } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
     session.lastAccess = Date.now();
     
     const { tabState } = found;
-    const ready = await waitForPageReady(tabState.page, { timeout, waitForNetwork });
+    const ready = await waitForPageReady(tabState.page, { timeout, waitForNetwork, dismissConsent });
     
     res.json({ ok: true, ready });
   } catch (err) {
@@ -3563,13 +3760,13 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         const y = box.y + box.height / 2;
         
         // Move mouse to element (triggers mouseover/mouseenter)
-        await tabState.page.mouse.move(x, y);
+        await withTimeout(tabState.page.mouse.move(x, y), Math.max(1, remainingBudget()), 'native mouse move');
         await tabState.page.waitForTimeout(50);
         
         // Full click sequence
-        await tabState.page.mouse.down();
+        await withTimeout(tabState.page.mouse.down(), Math.max(1, remainingBudget()), 'native mouse down');
         await tabState.page.waitForTimeout(50);
-        await tabState.page.mouse.up();
+        await withTimeout(tabState.page.mouse.up(), Math.max(1, remainingBudget()), 'native mouse up');
         
         log('info', 'mouse sequence dispatched', { x: x.toFixed(0), y: y.toFixed(0) });
       };
@@ -3580,10 +3777,11 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       
       const doClick = async (locatorOrSelector, isLocator) => {
         const locator = isLocator ? locatorOrSelector : tabState.page.locator(locatorOrSelector);
+        const click = async (options) => clickWithDownloadGuard(tabState, () => locator.click(options));
         
         if (onGoogleSerp) {
           try {
-            await locator.click({ timeout: 3000, force: true });
+            await click({ timeout: 3000, force: true });
           } catch (forceErr) {
             log('warn', 'google force click failed, trying mouse sequence');
             await dispatchMouseSequence(locator);
@@ -3593,13 +3791,13 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         
         try {
           // First try normal click (respects visibility, enabled, not-obscured)
-          await locator.click({ timeout: 3000 });
+          await click({ timeout: 3000 });
         } catch (err) {
           // Fallback 1: If intercepted by overlay, retry with force
           if (err.message.includes('intercepts pointer events')) {
             log('warn', 'click intercepted, retrying with force');
             try {
-              await locator.click({ timeout: 3000, force: true });
+              await click({ timeout: 3000, force: true });
             } catch (forceErr) {
               // Fallback 2: Full mouse event sequence for stubborn JS handlers
               log('warn', 'force click failed, trying mouse sequence');
@@ -3675,14 +3873,14 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       const newUrl = tabState.page.url();
       tabState.visitedUrls.add(newUrl);
       return { ok: true, url: newUrl, refsAvailable: tabState.refs.size > 0 };
-    }));
+    }, HANDLER_TIMEOUT_MS, () => destroyTimedOutTab(session, tabId, 'operation_timeout', userId)));
     
     log('info', 'clicked', { reqId: req.reqId, tabId, url: result.url });
     pluginEvents.emit('tab:click', { userId: req.body.userId, tabId, ref: req.body.ref, selector: req.body.selector });
     res.json(result);
   } catch (err) {
     log('error', 'click failed', { reqId: req.reqId, tabId, error: err.message });
-    if (err.message?.includes('timed out')) {
+    if (err.code !== 'tab_timeout' && err.message?.includes('timed out')) {
       try {
         const session = sessions.get(normalizeUserId(req.body.userId));
         const found = session && findTab(session, tabId);
@@ -4958,7 +5156,12 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     pluginEvents.emit('tab:evaluate', { userId, tabId: req.params.tabId, expression });
-    const result = await tabState.page.evaluate(expression);
+    const result = await withUserLimit(userId, () => withTabLock(
+      req.params.tabId,
+      () => tabState.page.evaluate(expression),
+      requestTimeoutMs(),
+      () => destroyTimedOutTab(session, req.params.tabId, 'operation_timeout', userId),
+    ));
     pluginEvents.emit('tab:evaluated', { userId, tabId: req.params.tabId, result });
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
@@ -5495,10 +5698,8 @@ app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, r
 app.delete('/sessions/:userId', async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
-    recoverableRequestProxies.delete(userId);
-    const session = sessions.get(userId);
-    if (session) {
-      await closeSession(userId, session, { reason: 'api_delete_session', clearDownloads: true, clearLocks: true });
+    const closed = await destroySession(userId, { reason: 'api_delete_session' });
+    if (closed) {
       log('info', 'session closed', { userId });
     }
     if (sessions.size === 0) scheduleBrowserIdleShutdown();
@@ -5874,7 +6075,8 @@ app.post('/tabs/open', async (req, res) => {
     refreshActiveTabsGauge();
     
     try {
-      await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+      await withPageLoadDuration('open_url', () => navigatePage(page, url));
+      recordNavSuccess(userId);
     } catch (navErr) {
       if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
         log('warn', 'tab open failed, retrying with fresh proxy', {
@@ -5895,8 +6097,12 @@ app.post('/tabs/open', async (req, res) => {
         releasePageLease(session, lease);
         attachPopupHandler(page, userId, listItemId);
         refreshActiveTabsGauge();
-        await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+        await withPageLoadDuration('open_url', () => navigatePage(page, url));
+        recordNavSuccess(userId);
       } else {
+        if (recordNavFailure(userId)) {
+          await recoverUserSession(userId, 'tab_open_nav_failure');
+        }
         throw navErr;
       }
     }
@@ -6064,7 +6270,8 @@ app.post('/navigate', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(targetId, async () => {
-      await withPageLoadDuration('navigate', () => tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+      await withPageLoadDuration('navigate', () => navigatePage(tabState.page, url));
+      recordNavSuccess(userId);
       tabState.visitedUrls.add(url);
       tabState.lastSnapshot = null;
       
@@ -6081,6 +6288,9 @@ app.post('/navigate', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'openclaw navigate failed', { reqId: req.reqId, error: err.message });
+    if (recordNavFailure(req.body?.userId)) {
+      await recoverUserSession(req.body.userId, 'openclaw_navigate_failure');
+    }
     handleRouteError(err, req, res);
   }
 });
@@ -6520,7 +6730,7 @@ setInterval(async () => {
   
   let testContext;
   try {
-    testContext = await browser.newContext();
+    testContext = await browser.newContext({ viewport: null });
     const page = await testContext.newPage();
     await page.goto('about:blank', { timeout: 5000 });
     await page.close();

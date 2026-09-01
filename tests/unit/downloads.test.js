@@ -3,6 +3,9 @@ import {
   guessMimeTypeFromName,
   clearTabDownloads,
   clearSessionDownloads,
+  attachDownloadListener,
+  clickWithDownloadGuard,
+  downloadEventOccurredSince,
   getDownloadsList,
 } from '../../lib/downloads.js';
 
@@ -102,6 +105,64 @@ describe('lib/downloads', () => {
       await clearSessionDownloads(null);
       await clearSessionDownloads({});
       await clearSessionDownloads({ tabGroups: null });
+    });
+  });
+
+  describe('download events', () => {
+    test('records the event before a slow save finishes', async () => {
+      let handler;
+      let releaseSave;
+      const savePending = new Promise((resolve) => { releaseSave = resolve; });
+      const tabState = {
+        downloads: [],
+        downloadEventSequence: 0,
+        visitedUrls: new Set(),
+        page: { on: (_event, callback) => { handler = callback; } },
+      };
+      const log = () => {};
+      const download = {
+        suggestedFilename: () => 'slow.txt',
+        url: () => 'https://example.com/slow.txt',
+        saveAs: async (filePath) => {
+          await savePending;
+          await fs.writeFile(filePath, 'done');
+        },
+        failure: async () => null,
+      };
+
+      attachDownloadListener(tabState, 'tab-1', log);
+      const save = handler(download);
+
+      expect(tabState.downloadEventSequence).toBe(1);
+      expect(downloadEventOccurredSince(tabState, 0)).toBe(true);
+      expect(tabState.downloads).toEqual([]);
+
+      releaseSave();
+      await save;
+      await clearTabDownloads(tabState);
+    });
+  });
+
+  describe('click fallback guard', () => {
+    test('does not reject after a click emits a download event', async () => {
+      const tabState = { downloadEventSequence: 0 };
+      let calls = 0;
+      const click = async () => {
+        calls += 1;
+        tabState.downloadEventSequence += 1;
+        throw new Error('locator.click: Timeout 3000ms exceeded');
+      };
+
+      await expect(clickWithDownloadGuard(tabState, click)).resolves.toBeUndefined();
+      expect(calls).toBe(1);
+    });
+
+    test('preserves click errors when no download event is emitted', async () => {
+      const error = new Error('locator.click: Timeout 3000ms exceeded');
+
+      await expect(clickWithDownloadGuard({ downloadEventSequence: 0 }, async () => {
+        throw error;
+      })).rejects.toBe(error);
     });
   });
 

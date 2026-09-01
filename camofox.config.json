@@ -3,6 +3,7 @@
   "name": "Camofox Browser",
   "version": "1.6.0",
   "newPageTimeoutMs": 10000,
+  "interactive": { "mode": "off" },
   "plugins": {
     "youtube": { "enabled": true },
     "persistence": { "enabled": true },

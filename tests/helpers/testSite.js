@@ -48,6 +48,10 @@ function createTestApp() {
     `);
   });
 
+  app.get('/connection-reset', (req, res) => {
+    req.socket.destroy();
+  });
+
   // Page with multiple links for links extraction test
   app.get('/links', (req, res) => {
     res.send(`
@@ -226,6 +230,10 @@ function createTestApp() {
         <img alt="Sample" src="data:image/png;base64,${samplePngBase64}" />
       </body></html>
     `);
+  });
+
+  app.get('/bare-image', (req, res) => {
+    res.type('png').send(Buffer.from(samplePngBase64, 'base64'));
   });
 
   // Page and endpoint for download capture tests

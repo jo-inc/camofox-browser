@@ -674,6 +674,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle (0 = never) | `300000` (5min) |
+| `CAMOFOX_INTERACTIVE` | Interactive browser mode: `desktop` opens a real local Camoufox window; `off` keeps normal headless behavior | `off` |
 | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
 | `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
@@ -695,6 +696,24 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |
 | `VNC_PASSWORD` | Password for VNC access (recommended in production) | - |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
+
+## Interactive desktop browser
+
+Camofox is headless by default. On a machine with a local graphical desktop, opt in to a visible Camoufox window:
+
+```bash
+CAMOFOX_INTERACTIVE=desktop npm start
+```
+
+Or set the same preference in `camofox.config.json` and restart the server:
+
+```json
+{
+  "interactive": { "mode": "desktop" }
+}
+```
+
+The environment variable overrides the file setting. Set `CAMOFOX_INTERACTIVE=off` to return to normal headless behavior. This mode is intended for a person using the same machine; it does not expose a remote browser-control service.
 
 ## Architecture
 

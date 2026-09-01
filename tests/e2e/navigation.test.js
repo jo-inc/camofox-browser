@@ -31,6 +31,24 @@ describe('Navigation', () => {
     }
   });
   
+  test('navigates to a bare image without ending the shared session', async () => {
+    const client = createClient(serverUrl);
+
+    try {
+      const { tabId: existingTabId } = await client.createTab(`${testSiteUrl}/pageA`);
+      const { tabId } = await client.createTab();
+      const result = await client.navigate(tabId, `${testSiteUrl}/bare-image`);
+
+      expect(result.ok).toBe(true);
+      expect(result.url).toContain('/bare-image');
+
+      const existingTabSnapshot = await client.getSnapshot(existingTabId);
+      expect(existingTabSnapshot.snapshot).toContain('Welcome to Page A');
+    } finally {
+      await client.cleanup();
+    }
+  });
+
   test('navigate back', async () => {
     const client = createClient(serverUrl);
     

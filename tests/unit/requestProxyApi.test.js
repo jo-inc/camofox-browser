@@ -246,6 +246,33 @@ describe('request-level proxy API contract', () => {
       await client.cleanup();
     }
   }, 60000);
+
+  test('explicit session deletion clears proxy recovery left by automatic teardown', async () => {
+    const client = createClient(baseUrl);
+    const cleanupOptions = {
+      dryRun: false,
+      minIdleMs: 0,
+      minTabsPerSession: 0,
+      maxTabsToClose: 10,
+      closeEmptySessions: true,
+    };
+    try {
+      await client.createTab(proxyTargetUrl(testSiteUrl, '/pageA'), {
+        proxy: { server: proxy.server },
+      });
+      await client.request('POST', '/pressure/cleanup', cleanupOptions);
+      await client.request('POST', '/pressure/cleanup', cleanupOptions);
+      await client.closeSession();
+
+      proxy.clearRequests();
+      const recreated = await client.createTab(`${testSiteUrl}/pageB`);
+      expect(recreated.proxied).toBe(false);
+      expect(proxy.requests).toHaveLength(0);
+    } finally {
+      await client.cleanup();
+    }
+  }, 60000);
+
   test('reuses the proxy after a real browser disconnect', async () => {
     if (process.platform !== 'linux') return;
 

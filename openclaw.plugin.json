@@ -2,7 +2,7 @@
   "id": "camofox-browser",
   "name": "Camofox Browser",
   "description": "Anti-detection browser automation for AI agents using Camoufox (Firefox-based)",
-  "version": "1.13.1",
+  "version": "1.14.0",
   "envVars": {
     "CAMOFOX_API_KEY": {
       "description": "Secret key for the cookie-import endpoint. Cookie import is disabled when unset. Only set this if you need to import browser cookies and the server is local or access-controlled.",
@@ -25,6 +25,12 @@
       "required": false,
       "sensitive": false,
       "default": "https://camofox-telemetry.askjo.workers.dev/report"
+    },
+    "CAMOFOX_INTERACTIVE": {
+      "description": "Set to 'desktop' to open Camoufox as a visible local window. Default is 'off', which keeps browser automation headless. This setting does not expose VNC or a remote browser-control port.",
+      "required": false,
+      "sensitive": false,
+      "default": "off"
     },
     "CAMOUFOX_EXECUTABLE": {
       "description": "External Camoufox executable to use instead of downloading the bundled browser. Compatibility aliases: CAMOUFOX_EXECUTABLE_PATH, CAMOFOX_EXECUTABLE_PATH.",

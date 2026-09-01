@@ -69,7 +69,7 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   // Track active sessions and serialize checkpoints per user. Resetting users
   // skip new checkpoints until their live context and saved state are gone.
-  const activeSessions = new Map(); // userId -> context
+  const activeSessions = new Map(); // userId -> { context, generation }
   const checkpointPromises = new Map(); // userId -> latest queued checkpoint
   const resettingUsers = new Set();
 
@@ -117,8 +117,8 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   // After session is created: import bootstrap cookies if no persisted state,
   // and track the context for later checkpointing
-  events.on('session:created', async ({ userId, context }) => {
-    activeSessions.set(userId, context);
+  events.on('session:created', async ({ userId, context, generation }) => {
+    activeSessions.set(userId, { context, generation });
 
     // If no persisted state was restored, try bootstrap cookies
     const existingState = await loadPersistedStorageState(profileDir, userId, logger);
@@ -137,9 +137,9 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   // On cookie import: checkpoint
   events.on('session:cookies:import', async ({ userId }) => {
-    const context = activeSessions.get(userId);
-    if (context) {
-      await checkpoint(userId, context, 'cookie_import');
+    const active = activeSessions.get(userId);
+    if (active) {
+      await checkpoint(userId, active.context, 'cookie_import');
     }
   });
 
@@ -152,9 +152,10 @@ export async function register(app, ctx, pluginConfig = {}) {
   });
 
   // On session destroying (pre-close): checkpoint while context is still alive
-  events.on('session:destroying', async ({ userId, reason }) => {
-    const context = activeSessions.get(userId);
-    if (context) {
+  events.on('session:destroying', async ({ userId, reason, context, generation }) => {
+    const active = activeSessions.get(userId);
+    const matches = active && active.context === context && active.generation === generation;
+    if (matches) {
       if (reason !== 'storage_reset') {
         await checkpoint(userId, context, reason).catch(() => {});
       }
@@ -163,14 +164,17 @@ export async function register(app, ctx, pluginConfig = {}) {
   });
 
   // On session destroyed (post-close): cleanup tracking if not already done
-  events.on('session:destroyed', async ({ userId }) => {
-    activeSessions.delete(userId);
+  events.on('session:destroyed', async ({ userId, context, generation }) => {
+    const active = activeSessions.get(userId);
+    if (active?.context === context && active.generation === generation) {
+      activeSessions.delete(userId);
+    }
   });
 
   // On shutdown: checkpoint all remaining sessions
   events.on('server:shutdown', async () => {
-    for (const [userId, context] of activeSessions) {
-      await checkpoint(userId, context, 'shutdown').catch(() => {});
+    for (const [userId, active] of activeSessions) {
+      await checkpoint(userId, active.context, 'shutdown').catch(() => {});
     }
     activeSessions.clear();
   });

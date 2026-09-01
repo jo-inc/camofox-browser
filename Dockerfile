@@ -1,4 +1,8 @@
-FROM node:22-slim AS camofox-browser
+# Trixie (glibc 2.41), not bookworm (2.36): better-sqlite3 ships an arm64 prebuild
+# linked against GLIBC_2.38, so on bookworm it loads and then dies at runtime with
+# "version `GLIBC_2.38' not found" the first time a tab is opened. amd64 is
+# unaffected because that prebuild targets an older glibc.
+FROM node:22-trixie-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
@@ -25,7 +29,8 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     # Mesa OpenGL/EGL for WebGL support (software rendering via llvmpipe)
     # Without these, Firefox cannot create WebGL contexts -- a major bot detection signal
-    libegl1-mesa \
+    # libegl1 -- named libegl1-mesa on bookworm, dropped in trixie
+    libegl1 \
     libgl1-mesa-dri \
     libgbm1 \
     # Xvfb virtual display -- runs Camoufox as if on a real desktop (better anti-detection)
@@ -44,8 +49,12 @@ RUN apt-get update && apt-get install -y \
 
 # Pre-bake Camoufox browser binary into image (downloaded at build time)
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
+# -f so a 404 fails here instead of writing "Not Found" into the .zip: without it the
+# build dies three commands later on "unzip: cannot find zipfile directory", which
+# points at the archive rather than at the URL that was actually wrong. Note the Linux
+# arm asset is named lin.arm64.zip -- pass --build-arg ARCH=arm64, not aarch64.
 RUN mkdir -p /root/.cache/camoufox \
-    && curl -L -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${ARCH}.zip" \
+    && curl -fL -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${ARCH}.zip" \
     && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
     && rm /tmp/camoufox.zip \
     && chmod -R 755 /root/.cache/camoufox \
@@ -60,11 +69,26 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
-RUN npm ci --omit=dev
+# better-sqlite3 has no prebuild matching this node/arch, so npm ci falls back to
+# `node-gyp rebuild`, which fails on node:*-slim with "Error: not found: make".
+# Install a toolchain for the build and purge it in the same layer so it does not
+# land in the image. Independent of the glibc issue noted at the FROM line: this
+# one fails at build time on any Debian release, that one at runtime on bookworm.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential python3 \
+    && npm ci --omit=dev \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY server.js ./
 COPY camofox.config.json ./
 COPY lib/ ./lib/
+# lib/cookies.js is a compatibility re-export from ../mcp/lib/cookies.mjs, so mcp/
+# must ship even though the MCP server itself is not run here. Without it the
+# persistence plugin dies at load with ERR_MODULE_NOT_FOUND, the server starts
+# anyway, /health keeps reporting ok, and no profile is ever written -- i.e. the
+# container silently loses the durable-profile feature it exists to provide.
+COPY mcp/ ./mcp/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 

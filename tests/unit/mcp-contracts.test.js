@@ -100,6 +100,36 @@ describe('TOOL_DEFS', () => {
       expect(Array.isArray(t.inputSchema.required)).toBe(true);
     }
   });
+
+  test('create_tab advertises the credential-safe request proxy schema', () => {
+    const createTab = TOOL_DEFS.find((tool) => tool.name === 'camofox_create_tab');
+    expect(createTab.inputSchema.properties.proxy).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['server'],
+      description: expect.stringMatching(/user session/i),
+      properties: {
+        server: {
+          type: 'string',
+          maxLength: 2048,
+          description: expect.stringMatching(/embedded credentials are rejected/i),
+          example: 'http://gw.example.com:10000',
+        },
+        username: {
+          type: 'string',
+          maxLength: 512,
+          writeOnly: true,
+          description: expect.stringMatching(/literal proxy username/i),
+        },
+        password: {
+          type: 'string',
+          maxLength: 512,
+          writeOnly: true,
+          description: expect.stringMatching(/literal proxy password/i),
+        },
+      },
+    });
+  });
 });
 
 // --- buildRequest: per-tool REST contract (source of truth assertions) -------
@@ -127,6 +157,17 @@ describe('buildRequest', () => {
   test('create_tab body carries url + userId + sessionKey', () => {
     const spec = buildRequest('camofox_create_tab', { url: 'https://x.com' }, CTX);
     expect(spec.body).toEqual({ url: 'https://x.com', userId: 'u1', sessionKey: 'default' });
+  });
+
+  test('create_tab forwards a request proxy unchanged', () => {
+    const proxy = {
+      server: 'socks5://gw.example.com:1080',
+      username: 'literal%user',
+      password: 'literal%pass',
+    };
+    const spec = buildRequest('camofox_create_tab', { url: 'https://x.com', proxy }, CTX);
+    expect(spec.body).toEqual({ url: 'https://x.com', userId: 'u1', sessionKey: 'default', proxy });
+    expect(spec.body.proxy).toBe(proxy);
   });
 
   test('click/type/navigate/scroll forward all non-routing args + userId in body', () => {

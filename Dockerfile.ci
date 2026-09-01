@@ -1,7 +1,7 @@
 # CI/CD Dockerfile — downloads binaries during build (no bind mounts needed).
 # For local builds with pre-downloaded binaries, use the default Dockerfile + Makefile.
 
-FROM node:20-slim
+FROM node:22-trixie-slim
 
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
@@ -25,7 +25,8 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     # Mesa OpenGL/EGL for WebGL support (software rendering via llvmpipe)
-    libegl1-mesa \
+    # `libegl1-mesa` was dropped in Debian trixie.
+    libegl1 \
     libgl1-mesa-dri \
     libgbm1 \
     # Xvfb virtual display
@@ -38,8 +39,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     unzip \
-    # yt-dlp runtime dependency
-    python3-minimal \
+    # Native-module build tools. better-sqlite3 may compile from source on arm64.
+    build-essential \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install Camoufox
@@ -65,11 +67,17 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --production
+# Build tools are needed when better-sqlite3 has no native prebuild for the target.
+# Trixie's glibc also supports the upstream arm64 prebuild at runtime.
+RUN npm ci --omit=dev \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY server.js ./
 COPY camofox.config.json ./
 COPY lib/ ./lib/
+# lib/cookies.js re-exports mcp/lib/cookies.mjs for persistence support.
+COPY mcp/ ./mcp/
 COPY plugins/ ./plugins/
 COPY scripts/ ./scripts/
 

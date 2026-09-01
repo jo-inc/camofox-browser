@@ -48,4 +48,24 @@ describe('launch compatibility source contract', () => {
     expect(sessionContextOptions).toContain('viewport: null');
     expect(`${googleProbeOptions}\n${sessionContextOptions}`).not.toMatch(/viewport\s*:\s*\{\s*width\s*:/);
   });
+
+  test('uses a real desktop window only when interactive desktop mode is explicit', () => {
+    const launch = sourceBetween(
+      'async function launchBrowserInstance()',
+      'async function ensureBrowser()'
+    );
+
+    expect(launch).toContain("const useDesktopWindow = CONFIG.interactiveMode === 'desktop'");
+    expect(launch).toContain("if (os.platform() === 'linux' && !useDesktopWindow)");
+    expect(launch).toContain('headless: useVirtualDisplay ? false : !useDesktopWindow');
+  });
+
+  test('health probe context also uses a null viewport', () => {
+    const healthProbeOptions = sourceBetween(
+      'testContext = await browser.newContext(',
+      'const page = await testContext.newPage();'
+    );
+
+    expect(healthProbeOptions).toContain('viewport: null');
+  });
 });

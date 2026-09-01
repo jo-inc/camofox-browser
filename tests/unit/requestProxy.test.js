@@ -47,6 +47,16 @@ describe('normalizeRequestProxy', () => {
     })).toThrow('proxy credentials must be provided');
   });
 
+  test.each([
+    'http://gw.example.com:10000/private/path',
+    'http://gw.example.com:10000?token=sensitive-token',
+    'http://gw.example.com:10000#sensitive-fragment',
+  ])('rejects proxy server URL components outside the origin: %s', server => {
+    expect(() => normalizeRequestProxy({ server })).toThrow(
+      'proxy.server must not include a path, query string, or fragment',
+    );
+  });
+
   test('rejects unsupported schemes and missing hosts', () => {
     expect(() => normalizeRequestProxy({ server: 'ftp://gw.example.com:21' })).toThrow('proxy.server scheme');
     expect(() => normalizeRequestProxy({ server: 'http://' })).toThrow('proxy.server');
@@ -233,6 +243,26 @@ describe('redactProxy', () => {
       server: 'http://gw.example.com:10000',
       username: '<redacted>',
       password: '<redacted>',
+    });
+  });
+
+  test('projects an untrusted server URL to scheme, host, and port', () => {
+    const redacted = redactProxy({
+      server: 'https://user:pass@gw.example.com:10443/private?token=sensitive-token#sensitive-fragment',
+    });
+
+    expect(redacted.server).toBe('https://gw.example.com:10443');
+    expect(JSON.stringify(redacted)).not.toContain('user');
+    expect(JSON.stringify(redacted)).not.toContain('pass');
+    expect(JSON.stringify(redacted)).not.toContain('sensitive-token');
+    expect(JSON.stringify(redacted)).not.toContain('sensitive-fragment');
+  });
+
+  test('does not echo malformed server values', () => {
+    expect(redactProxy({ server: 'not-a-url?sensitive-token' })).toEqual({
+      server: '<invalid-proxy-server>',
+      username: undefined,
+      password: undefined,
     });
   });
 });

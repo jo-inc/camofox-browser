@@ -340,9 +340,10 @@ export function register(app, ctx) {
 #### Session Lifecycle
 | Event | Payload | Mutating? |
 |-------|---------|-----------|
-| `session:creating` | `{ userId, contextOptions }` | (ok) Modify context options in-place |
-| `session:created` | `{ userId, context }` | |
-| `session:destroyed` | `{ userId, reason }` | |
+| `session:creating` | `{ userId, contextOptions, generation }` | (ok) Modify context options in-place |
+| `session:created` | `{ userId, context, generation }` | |
+| `session:destroying` | `{ userId, reason, context, generation }` | |
+| `session:destroyed` | `{ userId, reason, context, generation }` | |
 | `session:expired` | `{ userId, idleMs }` | |
 
 #### Tab Lifecycle

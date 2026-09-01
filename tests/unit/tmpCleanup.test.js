@@ -5,11 +5,51 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from '../../lib/tmp-cleanup.js';
+import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles, removeXvfbDisplayFiles } from '../../lib/tmp-cleanup.js';
 
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-test-'));
 }
+
+describe('removeXvfbDisplayFiles', () => {
+  it('removes only the exited display socket and lock', () => {
+    const root = makeTmpDir();
+    const socketDir = path.join(root, '.X11-unix');
+    fs.mkdirSync(socketDir);
+    const socket = path.join(socketDir, 'X99');
+    const lock = path.join(root, '.X99-lock');
+    const otherSocket = path.join(socketDir, 'X100');
+    const otherLock = path.join(root, '.X100-lock');
+    fs.writeFileSync(socket, 'stale socket');
+    fs.writeFileSync(lock, '999');
+    fs.writeFileSync(otherSocket, 'other display');
+    fs.writeFileSync(otherLock, '1000');
+
+    removeXvfbDisplayFiles(99, { socketDir, lockDir: root });
+
+    expect(fs.existsSync(socket)).toBe(false);
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.existsSync(otherSocket)).toBe(true);
+    expect(fs.existsSync(otherLock)).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does nothing for an invalid display number', () => {
+    const root = makeTmpDir();
+    const socketDir = path.join(root, '.X11-unix');
+    fs.mkdirSync(socketDir);
+    const socket = path.join(socketDir, 'X99');
+    const lock = path.join(root, '.X99-lock');
+    fs.writeFileSync(socket, 'socket');
+    fs.writeFileSync(lock, '999');
+
+    removeXvfbDisplayFiles('../99', { socketDir, lockDir: root });
+
+    expect(fs.existsSync(socket)).toBe(true);
+    expect(fs.existsSync(lock)).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
 
 describe('cleanupOrphanedTempFiles', () => {
   it('removes old orphaned .so files', () => {
