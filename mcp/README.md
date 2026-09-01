@@ -176,7 +176,7 @@ You should see 11 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_clic
 
 | Tool | Purpose |
 |------|---------|
-| `camofox_create_tab` | Open a URL → returns `tabId` |
+| `camofox_create_tab` | Open a URL, optionally selecting a request-level proxy for a new user session → returns `tabId` |
 | `camofox_snapshot` | Accessibility snapshot + element refs (`e1`, `e2`, ...) + screenshot |
 | `camofox_navigate` | Go to a URL **or** use a search macro (`@google_search`, `@reddit_search`, ...) |
 | `camofox_click` | Click by element ref (`e1`) or CSS selector |
@@ -192,13 +192,32 @@ You should see 11 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_clic
 
 Every interaction follows the same shape — **snapshot before you act**:
 
-1. `create_tab({ url })` → `tabId`
+1. `create_tab({ url, proxy? })` → `tabId`
 2. `snapshot({ tabId })` → element refs (`e1`, `e2`, ...)
 3. `click`/`type` using those refs
 4. `snapshot` again to read the new state
 5. `close_tab` when done
 
 Element refs are unambiguous and preferred over CSS selectors — a selector that matches multiple elements returns `422 strict mode violation`, in which case re-snapshot and click by ref.
+
+### Request-level proxy
+
+`camofox_create_tab` accepts the same optional `proxy` object as `POST /tabs`:
+
+```json
+{
+  "url": "https://example.com",
+  "proxy": {
+    "server": "socks5://gw.example.com:1080",
+    "username": "proxy-user",
+    "password": "proxy-password"
+  }
+}
+```
+
+Put credentials only in `username` and `password`; a `server` URL containing credentials is rejected. The object is forwarded unchanged to the REST server, and proxy credentials are never included in the create-tab response.
+
+The proxy is immutable per `CAMOFOX_USER_ID` session: the first session fixes the proxy for all of that user's tabs. Later calls may omit `proxy` or repeat the same object, but a different proxy returns `409 proxy_conflict`; delete the user session before selecting another proxy. Request-level proxying is unavailable while the REST server has global `PROXY_*` configuration.
 
 ## Environment variables
 

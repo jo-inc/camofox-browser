@@ -8,6 +8,12 @@ import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { loadConfig } from './lib/config.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
+import {
+  assertRequestProxyCompatible,
+  createRequestProxyRecoveryCache,
+  redactProxy,
+  resolveRequestProxy,
+} from './lib/request-proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
@@ -35,6 +41,14 @@ import { actionFromReq, classifyError } from './lib/request-utils.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles, removeXvfbDisplayFiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
+import {
+  canPreserveSessionRecovery,
+  createLifecycleEpoch,
+  createSessionLifecycleTracker,
+  isAutomaticSessionTeardown,
+  publishSessionIfCurrent,
+  runSessionCloseOnce,
+} from './lib/session-lifecycle.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
 import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
@@ -293,7 +307,7 @@ function sendError(res, err, extraFields = {}) {
   if (code) body.code = code;
   if (recovery) body.recovery = recovery;
   if (err instanceof StaleRefsError) body.ref = err.ref;
-  if (status >= 500 && !err.statusCode && !recovery) {
+  if (status >= 500 && !err.statusCode) {
     const req = res.req;
     const userId = req?.query?.userId || req?.body?.userId;
     sentryCaptureException(err, {
@@ -481,7 +495,7 @@ let browser = null;
 let _lastBrowserPid = null; // Track PID independently for force-kill after close
 let _browserClosePromise = null; // Shared promise for concurrent close serialization
 let _lastBrowserRestartAt = 0; // Timestamp of last browser relaunch (for stale tab detection)
-// userId -> { context, tabGroups: Map<sessionKey, Map<tabId, TabState>>, lastAccess }
+// userId -> { context, tabGroups, pageLeases, lastAccess, proxySessionId, requestProxy, tracePath }
 // TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, downloads: Array, toolCalls: number }
 // Note: sessionKey was previously called listItemId - both are accepted for backward compatibility
 const sessions = new Map();
@@ -932,6 +946,7 @@ function attachBrowserCleanup(candidateBrowser, localVirtualDisplay) {
  */
 async function closeBrowserFully(reason) {
   if (_browserClosePromise) return _browserClosePromise;
+  invalidateBrowserLifecycle();
   _browserClosePromise = _closeBrowserFullyImpl(reason);
   try {
     return await _browserClosePromise;
@@ -1169,6 +1184,7 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      activateBrowserLifecycle();
       _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
@@ -1229,6 +1245,30 @@ function normalizeUserId(userId) {
 }
 
 const sessionCreations = new Map();
+const browserLifecycle = createLifecycleEpoch();
+let browserLifecycleClosing = false;
+const sessionLifecycle = createSessionLifecycleTracker();
+const recoverableRequestProxies = createRequestProxyRecoveryCache({
+  ttlMs: Math.max(SESSION_TIMEOUT_MS, TAB_INACTIVITY_MS) + 60_000,
+  maxEntries: Math.max(64, MAX_SESSIONS * 2),
+});
+
+function updateRecoverableRequestProxy(userId, session, reason) {
+  const key = normalizeUserId(userId);
+  if (canPreserveSessionRecovery(sessionLifecycle, key, session, reason)) {
+    if (session?.requestProxy) recoverableRequestProxies.remember(key, session.requestProxy);
+  }
+}
+
+function invalidateBrowserLifecycle() {
+  browserLifecycleClosing = true;
+  browserLifecycle.advance();
+}
+
+function activateBrowserLifecycle() {
+  browserLifecycle.advance();
+  browserLifecycleClosing = false;
+}
 
 function clearSessionLocks(session) {
   if (!session?.tabGroups) return;
@@ -1244,52 +1284,79 @@ function clearSessionLocks(session) {
   refreshTabLockQueueDepth();
 }
 
-async function closeSession(userId, session, {
+function closeSession(userId, session, {
   reason = 'session_closed',
   clearDownloads = true,
   clearLocks = true,
 } = {}) {
-  if (!session) return;
-
-  const key = normalizeUserId(userId);
-
-  // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
-  // (410) instead of messy "Target page closed" (500) errors.
-  if (clearLocks) {
-    clearSessionLocks(session);
-  }
-
-  if (clearDownloads) {
-    await clearSessionDownloads(session).catch(() => {});
-  }
-
-  await pluginEvents.emitAsync('session:destroying', { userId: key, reason });
-  if (session.tracePath) {
-    try {
-      await session.context.tracing.stop({ path: session.tracePath });
-      log('info', 'tracing saved', { userId: key, path: session.tracePath });
-    } catch (err) {
-      log('warn', 'tracing.stop failed', { userId: key, error: err.message });
+  return runSessionCloseOnce(session, async () => {
+    const key = normalizeUserId(userId);
+    const automatic = isAutomaticSessionTeardown(reason);
+    if (!automatic && sessionLifecycle.isCurrent(key, session.generation)) {
+      recoverableRequestProxies.delete(key);
+      session._closeInvalidationGeneration = sessionLifecycle.invalidate(key);
     }
-  }
+    if (automatic) updateRecoverableRequestProxy(key, session, reason);
 
-  await session.context.close().catch(() => {});
-  sessions.delete(key);
-  await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
+    // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
+    // (410) instead of messy "Target page closed" (500) errors.
+    if (clearLocks) {
+      clearSessionLocks(session);
+    }
 
-  refreshActiveTabsGauge();
+    if (clearDownloads) {
+      await clearSessionDownloads(session).catch(() => {});
+    }
+
+    const lifecyclePayload = {
+      userId: key,
+      reason,
+      context: session.context,
+      generation: session.generation,
+    };
+    await pluginEvents.emitAsync('session:destroying', lifecyclePayload);
+    if (session.tracePath) {
+      try {
+        await session.context.tracing.stop({ path: session.tracePath });
+        log('info', 'tracing saved', { userId: key, path: session.tracePath });
+      } catch (err) {
+        log('warn', 'tracing.stop failed', { userId: key, error: err.message });
+      }
+    }
+
+    await session.context.close().catch(() => {});
+    if (sessions.get(key) === session) sessions.delete(key);
+    await pluginEvents.emitAsync('session:destroyed', lifecyclePayload);
+
+    sessionLifecycle.release(key, session.generation);
+    if (session._closeInvalidationGeneration !== undefined) {
+      sessionLifecycle.release(key, session._closeInvalidationGeneration);
+      delete session._closeInvalidationGeneration;
+    }
+
+    refreshActiveTabsGauge();
+  });
 }
 
 async function closeAllSessions(reason, { clearDownloads = true, clearLocks = true } = {}) {
+  invalidateBrowserLifecycle();
+  if (!isAutomaticSessionTeardown(reason)) recoverableRequestProxies.clear();
   const openSessions = Array.from(sessions.entries());
   for (const [userId, session] of openSessions) {
     await closeSession(userId, session, { reason, clearDownloads, clearLocks });
   }
 }
 
-async function getSession(userId, { trace = false } = {}) {
+async function getSession(userId, {
+  trace = false,
+  requestProxy = undefined,
+  inheritedRequestProxy = undefined,
+} = {}) {
   const key = normalizeUserId(userId);
+  const hasRequestProxy = requestProxy !== undefined;
   let session = sessions.get(key);
+  let normalizedRequestProxy = null;
+  let recoveryProxy = inheritedRequestProxy || null;
   
   // Check if existing session's context is still alive
   if (session) {
@@ -1301,15 +1368,38 @@ async function getSession(userId, { trace = false } = {}) {
         // Lightweight probe: pages() is synchronous-ish and throws if context is dead
         session.context.pages();
       } catch (err) {
+        recoveryProxy = session.requestProxy || recoveryProxy;
         log('warn', 'session context dead, recreating', { userId: key, error: err.message });
         await closeSession(key, session, { reason: 'dead_context', clearDownloads: true, clearLocks: true });
         session = null;
       }
     }
   }
+
+  if (session && recoveryProxy) {
+    assertRequestProxyCompatible(recoveryProxy, session.requestProxy || null);
+    normalizedRequestProxy = session.requestProxy || null;
+  }
+
+  if (!session) {
+    recoveryProxy = recoveryProxy || recoverableRequestProxies.get(key);
+  }
+
+  if (hasRequestProxy) {
+    normalizedRequestProxy = resolveRequestProxy({
+      requestedProxy: requestProxy,
+      existingSession: session || (recoveryProxy ? { requestProxy: recoveryProxy } : null),
+      globalProxyActive: !!proxyPool,
+    });
+  } else if (!session && recoveryProxy) {
+    normalizedRequestProxy = recoveryProxy;
+  }
   
   if (!session) {
+    let creationGeneration = null;
     session = await coalesceInflight(sessionCreations, key, async () => {
+      const generation = sessionLifecycle.begin(key);
+      creationGeneration = generation;
       if (sessions.size >= MAX_SESSIONS) {
         throw Object.assign(
           new Error('Maximum concurrent sessions reached'),
@@ -1334,19 +1424,34 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
       const b = await ensureBrowser();
+      const browserGeneration = browserLifecycle.current();
+      const browserIsCurrent = () => (
+        !browserLifecycleClosing &&
+        browserLifecycle.isCurrent(browserGeneration) &&
+        browser === b &&
+        b.isConnected()
+      );
       const contextOptions = {
         viewport: null,
         permissions: ['geolocation'],
       };
       // When geoip is active (proxy configured), camoufox auto-configures
       // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
-      if (!CONFIG.proxy.host) {
+      if (normalizedRequestProxy || !CONFIG.proxy.host) {
         contextOptions.locale = 'en-US';
         contextOptions.timezoneId = 'America/Los_Angeles';
         contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
       }
       let sessionProxy = null;
-      if (proxyPool?.canRotateSessions) {
+      if (normalizedRequestProxy) {
+        // Request-body credentials are already literal strings. Global proxy credentials
+        // keep using normalizePlaywrightProxy because env values may be percent-encoded.
+        contextOptions.proxy = normalizedRequestProxy;
+        log('info', 'request proxy assigned', {
+          userId: key,
+          proxy: redactProxy(normalizedRequestProxy),
+        });
+      } else if (proxyPool?.canRotateSessions) {
         sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
@@ -1355,7 +1460,15 @@ async function getSession(userId, { trace = false } = {}) {
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
-      await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
+      await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions, generation });
+      if (!sessionLifecycle.isCurrent(key, generation) || !browserIsCurrent()) {
+        throw Object.assign(new Error('Session was deleted while it was being created'), {
+          statusCode: 409,
+          code: 'session_invalidated',
+          recovery: 'retry',
+          retryable: true,
+        });
+      }
       const context = await b.newContext(contextOptions);
 
       let tracePath = null;
@@ -1371,18 +1484,61 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
 
-      const created = { context, tabGroups: new Map(), pageLeases: new Set(), lastAccess: Date.now(), proxySessionId: sessionProxy?.sessionId || null, tracePath };
-      sessions.set(key, created);
-      await pluginEvents.emitAsync('session:created', { userId: key, context });
+      const created = {
+        context,
+        tabGroups: new Map(),
+        pageLeases: new Set(),
+        lastAccess: Date.now(),
+        proxySessionId: sessionProxy?.sessionId || null,
+        requestProxy: normalizedRequestProxy,
+        tracePath,
+        generation,
+      };
+      const published = await publishSessionIfCurrent({
+        sessions,
+        userId: key,
+        session: created,
+        generation,
+        lifecycle: sessionLifecycle,
+        isStillCurrent: browserIsCurrent,
+        onCreated: async () => {
+          recoverableRequestProxies.delete(key);
+          await pluginEvents.emitAsync('session:created', { userId: key, context, generation });
+        },
+        onStale: (stale, cause) => closeSession(key, stale, {
+          reason: cause === 'external_invalidated'
+            ? 'browser_restart:session_creation_invalidated'
+            : 'session_creation_invalidated',
+          clearDownloads: true,
+          clearLocks: true,
+        }),
+      });
+      if (!published) {
+        throw Object.assign(new Error('Session was deleted while it was being created'), {
+          statusCode: 409,
+          code: 'session_invalidated',
+          recovery: 'retry',
+          retryable: true,
+        });
+      }
       log('info', 'session created', {
         userId: key,
         proxyMode: proxyPool?.mode || null,
-        proxyServer: sessionProxy?.server || browserLaunchProxy?.server || null,
+        proxyServer: normalizedRequestProxy?.server || sessionProxy?.server || browserLaunchProxy?.server || null,
         proxySession: sessionProxy?.sessionId || browserLaunchProxy?.sessionId || null,
       });
       return created;
+    }).catch((err) => {
+      if (creationGeneration !== null) {
+        sessionLifecycle.release(key, creationGeneration);
+      }
+      throw err;
     });
   }
+  if (hasRequestProxy || recoveryProxy) {
+    assertRequestProxyCompatible(normalizedRequestProxy, session.requestProxy || null);
+  }
+  recoverableRequestProxies.delete(key);
   session.lastAccess = Date.now();
   return session;
 }
@@ -1479,7 +1635,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
-    destroySession(userId).catch(() => {});
+    destroySession(userId, { reason: 'route_dead_context' }).catch(() => {});
   }
   // Proxy errors mean the session is dead -- rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
@@ -1488,7 +1644,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
       action, userId, error: err.message,
     });
     browserRestartsTotal.labels('proxy_error').inc();
-    destroySession(userId).catch(() => {});
+    destroySession(userId, { reason: 'proxy_error' }).catch(() => {});
   }
   // Navigation-related timeouts can poison the proxy session (e.g., Cloudflare holding
   // the connection open for 30s). The browser context shares a single proxy session, so
@@ -1501,7 +1657,7 @@ function handleRouteError(err, req, res, extraFields = {}) {
     });
     browserRestartsTotal.labels('navigation_timeout').inc();
     recordNavFailure(userId);
-    destroySession(userId).catch(() => {});
+    destroySession(userId, { reason: 'navigation_timeout' }).catch(() => {});
   }
   // Track consecutive timeouts per tab and auto-destroy stuck tabs
   // (for non-navigation timeouts like type, scroll that don't poison the proxy)
@@ -1661,12 +1817,30 @@ async function recycleOldestTab(session, reqId, userId) {
 
 async function destroySession(userId, { reason = 'destroy_session' } = {}) {
   const key = normalizeUserId(userId);
+  const automatic = isAutomaticSessionTeardown(reason);
+  let invalidationGeneration = null;
+  if (!automatic) {
+    invalidationGeneration = sessionLifecycle.invalidate(key);
+    recoverableRequestProxies.delete(key);
+    await sessionCreations.get(key)?.catch(() => {});
+  }
   const session = sessions.get(key);
-  if (!session) return false;
+  if (!session) {
+    if (invalidationGeneration !== null) {
+      sessionLifecycle.release(key, invalidationGeneration);
+    }
+    return false;
+  }
   log('warn', 'destroying session', { userId: key, reason });
   sessions.delete(key);
   deleteUserNavHealth(key);
-  await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  try {
+    await closeSession(key, session, { reason, clearDownloads: true, clearLocks: true });
+  } finally {
+    if (invalidationGeneration !== null) {
+      sessionLifecycle.release(key, invalidationGeneration);
+    }
+  }
   return true;
 }
 
@@ -2758,7 +2932,20 @@ app.post('/pressure/cleanup', async (req, res) => {
  *   post:
  *     tags: [Tabs]
  *     summary: Create a new tab
- *     description: Creates a tab in the given session. Optionally navigates to an initial URL.
+ *     description: |
+ *       Creates a tab in the given session. Optionally navigates to an initial URL.
+ *
+ *       A `proxy` is applied when the user BrowserContext is first created and is immutable
+ *       for that `userId`. Supplying the same proxy again is allowed; supplying a different
+ *       proxy returns `409 proxy_conflict`. Omitting `proxy` reuses the existing session choice.
+ *
+ *       Automatic recovery, browser disconnects/restarts, idle expiry, memory-pressure eviction,
+ *       and tab reaping preserve the request proxy for at least one minute beyond the longer
+ *       configured session/tab idle period. Explicit `DELETE /sessions/{userId}` clears that
+ *       recovery state. Cookie import does not accept a proxy; it reuses the current or recently
+ *       recovered proxy, otherwise it creates an unproxied session. Request proxies cannot be
+ *       combined with global `PROXY_*` configuration. They use the deterministic no-global-proxy
+ *       locale, timezone, and geolocation instead of inferring those values from the proxy exit IP.
  *     requestBody:
  *       required: true
  *       content:
@@ -2782,6 +2969,27 @@ app.post('/pressure/cleanup', async (req, res) => {
  *               trace:
  *                 type: boolean
  *                 description: Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session.
+ *               proxy:
+ *                 type: object
+ *                 additionalProperties: false
+ *                 required: [server]
+ *                 description: Optional Playwright proxy for the user BrowserContext. Do not put credentials in the server URL.
+ *                 properties:
+ *                   server:
+ *                     type: string
+ *                     maxLength: 2048
+ *                     description: Proxy server URL using http, https, socks4, or socks5. Embedded credentials are rejected.
+ *                     example: http://gw.example.com:10000
+ *                   username:
+ *                     type: string
+ *                     maxLength: 512
+ *                     writeOnly: true
+ *                     description: Optional literal proxy username. Request-body credentials are not percent-decoded.
+ *                   password:
+ *                     type: string
+ *                     maxLength: 512
+ *                     writeOnly: true
+ *                     description: Optional literal proxy password. Request-body credentials are not percent-decoded.
  *     responses:
  *       200:
  *         description: Tab created.
@@ -2794,8 +3002,17 @@ app.post('/pressure/cleanup', async (req, res) => {
  *                   type: string
  *                 url:
  *                   type: string
+ *                 proxied:
+ *                   type: boolean
+ *                   description: True when this tab's user BrowserContext uses a request-level proxy.
  *       400:
- *         description: Missing required fields.
+ *         description: Missing required fields or invalid proxy configuration.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Cannot enable tracing on an existing session, or the request proxy conflicts with an existing/global proxy session.
  *         content:
  *           application/json:
  *             schema:
@@ -2806,16 +3023,10 @@ app.post('/pressure/cleanup', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
- *       409:
- *         description: Cannot enable tracing on an existing session.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs', async (req, res) => {
   try {
-    const { userId, sessionKey, listItemId, url, trace } = req.body;
+    const { userId, sessionKey, listItemId, url, trace, proxy } = req.body;
     // Accept both sessionKey (preferred) and listItemId (legacy) for backward compatibility
     const resolvedSessionKey = sessionKey || listItemId;
     if (!userId || !resolvedSessionKey) {
@@ -2846,7 +3057,7 @@ app.post('/tabs', async (req, res) => {
           { statusCode: 409 },
         );
       }
-      let session = await getSession(userId, { trace: !!trace });
+      let session = await getSession(userId, { trace: !!trace, requestProxy: proxy });
       
       let totalTabs = 0;
       for (const group of session.tabGroups.values()) totalTabs += group.size;
@@ -2891,7 +3102,7 @@ app.post('/tabs', async (req, res) => {
             if (oldSession) {
               await closeSession(key, oldSession, { reason: 'proxy_retry_rotate', clearDownloads: true, clearLocks: true });
             }
-            session = await getSession(userId, { trace: !!trace });
+            session = await getSession(userId, { trace: !!trace, requestProxy: proxy });
             const retryGroup = getTabGroup(session, resolvedSessionKey);
             const { page: retryPage, lease: retryLease } = await createLeasedPage(session);
             tabState = createTabState(retryPage);
@@ -2915,7 +3126,7 @@ app.post('/tabs', async (req, res) => {
       
       pluginEvents.emit('tab:created', { userId, tabId, page, url: page.url() });
       log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
-      return { tabId, url: page.url() };
+      return { tabId, url: page.url(), proxied: Boolean(session.requestProxy) };
     })(), requestTimeoutMs(), 'tab create');
 
     res.json(result);
@@ -5487,9 +5698,8 @@ app.delete('/sessions/:userId/traces/:filename', authMiddleware(), async (req, r
 app.delete('/sessions/:userId', async (req, res) => {
   try {
     const userId = normalizeUserId(req.params.userId);
-    const session = sessions.get(userId);
-    if (session) {
-      await closeSession(userId, session, { reason: 'api_delete_session', clearDownloads: true, clearLocks: true });
+    const closed = await destroySession(userId, { reason: 'api_delete_session' });
+    if (closed) {
       log('info', 'session closed', { userId });
     }
     if (sessions.size === 0) scheduleBrowserIdleShutdown();

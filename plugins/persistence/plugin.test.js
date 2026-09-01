@@ -6,11 +6,19 @@ import { createPluginEvents } from '../../lib/plugins.js';
 import { register } from './index.js';
 
 describe('persistence plugin', () => {
-  let tmpDir, events, ctx, mockApp;
+  let tmpDir, events, ctx, mockApp, liveSessions;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'camofox-persist-plugin-'));
     events = createPluginEvents();
+    liveSessions = new Map();
+    events.on('session:created', payload => liveSessions.set(String(payload.userId), payload));
+    events.on('session:destroyed', ({ userId, context, generation }) => {
+      const active = liveSessions.get(String(userId));
+      if (active?.context === context && active.generation === generation) {
+        liveSessions.delete(String(userId));
+      }
+    });
     mockApp = { delete: jest.fn() };
     ctx = {
       events,
@@ -20,8 +28,16 @@ describe('persistence plugin', () => {
       normalizeUserId: (u) => String(u),
       safeError: (err) => err.message,
       destroySession: jest.fn(async (userId, { reason } = {}) => {
-        await events.emitAsync('session:destroying', { userId: String(userId), reason });
-        await events.emitAsync('session:destroyed', { userId: String(userId), reason });
+        const active = liveSessions.get(String(userId));
+        if (!active) return false;
+        const payload = {
+          userId: String(userId),
+          reason,
+          context: active.context,
+          generation: active.generation,
+        };
+        await events.emitAsync('session:destroying', payload);
+        await events.emitAsync('session:destroyed', payload);
         return true;
       }),
     };
@@ -64,7 +80,7 @@ describe('persistence plugin', () => {
     };
 
     // Simulate session created then cookie import
-    await events.emitAsync('session:created', { userId: 'user-2', context: mockContext });
+    await events.emitAsync('session:created', { userId: 'user-2', context: mockContext, generation: 1 });
     await events.emitAsync('session:cookies:import', { userId: 'user-2' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
@@ -103,8 +119,10 @@ describe('persistence plugin', () => {
       }),
     };
 
-    await events.emitAsync('session:created', { userId: 'user-3', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-3', reason: 'test' });
+    await events.emitAsync('session:created', { userId: 'user-3', context: mockContext, generation: 1 });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-3', reason: 'test', context: mockContext, generation: 1,
+    });
 
     expect(mockContext.storageState).toHaveBeenCalled();
   });
@@ -130,7 +148,7 @@ describe('persistence plugin', () => {
     await fs.writeFile(metaPath, JSON.stringify({ userId: 'user-4' }));
 
     const mockContext = { storageState: jest.fn() };
-    await events.emitAsync('session:created', { userId: 'user-4', context: mockContext });
+    await events.emitAsync('session:created', { userId: 'user-4', context: mockContext, generation: 1 });
 
     const res = { json: jest.fn(), status: jest.fn(function () { return this; }) };
     await handler({ params: { userId: 'user-4' } }, res);
@@ -164,7 +182,7 @@ describe('persistence plugin', () => {
         await fs.writeFile(targetPath, JSON.stringify({ cookies: [], origins: [] }));
       }),
     };
-    await events.emitAsync('session:created', { userId: 'user-race', context: mockContext });
+    await events.emitAsync('session:created', { userId: 'user-race', context: mockContext, generation: 1 });
     const checkpoint = events.emitAsync('session:cookies:import', { userId: 'user-race' });
     await checkpointStarted;
 
@@ -223,8 +241,10 @@ describe('persistence plugin', () => {
         await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
       }),
     };
-    await events.emitAsync('session:created', { userId: 'user-no-idb', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-no-idb', reason: 'test' });
+    await events.emitAsync('session:created', { userId: 'user-no-idb', context: mockContext, generation: 1 });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-no-idb', reason: 'test', context: mockContext, generation: 1,
+    });
 
     expect(ctx.log).toHaveBeenCalledWith(
       'info',
@@ -245,8 +265,10 @@ describe('persistence plugin', () => {
         await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
       }),
     };
-    await events.emitAsync('session:created', { userId: 'user-idb', context: mockContext });
-    await events.emitAsync('session:destroying', { userId: 'user-idb', reason: 'test' });
+    await events.emitAsync('session:created', { userId: 'user-idb', context: mockContext, generation: 1 });
+    await events.emitAsync('session:destroying', {
+      userId: 'user-idb', reason: 'test', context: mockContext, generation: 1,
+    });
 
     expect(ctx.log).toHaveBeenCalledWith(
       'info',
@@ -256,5 +278,35 @@ describe('persistence plugin', () => {
     expect(mockContext.storageState).toHaveBeenCalledWith(
       expect.objectContaining({ indexedDB: true })
     );
+  });
+
+  test('stale teardown events do not untrack or checkpoint a replacement context', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir });
+
+    const oldContext = { storageState: jest.fn() };
+    const replacementContext = {
+      storageState: jest.fn(async ({ path: targetPath }) => {
+        await fs.writeFile(targetPath, JSON.stringify({ cookies: [], origins: [] }));
+      }),
+    };
+    await events.emitAsync('session:created', {
+      userId: 'identity-race', context: oldContext, generation: 1,
+    });
+    await events.emitAsync('session:created', {
+      userId: 'identity-race', context: replacementContext, generation: 2,
+    });
+
+    const stalePayload = {
+      userId: 'identity-race',
+      reason: 'session_timeout',
+      context: oldContext,
+      generation: 1,
+    };
+    await events.emitAsync('session:destroying', stalePayload);
+    await events.emitAsync('session:destroyed', stalePayload);
+    await events.emitAsync('session:cookies:import', { userId: 'identity-race' });
+
+    expect(oldContext.storageState).not.toHaveBeenCalled();
+    expect(replacementContext.storageState).toHaveBeenCalledTimes(1);
   });
 });

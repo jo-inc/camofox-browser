@@ -76,6 +76,36 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         url: { type: 'string', description: 'Initial URL to navigate to' },
+        proxy: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['server'],
+          description:
+            'Optional Playwright proxy for the user BrowserContext. The first user session fixes its proxy; later calls may omit it or repeat the same proxy, but cannot switch it. Do not put credentials in the server URL.',
+          properties: {
+            server: {
+              type: 'string',
+              maxLength: 2048,
+              description:
+                'Proxy server URL using http, https, socks4, or socks5. Embedded credentials are rejected.',
+              example: 'http://gw.example.com:10000',
+            },
+            username: {
+              type: 'string',
+              maxLength: 512,
+              writeOnly: true,
+              description:
+                'Optional literal proxy username. Request-body credentials are not percent-decoded.',
+            },
+            password: {
+              type: 'string',
+              maxLength: 512,
+              writeOnly: true,
+              description:
+                'Optional literal proxy password. Request-body credentials are not percent-decoded.',
+            },
+          },
+        },
       },
       required: ['url'],
     },
@@ -259,7 +289,12 @@ export function buildRequest(name, args, ctx) {
         path: '/tabs',
         auth: 'accessKey',
         responseKind: 'json',
-        body: { url: args.url, userId, sessionKey },
+        body: {
+          url: args.url,
+          userId,
+          sessionKey,
+          ...(args.proxy === undefined ? {} : { proxy: args.proxy }),
+        },
       };
     case 'camofox_snapshot': {
       const params = new URLSearchParams({ userId, includeScreenshot: 'true' });

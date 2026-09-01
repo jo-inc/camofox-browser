@@ -406,7 +406,7 @@
           "Tabs"
         ],
         "summary": "Create a new tab",
-        "description": "Creates a tab in the given session. Optionally navigates to an initial URL.",
+        "description": "Creates a tab in the given session. Optionally navigates to an initial URL.\n\nA `proxy` is applied when the user BrowserContext is first created and is immutable\nfor that `userId`. Supplying the same proxy again is allowed; supplying a different\nproxy returns `409 proxy_conflict`. Omitting `proxy` reuses the existing session choice.\n\nAutomatic recovery, browser disconnects/restarts, idle expiry, memory-pressure eviction,\nand tab reaping preserve the request proxy for at least one minute beyond the longer\nconfigured session/tab idle period. Explicit `DELETE /sessions/{userId}` clears that\nrecovery state. Cookie import does not accept a proxy; it reuses the current or recently\nrecovered proxy, otherwise it creates an unproxied session. Request proxies cannot be\ncombined with global `PROXY_*` configuration. They use the deterministic no-global-proxy\nlocale, timezone, and geolocation instead of inferring those values from the proxy exit IP.\n",
         "requestBody": {
           "required": true,
           "content": {
@@ -437,6 +437,34 @@
                   "trace": {
                     "type": "boolean",
                     "description": "Enable Playwright tracing for this session (screenshots, DOM snapshots, network). Must be set on first tab creation; cannot be added to an existing session."
+                  },
+                  "proxy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "server"
+                    ],
+                    "description": "Optional Playwright proxy for the user BrowserContext. Do not put credentials in the server URL.",
+                    "properties": {
+                      "server": {
+                        "type": "string",
+                        "maxLength": 2048,
+                        "description": "Proxy server URL using http, https, socks4, or socks5. Embedded credentials are rejected.",
+                        "example": "http://gw.example.com:10000"
+                      },
+                      "username": {
+                        "type": "string",
+                        "maxLength": 512,
+                        "writeOnly": true,
+                        "description": "Optional literal proxy username. Request-body credentials are not percent-decoded."
+                      },
+                      "password": {
+                        "type": "string",
+                        "maxLength": 512,
+                        "writeOnly": true,
+                        "description": "Optional literal proxy password. Request-body credentials are not percent-decoded."
+                      }
+                    }
                   }
                 }
               }
@@ -456,6 +484,10 @@
                     },
                     "url": {
                       "type": "string"
+                    },
+                    "proxied": {
+                      "type": "boolean",
+                      "description": "True when this tab's user BrowserContext uses a request-level proxy."
                     }
                   }
                 }
@@ -463,7 +495,7 @@
             }
           },
           "400": {
-            "description": "Missing required fields.",
+            "description": "Missing required fields or invalid proxy configuration.",
             "content": {
               "application/json": {
                 "schema": {
@@ -473,7 +505,7 @@
             }
           },
           "409": {
-            "description": "Cannot enable tracing on an existing session.",
+            "description": "Cannot enable tracing on an existing session, or the request proxy conflicts with an existing/global proxy session.",
             "content": {
               "application/json": {
                 "schema": {

@@ -376,11 +376,41 @@ docker run -p 9377:9377 \
   camofox-browser
 ```
 
-When a proxy is configured:
+When a global proxy is configured:
 - All traffic routes through the proxy
 - Camoufox's GeoIP automatically sets `locale`, `timezone`, and `geolocation` to match the proxy's exit IP
 - Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
 - Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
+
+**Request-level proxy (per user session):**
+
+When the server has no global `PROXY_*` configuration, `POST /tabs` can select a proxy for the new user's BrowserContext:
+
+```bash
+curl -X POST http://localhost:9377/tabs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "userId": "research-user",
+    "sessionKey": "job-1",
+    "proxy": {
+      "server": "http://gw.example.com:10000",
+      "username": "myuser",
+      "password": "mypass"
+    }
+  }'
+```
+
+The request proxy is a session-level choice, not a tab-level switch:
+
+- The first session created for a `userId` fixes its proxy. All tab groups for that user share it.
+- Repeating the same proxy is allowed. Supplying a different proxy returns `409 proxy_conflict` with `recovery: delete_session`.
+- Omitting `proxy` reuses the live session's choice. Dead-context, browser-disconnect/restart, navigation-timeout, new-page, idle-expiry, memory-pressure, and tab-reaper recovery preserve it for at least one minute beyond the longer configured session/tab idle period.
+- `POST /tabs` returns `proxied: true` when the user's BrowserContext uses a request-level proxy, and `false` otherwise. It never returns proxy credentials.
+- `DELETE /sessions/:userId` intentionally clears both the session and any pending proxy-recovery state.
+- Cookie import does not accept a proxy. It reuses the current or recently recovered proxy, otherwise it creates an unproxied session.
+- Request-level proxies and global `PROXY_*` configuration are mutually exclusive. Mixed mode returns `409 proxy_mode_conflict`.
+- Accepted schemes are `http`, `https`, `socks4`, and `socks5`. Put credentials in `username` and `password`, not in `server`. Request-body credentials are literal strings; unlike global `PROXY_USERNAME` / `PROXY_PASSWORD` values, they are not percent-decoded.
+- Unlike global proxy mode, a request-level proxy does not infer GeoIP settings from the exit IP. It uses the deterministic no-global-proxy fallback: `en-US`, `America/Los_Angeles`, and San Francisco coordinates.
 
 ### Telemetry
 
