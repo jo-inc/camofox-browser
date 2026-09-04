@@ -1701,11 +1701,8 @@ function tabNotFoundResponse(res, tabId) {
   return res.status(404).json({ error: 'Tab not found' });
 }
 
-// trackRequests defaults to off: see lib/reporter.js's createTabHealthTracker
-// for why request/response/requestfinished/requestfailed listeners are not
-// safe to leave attached for a long-lived tab.
-function createTabState(page, options) {
-  const healthTracker = createTabHealthTracker(page, options);
+function createTabState(page) {
+  const healthTracker = createTabHealthTracker(page);
   const tabState = {
     page,
     refs: new Map(),

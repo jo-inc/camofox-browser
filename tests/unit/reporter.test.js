@@ -791,6 +791,7 @@ describe('createTabHealthTracker', () => {
   function createMockPage() {
     const listeners = {};
     return {
+      listeners,
       on: (event, handler) => {
         if (!listeners[event]) listeners[event] = [];
         listeners[event].push(handler);
@@ -822,7 +823,7 @@ describe('createTabHealthTracker', () => {
 
   test('tracks request failures', () => {
     const page = createMockPage();
-    const tracker = createTabHealthTracker(page);
+    const tracker = createTabHealthTracker(page, { trackRequests: true });
     page._emit('requestfailed', {});
     const snap = tracker.snapshot();
     expect(snap.requestFailures).toBe(1);
@@ -830,7 +831,7 @@ describe('createTabHealthTracker', () => {
 
   test('tracks in-flight requests', () => {
     const page = createMockPage();
-    const tracker = createTabHealthTracker(page);
+    const tracker = createTabHealthTracker(page, { trackRequests: true });
     // Simulate 3 requests starting
     page._emit('request', { isNavigationRequest: () => false });
     page._emit('request', { isNavigationRequest: () => false });
@@ -847,7 +848,7 @@ describe('createTabHealthTracker', () => {
 
   test('tracks HTTP status histogram', () => {
     const page = createMockPage();
-    const tracker = createTabHealthTracker(page);
+    const tracker = createTabHealthTracker(page, { trackRequests: true });
     page._emit('response', { status: () => 403, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
     page._emit('response', { status: () => 403, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
     page._emit('response', { status: () => 429, headers: () => ({}), request: () => ({ isNavigationRequest: () => false }) });
@@ -881,7 +882,7 @@ describe('createTabHealthTracker', () => {
 
   test('tracks redirect status codes', () => {
     const page = createMockPage();
-    const tracker = createTabHealthTracker(page);
+    const tracker = createTabHealthTracker(page, { trackRequests: true });
     // Simulate nav request with redirects
     page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => null });
     page._emit('response', { status: () => 301, headers: () => ({}), request: () => ({ isNavigationRequest: () => true }) });
@@ -897,7 +898,7 @@ describe('createTabHealthTracker', () => {
 
   test('detects bot protection on navigation response', () => {
     const page = createMockPage();
-    const tracker = createTabHealthTracker(page);
+    const tracker = createTabHealthTracker(page, { trackRequests: true });
     page._emit('request', { isNavigationRequest: () => true, redirectedFrom: () => null });
     page._emit('response', {
       status: () => 403,
@@ -917,6 +918,62 @@ describe('createTabHealthTracker', () => {
     // Our mock evaluate just runs the function, which returns undefined in Node
     // (no real DOM). The important thing is it doesn't throw.
     expect(state !== undefined || state === undefined).toBeTruthy();
+  });
+
+  // Regression test for the memory leak fixed in patch 0003: Playwright never
+  // releases its Request/Response dispatcher objects for a request/response/
+  // requestfinished/requestfailed listener before the page itself closes, so
+  // a default tracker must not attach any of the four -- only a caller that
+  // explicitly opts in via trackRequests should pay that cost.
+  test('does not attach request/response listeners by default (trackRequests off)', () => {
+    const page = createMockPage();
+    createTabHealthTracker(page);
+    expect(page.listeners.request).toBeUndefined();
+    expect(page.listeners.response).toBeUndefined();
+    expect(page.listeners.requestfinished).toBeUndefined();
+    expect(page.listeners.requestfailed).toBeUndefined();
+    // The load-bearing three are still attached.
+    expect(page.listeners.crash).toBeDefined();
+    expect(page.listeners.pageerror).toBeDefined();
+    expect(page.listeners.dialog).toBeDefined();
+  });
+
+  test('does not attach request/response listeners when trackRequests is explicitly false', () => {
+    const page = createMockPage();
+    createTabHealthTracker(page, { trackRequests: false });
+    expect(page.listeners.request).toBeUndefined();
+    expect(page.listeners.response).toBeUndefined();
+    expect(page.listeners.requestfinished).toBeUndefined();
+    expect(page.listeners.requestfailed).toBeUndefined();
+  });
+
+  test('attaches request/response listeners when trackRequests is true', () => {
+    const page = createMockPage();
+    createTabHealthTracker(page, { trackRequests: true });
+    expect(page.listeners.request).toBeDefined();
+    expect(page.listeners.response).toBeDefined();
+    expect(page.listeners.requestfinished).toBeDefined();
+    expect(page.listeners.requestfailed).toBeDefined();
+  });
+
+  test('bounds redirectStatusCodes history on a SPA that never resets it', () => {
+    const page = createMockPage();
+    const tracker = createTabHealthTracker(page, { trackRequests: true });
+    // Simulate a very long redirect-tagged response history on the same
+    // navigation (SPA soft-navigation never fires a non-redirected
+    // top-level request, so the normal reset in the 'request' handler above
+    // never runs).
+    for (let i = 0; i < 30; i++) {
+      page._emit('response', {
+        status: () => 200 + i,
+        headers: () => ({}),
+        request: () => ({ isNavigationRequest: () => true }),
+      });
+    }
+    const snap = tracker.snapshot();
+    expect(snap.redirectStatusCodes.length).toBeLessThanOrEqual(20);
+    // Keeps the most recent entries, not the oldest.
+    expect(snap.redirectStatusCodes[snap.redirectStatusCodes.length - 1]).toBe(229);
   });
 });
 

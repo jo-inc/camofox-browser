@@ -22,7 +22,7 @@ describe('Navigate abort on tab deletion', () => {
   test('createTabState includes navigateAbort field', () => {
     // The createTabState function should initialise navigateAbort: null
     expect(serverSource).toContain('navigateAbort: null');
-    const fnMatch = serverSource.match(/function createTabState\(page\)\s*\{[^}]+\}/s);
+    const fnMatch = serverSource.match(/function createTabState\(page[^)]*\)\s*\{[^}]+\}/s);
     expect(fnMatch).not.toBeNull();
     expect(fnMatch[0]).toContain('navigateAbort');
   });
