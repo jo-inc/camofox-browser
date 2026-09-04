@@ -35,7 +35,7 @@ import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp
 import { coalesceInflight } from './lib/inflight.js';
 import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
-import { parseCaptureParams, parseWheelParams, CAPTURE_MAX_BODY_BYTES, REQUEST_MAX_BODY_BYTES_DEFAULT } from './lib/interaction-params.js';
+import { parseCaptureParams, parseWheelParams, resolveViewportCenter, CAPTURE_MAX_BODY_BYTES, REQUEST_MAX_BODY_BYTES_DEFAULT } from './lib/interaction-params.js';
 import { captureResponses, captureRequests } from './lib/network-capture.js';
 import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
@@ -4248,9 +4248,9 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
         targetX = coords.x;
         targetY = coords.y;
       } else {
-        const vs = tabState.page.viewportSize();
-        targetX = vs.width / 2;
-        targetY = vs.height / 2;
+        const centre = await resolveViewportCenter(tabState.page);
+        targetX = centre.x;
+        targetY = centre.y;
       }
 
       await tabState.page.mouse.move(targetX, targetY);

@@ -4,6 +4,7 @@ import {
   hasNestedQuantifier,
   parseCaptureParams,
   parseWheelParams,
+  resolveViewportCenter,
   validateRange,
   MAX_URL_PATTERN_LENGTH,
 } from '../../lib/interaction-params.js';
@@ -155,5 +156,39 @@ describe('parseWheelParams', () => {
     const result = parseWheelParams(body);
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(expected);
+  });
+});
+
+describe('resolveViewportCenter', () => {
+  test('halves a fixed viewport without touching the page', async () => {
+    let evaluated = false;
+    const page = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      evaluate: async () => {
+        evaluated = true;
+        return { width: 1, height: 1 };
+      },
+    };
+    await expect(resolveViewportCenter(page)).resolves.toEqual({ x: 640, y: 360 });
+    expect(evaluated).toBe(false);
+  });
+
+  test('falls back to the page view when viewportSize() is null', async () => {
+    // Camoufox launches with no fixed viewport, so viewportSize() is null and
+    // the pre-fix code threw "Cannot read properties of null (reading width)",
+    // surfacing as a 500 on every wheel call without a ref or coords.
+    const page = {
+      viewportSize: () => null,
+      evaluate: async () => ({ width: 1000, height: 500 }),
+    };
+    await expect(resolveViewportCenter(page)).resolves.toEqual({ x: 500, y: 250 });
+  });
+
+  test('rejects with 422 when neither source yields usable numbers', async () => {
+    const page = {
+      viewportSize: () => null,
+      evaluate: async () => ({ width: null, height: undefined }),
+    };
+    await expect(resolveViewportCenter(page)).rejects.toMatchObject({ statusCode: 422 });
   });
 });
