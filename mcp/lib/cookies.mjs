@@ -32,7 +32,14 @@ function parseNetscapeCookieFile(text) {
     const domain = parts[0];
     const cookiePath = parts[2];
     const secure = parts[3].toUpperCase() === 'TRUE';
-    const expires = Number(parts[4]);
+    // Netscape cookie files use 0 (and, in the wild, occasionally a
+    // non-numeric placeholder) to mean "session cookie". Playwright's
+    // addCookies() spells that -1 instead and reads 0 as a Unix timestamp,
+    // i.e. 1970-01-01, so the cookie is already expired the moment it is
+    // added and is dropped without a word. Map anything that is not a
+    // positive number onto -1.
+    const rawExpires = Number(parts[4]);
+    const expires = Number.isFinite(rawExpires) && rawExpires > 0 ? rawExpires : -1;
     const name = parts[5];
     const value = parts.slice(6).join('\t');
 

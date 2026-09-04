@@ -1,43 +1,13 @@
 /**
- * Tests for parseNetscapeCookieFile (Netscape cookie format parser)
- * 
- * The parser lives in plugin.ts. Since it's TypeScript and not directly
- * importable, we reimplement the same logic here for testing. Any change
- * to the parser in plugin.ts MUST be mirrored here.
+ * Tests for parseNetscapeCookieFile (Netscape cookie format parser).
+ *
+ * These used to reimplement the parser here, with a comment asking that any
+ * change be mirrored by hand. That copy is gone: the tests now import the
+ * shipped parser through lib/cookies.js, so a change to the implementation
+ * cannot pass while the tests keep exercising an older transcription of it.
  */
 
-function parseNetscapeCookieFile(text) {
-  const cookies = [];
-
-  const cleaned = text.replace(/^\uFEFF/, '');
-
-  for (const rawLine of cleaned.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (line.startsWith('#') && !line.startsWith('#HttpOnly_')) continue;
-
-    let httpOnly = false;
-    let working = line;
-    if (working.startsWith('#HttpOnly_')) {
-      httpOnly = true;
-      working = working.replace(/^#HttpOnly_/, '');
-    }
-
-    const parts = working.split('\t');
-    if (parts.length < 7) continue;
-
-    const domain = parts[0];
-    const path = parts[2];
-    const secure = parts[3].toUpperCase() === 'TRUE';
-    const expires = Number(parts[4]);
-    const name = parts[5];
-    const value = parts.slice(6).join('\t');
-
-    cookies.push({ name, value, domain, path, expires, httpOnly, secure });
-  }
-
-  return cookies;
-}
+import { parseNetscapeCookieFile } from '../../lib/cookies.js';
 
 describe('Netscape cookie file parser', () => {
   test('parses a basic 7-field line', () => {
@@ -49,7 +19,7 @@ describe('Netscape cookie file parser', () => {
       value: 'abc123',
       domain: '.example.com',
       path: '/',
-      expires: 0,
+      expires: -1,
       httpOnly: false,
       secure: false,
     });
@@ -135,11 +105,26 @@ describe('Netscape cookie file parser', () => {
     expect(cookies[0].domain).toBe('.example.com');
   });
 
-  test('handles NaN expires gracefully', () => {
+  test('treats a session cookie (expires 0) as a session cookie', () => {
+    // The whole point of the mapping: 0 is the only way the Netscape format
+    // has to say "session", and it is what browser exports actually contain.
+    const text = '.example.com\tTRUE\t/\tFALSE\t0\tsid\tval';
+    const cookies = parseNetscapeCookieFile(text);
+    expect(cookies[0].expires).toBe(-1);
+  });
+
+  test('treats a negative expiry as a session cookie', () => {
+    const text = '.example.com\tTRUE\t/\tFALSE\t-1\tsid\tval';
+    const cookies = parseNetscapeCookieFile(text);
+    expect(cookies[0].expires).toBe(-1);
+  });
+
+  test('treats an unparsable expiry as a session cookie rather than NaN', () => {
+    // Previously this yielded NaN, which addCookies() rejects outright.
     const text = '.example.com\tTRUE\t/\tFALSE\tgarbage\tname\tvalue';
     const cookies = parseNetscapeCookieFile(text);
     expect(cookies).toHaveLength(1);
-    expect(cookies[0].expires).toBeNaN();
+    expect(cookies[0].expires).toBe(-1);
   });
 
   test('parses multiple cookies from a real-format file', () => {
