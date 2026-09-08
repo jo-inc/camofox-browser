@@ -21,6 +21,7 @@ import {
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
+import { rand as _rand, randomPointInBox as _randomPointInBox, naturalMouseMove as _naturalMouseMove } from './lib/humanize.js';
 import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
 import {
   ensureTracesDir, resolveTracePath, tracePathFor, makeTraceFilename,
@@ -3500,53 +3501,6 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-// ── Natural mouse movement (anti-bot) ─────────────────────────────
-// Mirrors bws's humanize approach (services/shopee/humanize.py +
-// services/browser/helpers.py): random point within element bounds,
-// multi-step mouse path with jitter, human-variable delays. A single
-// teleport to dead-center + fixed 50ms waits is a bot tell that
-// triggers anti-bot (Taobao slider, Shopee verify). DRY-reused from
-// bws so the sourcing fleet triggers anti-bot less.
-function _rand(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-// Pick a random point inside a bounding box with padding from edges.
-function _randomPointInBox(box, padFrac = 0.2) {
-  const padX = Math.min(box.width * padFrac, box.width * 0.4);
-  const padY = Math.min(box.height * padFrac, box.height * 0.4);
-  const x = box.x + padX + Math.random() * (box.width - 2 * padX);
-  const y = box.y + padY + Math.random() * (box.height - 2 * padY);
-  return { x, y };
-}
-
-// Track the last mouse position ourselves. Playwright's Mouse class does NOT
-// expose a position() getter (playwright-core 1.58.0 has only move/down/up/
-// click/dblclick/wheel), so we keep a module-level cursor state updated on
-// every move. This is the only place in the codebase that moves the mouse, so
-// the tracking is self-consistent.
-let _lastMousePos = { x: 0, y: 0 };
-
-// Move the mouse to (tx, ty) in a natural multi-step path with jitter
-// and human-variable per-step delays, instead of a single teleport.
-async function _naturalMouseMove(page, tx, ty, steps = 8) {
-  const sx = _lastMousePos.x, sy = _lastMousePos.y;
-  const dx = tx - sx, dy = ty - sy;
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const ease = 1 - Math.pow(1 - t, 2); // ease-out
-    const jx = (Math.random() - 0.5) * 3;
-    const jy = (Math.random() - 0.5) * 3;
-    const px = sx + dx * ease + jx;
-    const py = sy + dy * ease + jy;
-    await page.mouse.move(px, py);
-    _lastMousePos = { x: px, y: py };
-    await page.waitForTimeout(_rand(8, 30)); // human-variable step delay
-  }
-  await page.mouse.move(tx, ty); // land exactly
-  _lastMousePos = { x: tx, y: ty };
-}
-
 app.post('/tabs/:tabId/click', async (req, res) => {
   const tabId = req.params.tabId;
   
@@ -3570,9 +3524,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
     const result = await withUserLimit(userId, () => withTabLock(tabId, async () => {
       const clickStart = Date.now();
       const remainingBudget = () => Math.max(0, HANDLER_TIMEOUT_MS - 2000 - (Date.now() - clickStart));
-      // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
-      // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
-      const dispatchMouseSequence = async (locator) => {
+      // Resolve the element's box and glide the cursor onto a random point in it.
+      const moveToElement = async (locator) => {
         // boundingBox() with no timeout inherits Playwright's 30s default, which
         // silently eats the entire handler budget when the element detached after
         // the failed click attempt (the page changed under us). Bound it to the
@@ -3595,12 +3548,27 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         // Natural movement: random point within the element + multi-step
         // jittered path, instead of a dead-center teleport (bot tell).
         const { x, y } = _randomPointInBox(box);
-        
-        // Move mouse to element (triggers mouseover/mouseenter)
-        await withTimeout(_naturalMouseMove(tabState.page, x, y), Math.max(1, remainingBudget()), 'native mouse move');
+        const from = tabState.mousePos || { x: 0, y: 0 };
+        tabState.mousePos = await withTimeout(_naturalMouseMove(tabState.page, from, x, y), Math.max(1, remainingBudget()), 'native mouse move');
         await tabState.page.waitForTimeout(_rand(40, 120));
-        
-        // Full click sequence
+        return { x, y };
+      };
+      
+      // Glide the cursor onto the element before any click attempt. Best-effort:
+      // the click that follows does its own actionability checks and reports the
+      // real failure, so a glide failure must not mask it.
+      const glideToElement = async (locator) => {
+        try {
+          await moveToElement(locator);
+        } catch (glideErr) {
+          log('warn', 'natural mouse glide failed', { err: glideErr.message });
+        }
+      };
+      
+      // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
+      // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
+      const dispatchMouseSequence = async (locator) => {
+        const { x, y } = await moveToElement(locator);
         await withTimeout(tabState.page.mouse.down(), Math.max(1, remainingBudget()), 'native mouse down');
         await tabState.page.waitForTimeout(_rand(40, 120));
         await withTimeout(tabState.page.mouse.up(), Math.max(1, remainingBudget()), 'native mouse up');
@@ -3616,22 +3584,18 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         const locator = isLocator ? locatorOrSelector : tabState.page.locator(locatorOrSelector);
         const click = async (options) => clickWithDownloadGuard(tabState, () => locator.click(options));
         
-        // Natural movement is the PRIMARY path (anti-bot): random point within
-        // the element + multi-step jittered mouse path + human-variable delays.
-        // Only fall back to Playwright's dead-center click if the natural
-        // sequence fails (e.g. element detached or obscured).
-        try {
-          await dispatchMouseSequence(locator);
-          return;
-        } catch (naturalErr) {
-          log('warn', 'natural mouse sequence failed, falling back to locator click', { err: naturalErr.message });
-        }
+        // Anti-bot: ease the cursor to the target before clicking, so the click
+        // is preceded by a visible multi-segment path instead of a teleport.
+        // The click itself still runs through Playwright so obscured/detached
+        // elements are still detected.
+        await glideToElement(locator);
         
         if (onGoogleSerp) {
           try {
             await click({ timeout: 3000, force: true });
           } catch (forceErr) {
-            log('warn', 'google force click failed');
+            log('warn', 'google force click failed, trying mouse sequence');
+            await dispatchMouseSequence(locator);
           }
           return;
         }
@@ -3646,10 +3610,14 @@ app.post('/tabs/:tabId/click', async (req, res) => {
             try {
               await click({ timeout: 3000, force: true });
             } catch (forceErr) {
-              log('warn', 'force click failed');
+              // Fallback 2: Full mouse event sequence for stubborn JS handlers
+              log('warn', 'force click failed, trying mouse sequence');
+              await dispatchMouseSequence(locator);
             }
           } else if (err.message.includes('not visible') || err.message.toLowerCase().includes('timeout')) {
-            log('warn', 'click timeout');
+            // Fallback 2: Element not responding to click, try mouse sequence
+            log('warn', 'click timeout, trying mouse sequence');
+            await dispatchMouseSequence(locator);
           } else {
             throw err;
           }
@@ -4082,13 +4050,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         } else if (selector) {
           await tabState.page.focus(selector, { timeout: 10000 });
         }
-        // Human-variable per-keystroke delay (mirrors bws random_type):
-        // a fixed `delay` is a bot tell. Jitter around the requested delay.
-        const baseDelay = Number(delay) || 30;
-        for (const ch of text) {
-          const jittered = Math.max(5, Math.round(baseDelay * _rand(0.6, 1.6)));
-          await tabState.page.keyboard.type(ch, { delay: jittered });
-        }
+        await tabState.page.keyboard.type(text, { delay });
       }
       if (shouldSubmit) await tabState.page.keyboard.press('Enter');
     });
