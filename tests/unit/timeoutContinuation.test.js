@@ -22,7 +22,10 @@ describe('timed-out tab operations', () => {
     const clickStart = source.indexOf("app.post('/tabs/:tabId/click'");
     const clickRoute = source.slice(clickStart, source.indexOf("app.post('/tabs/:tabId/upload'", clickStart));
 
-    for (const action of ['move', 'down', 'up']) {
+    // The natural mouse move is wrapped in withTimeout (bounded), and the
+    // down/up calls remain individually bounded.
+    expect(clickRoute).toContain('withTimeout(_naturalMouseMove(');
+    for (const action of ['down', 'up']) {
       expect(clickRoute).toContain(`withTimeout(tabState.page.mouse.${action}`);
     }
     expect(clickRoute).toContain("destroyTimedOutTab(session, tabId, 'operation_timeout', userId)");
