@@ -21,7 +21,7 @@ import {
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
-import { rand as _rand, randomPointInBox as _randomPointInBox, naturalMouseMove as _naturalMouseMove } from './lib/humanize.js';
+import { rand as _rand, randomPointInBox as _randomPointInBox } from './lib/humanize.js';
 import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
 import {
   ensureTracesDir, resolveTracePath, tracePathFor, makeTraceFilename,
@@ -3545,11 +3545,11 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         }
         if (!box) throw new Error('Element not visible (no bounding box)');
         
-        // Natural movement: random point within the element + multi-step
-        // jittered path, instead of a dead-center teleport (bot tell).
+        // Natural movement: aim at a random point within the element instead of
+        // dead center (bot tell); Camoufox's humanize expands this single move
+        // into the eased, jittered multi-segment path.
         const { x, y } = _randomPointInBox(box);
-        const from = tabState.mousePos || { x: 0, y: 0 };
-        tabState.mousePos = await withTimeout(_naturalMouseMove(tabState.page, from, x, y), Math.max(1, remainingBudget()), 'native mouse move');
+        await withTimeout(tabState.page.mouse.move(x, y), Math.max(1, remainingBudget()), 'native mouse move');
         await tabState.page.waitForTimeout(_rand(40, 120));
         return { x, y };
       };
