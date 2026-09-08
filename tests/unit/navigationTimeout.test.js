@@ -188,6 +188,12 @@ describe('classifyError categorizes timeout vs proxy', () => {
     expect(classifyError(new Error('Target page, context or browser has been closed'))).toBe('dead_context');
   });
 
+  test('Chromium navigation abort is distinct from network failures', () => {
+    expect(classifyError(new Error('page.goto: net::ERR_ABORTED at https://example.com/'))).toBe('nav_aborted');
+    expect(classifyError(new Error('page.goto: net::ERR_CONNECTION_REFUSED at https://example.com/'))).toBe('network');
+    expect(classifyError(new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at https://example.com/'))).toBe('network');
+  });
+
   test('operational browser failures classify without unknown', () => {
     expect(classifyError(Object.assign(new Error('Unknown ref: e999'), { code: 'stale_refs' }))).toBe('stale_refs');
     expect(classifyError(new Error('Execution context was destroyed, most likely because of a navigation'))).toBe('navigation_race');
