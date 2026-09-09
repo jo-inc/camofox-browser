@@ -43,6 +43,7 @@ import { initSentry, captureException as sentryCaptureException, setupExpressErr
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses } from './lib/process-ownership.js';
+import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
   safePageUrl, urlDomain, hashIdentifier,
   isDeadContextError, isPageCrashedError, isTimeoutError,
@@ -88,6 +89,16 @@ reporter.startWatchdog(30_000, () => {
   }
   return { resourceOpts: _resourceOpts(), sessions: summary.length, summary };
 });
+
+// Keep Windows process metrics off the event loop. Cleanup still takes a fresh
+// synchronous snapshot, while periodic RSS reporting reads this async cache.
+if (process.platform === 'win32') {
+  refreshWindowsProcesses().catch(() => {});
+  const windowsProcessRefreshTimer = setInterval(() => {
+    refreshWindowsProcesses().catch(() => {});
+  }, 30_000);
+  windowsProcessRefreshTimer.unref?.();
+}
 
 // --- Plugin event bus ---
 const pluginEvents = createPluginEvents();
@@ -976,7 +987,7 @@ async function _closeBrowserFullyImpl(reason) {
 
   // Force-kill only survivors captured before this close began.
   if (pid) {
-    await _forceKillProcessTree(pid, reason);
+    await _forceKillProcessTree(pid, reason, ownedBrowserProcesses);
   }
   await _forceKillBrowserProcesses(reason, ownedBrowserProcesses);
 
@@ -1011,12 +1022,22 @@ async function _closeBrowserFullyImpl(reason) {
 }
 
 /**
- * Force-kill a browser process tree by PID. On Linux, kills the process group
- * (SIGKILL -pid). Orphan cleanup is deliberately left to the ownership
- * snapshot captured before browser.close(), below.
+ * Force-kill a browser process tree by PID. Windows uses taskkill's scoped tree
+ * cascade after verifying the captured process identity; Linux uses the
+ * process group. Orphan cleanup is left to the ownership snapshot captured
+ * before browser.close(), below.
  */
-async function _forceKillProcessTree(pid, reason) {
+async function _forceKillProcessTree(pid, reason, ownedBrowserProcesses = []) {
   if (!pid || pid <= 1) return;
+
+  if (process.platform === 'win32') {
+    const rootSnapshot = ownedBrowserProcesses.find((proc) => proc.pid === pid);
+    if (rootSnapshot && killWindowsProcessTree(pid, { expectedStartTime: rootSnapshot.startTime })) {
+      log('info', 'killed browser process tree', { pid, reason });
+    }
+    await new Promise(r => setTimeout(r, 500));
+    return;
+  }
 
   // Kill the specific browser process first (positive PID = single process)
   try {
@@ -1045,18 +1066,17 @@ async function _forceKillProcessTree(pid, reason) {
 }
 
 async function _forceKillBrowserProcesses(reason, ownedBrowserProcesses = []) {
-  if (process.platform !== 'linux') return;
-  let victims = [];
   try {
-    victims = survivingOwnedBrowserProcesses(ownedBrowserProcesses).map(proc => proc.pid);
+    const survivors = survivingOwnedBrowserProcesses(ownedBrowserProcesses);
+    const victims = survivors.map(proc => proc.pid);
+    if (victims.length > 0) {
+      log('warn', 'killing browser survivor processes', { reason, victims });
+      await killProcessIds(victims, { signal: 'SIGKILL', delayMs: 300, processSnapshots: survivors });
+    }
+    return;
   } catch (err) {
     log('warn', 'failed to scan for browser survivor processes', { reason, error: err.message });
     return;
-  }
-
-  if (victims.length > 0) {
-    log('warn', 'killing browser survivor processes', { reason, victims });
-    await killProcessIds(victims, { signal: 'SIGKILL', delayMs: 300 });
   }
 }
 
@@ -5640,40 +5660,50 @@ setInterval(() => {
 // process immediately if either Node native memory or the Camoufox process tree
 // is large. This prevents idle Firefox children from holding most of the VM RAM
 // while Node reports zero sessions/tabs.
-setInterval(() => {
+let browserRssCheckInFlight = false;
+setInterval(async () => {
+  if (browserRssCheckInFlight) return;
   if (sessions.size > 0 || !browser) return;
-  const mem = process.memoryUsage();
-  const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
-  const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
+  browserRssCheckInFlight = true;
+  try {
+    const processSnapshot = process.platform === 'win32' ? await refreshWindowsProcesses() : null;
+    if (sessions.size > 0 || !browser) return;
+    const mem = process.memoryUsage();
+    const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
+    const browserPid = _browserPid();
+    const browserRssMb = browserProcessTreeRssMb(browserPid, processSnapshot) ?? browserProcessNameRssMb(processSnapshot);
 
-  if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
-    log('warn', 'browser rss pressure, restarting browser', {
-      browserRssMb,
-      thresholdMb: CONFIG.browserRssRestartThresholdMb,
-    });
-    browserRestartsTotal.labels('browser_rss_pressure').inc();
-    closeBrowserFully('browser_rss_pressure').catch((err) => {
-      log('error', 'browser rss pressure browser close failed', { error: err.message });
-    });
-    return;
-  }
+    if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
+      log('warn', 'browser rss pressure, restarting browser', {
+        browserRssMb,
+        thresholdMb: CONFIG.browserRssRestartThresholdMb,
+      });
+      browserRestartsTotal.labels('browser_rss_pressure').inc();
+      closeBrowserFully('browser_rss_pressure').catch((err) => {
+        log('error', 'browser rss pressure browser close failed', { error: err.message });
+      });
+      return;
+    }
 
-  if (_nativeMemBaseline === null) {
-    _nativeMemBaseline = nativeMemMb;
-    return;
-  }
-  const growth = nativeMemMb - _nativeMemBaseline;
-  if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
-    log('warn', 'native memory pressure, restarting browser', {
-      baselineMb: _nativeMemBaseline,
-      currentMb: nativeMemMb,
-      growthMb: growth,
-      thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
-    });
-    browserRestartsTotal.labels('memory_pressure').inc();
-    closeBrowserFully('memory_pressure').catch((err) => {
-      log('error', 'memory pressure browser close failed', { error: err.message });
-    });
+    if (_nativeMemBaseline === null) {
+      _nativeMemBaseline = nativeMemMb;
+      return;
+    }
+    const growth = nativeMemMb - _nativeMemBaseline;
+    if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
+      log('warn', 'native memory pressure, restarting browser', {
+        baselineMb: _nativeMemBaseline,
+        currentMb: nativeMemMb,
+        growthMb: growth,
+        thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
+      });
+      browserRestartsTotal.labels('memory_pressure').inc();
+      closeBrowserFully('memory_pressure').catch((err) => {
+        log('error', 'memory pressure browser close failed', { error: err.message });
+      });
+    }
+  } finally {
+    browserRssCheckInFlight = false;
   }
 }, 30_000);
 
