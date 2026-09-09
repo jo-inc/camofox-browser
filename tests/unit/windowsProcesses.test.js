@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
+import { windowsProcessEnvironment } from '../../lib/config.js';
 import { isWindowsBrowserProcess, isWindowsProcessCurrent, killWindowsProcessTree, normalizeWindowsProcess, refreshWindowsProcesses, selectWindowsProcessTree, snapshotWindowsProcesses } from '../../lib/windows-processes.js';
 import { snapshotBrowserProcessPids } from '../../lib/browser-processes.js';
 import { snapshotOwnedBrowserProcesses } from '../../lib/process-ownership.js';
@@ -31,13 +32,14 @@ const testOnWindows = process.platform === 'win32' ? test : test.skip;
 testOnWindows('snapshots and kills only an owned browser-shaped process tree', async () => {
   const childScript = [
     "const { spawn } = require('child_process');",
-    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'camoufox-child.exe'], { stdio: 'ignore', windowsHide: true });",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'camoufox-child.exe'], { stdio: 'ignore', windowsHide: true, env: {} });",
     "process.stdout.write(String(child.pid));",
     "setInterval(() => {}, 1000);",
   ].join('');
   const launcher = spawn(process.execPath, ['-e', childScript, 'camoufox-parent.exe'], {
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
+    env: windowsProcessEnvironment(),
   });
 
   let childPid = null;
