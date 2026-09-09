@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
-import { isWindowsProcessCurrent, killWindowsProcessTree, normalizeWindowsProcess, selectWindowsProcessTree, snapshotWindowsProcesses } from '../../lib/windows-processes.js';
+import { isWindowsBrowserProcess, isWindowsProcessCurrent, killWindowsProcessTree, normalizeWindowsProcess, refreshWindowsProcesses, selectWindowsProcessTree, snapshotWindowsProcesses } from '../../lib/windows-processes.js';
 import { snapshotBrowserProcessPids } from '../../lib/browser-processes.js';
 import { snapshotOwnedBrowserProcesses } from '../../lib/process-ownership.js';
 import { browserProcessTreeRssMb } from '../../lib/resources.js';
@@ -17,6 +17,13 @@ test('normalizes Windows process records and selects a complete tree', () => {
   expect(processes[1]).toMatchObject({ pid: 11, ppid: 10, startTime: 'b', workingSetSize: 200 });
   expect(isWindowsProcessCurrent(processes[1], processes)).toBe(true);
   expect(isWindowsProcessCurrent({ ...processes[1], startTime: 'reused' }, processes)).toBe(false);
+});
+
+test('Windows browser matching uses the executable identity, not arbitrary command-line text', () => {
+  expect(isWindowsBrowserProcess({ name: 'camoufox.exe', cmdline: 'node fake-camoufox.exe' })).toBe(true);
+  expect(isWindowsBrowserProcess({ name: 'firefox.exe', cmdline: 'node fake' })).toBe(true);
+  expect(isWindowsBrowserProcess({ name: 'node.exe', cmdline: 'node camoufox-parent.exe' })).toBe(false);
+  expect(isWindowsBrowserProcess({ name: 'powershell.exe', cmdline: 'firefox.exe' })).toBe(false);
 });
 
 const testOnWindows = process.platform === 'win32' ? test : test.skip;
@@ -44,15 +51,19 @@ testOnWindows('snapshots and kills only an owned browser-shaped process tree', a
       launcher.once('error', reject);
     }));
 
+    const processSnapshot = await refreshWindowsProcesses();
+    const launcherRecord = processSnapshot.find((proc) => proc.pid === launcher.pid);
+    expect(launcherRecord).toBeDefined();
+    expect(launcherRecord.name.toLowerCase()).toMatch(/^(?:node|nodejs)(?:\.exe)?$/);
     const owned = snapshotOwnedBrowserProcesses(process.pid);
-    const root = owned.find((proc) => proc.pid === launcher.pid);
-    expect(root).toBeDefined();
-    expect(root.startTime).not.toBe('');
-    expect(owned.some((proc) => proc.pid === childPid)).toBe(true);
-    expect(snapshotBrowserProcessPids({ myPid: process.pid })).toEqual(expect.arrayContaining([launcher.pid, childPid]));
+    expect(owned.some((proc) => proc.pid === launcher.pid)).toBe(false);
+    expect(owned.some((proc) => proc.pid === childPid)).toBe(false);
+    const browserPids = snapshotBrowserProcessPids({ myPid: process.pid });
+    expect(browserPids).not.toContain(launcher.pid);
+    expect(browserPids).not.toContain(childPid);
     expect(browserProcessTreeRssMb(launcher.pid)).toEqual(expect.any(Number));
 
-    expect(killWindowsProcessTree(launcher.pid, { expectedStartTime: root.startTime })).toBe(true);
+    expect(killWindowsProcessTree(launcher.pid, { expectedStartTime: launcherRecord.startTime })).toBe(true);
     await once(launcher, 'exit');
 
     const deadline = Date.now() + 5000;

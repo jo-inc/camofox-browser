@@ -43,7 +43,7 @@ import { initSentry, captureException as sentryCaptureException, setupExpressErr
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses } from './lib/process-ownership.js';
-import { killWindowsProcessTree } from './lib/windows-processes.js';
+import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
   safePageUrl, urlDomain, hashIdentifier,
   isDeadContextError, isPageCrashedError, isTimeoutError,
@@ -89,6 +89,16 @@ reporter.startWatchdog(30_000, () => {
   }
   return { resourceOpts: _resourceOpts(), sessions: summary.length, summary };
 });
+
+// Keep Windows process metrics off the event loop. Cleanup still takes a fresh
+// synchronous snapshot, while periodic RSS reporting reads this async cache.
+if (process.platform === 'win32') {
+  refreshWindowsProcesses().catch(() => {});
+  const windowsProcessRefreshTimer = setInterval(() => {
+    refreshWindowsProcesses().catch(() => {});
+  }, 30_000);
+  windowsProcessRefreshTimer.unref?.();
+}
 
 // --- Plugin event bus ---
 const pluginEvents = createPluginEvents();
@@ -5650,40 +5660,50 @@ setInterval(() => {
 // process immediately if either Node native memory or the Camoufox process tree
 // is large. This prevents idle Firefox children from holding most of the VM RAM
 // while Node reports zero sessions/tabs.
-setInterval(() => {
+let browserRssCheckInFlight = false;
+setInterval(async () => {
+  if (browserRssCheckInFlight) return;
   if (sessions.size > 0 || !browser) return;
-  const mem = process.memoryUsage();
-  const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
-  const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
+  browserRssCheckInFlight = true;
+  try {
+    const processSnapshot = process.platform === 'win32' ? await refreshWindowsProcesses() : null;
+    if (sessions.size > 0 || !browser) return;
+    const mem = process.memoryUsage();
+    const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
+    const browserPid = _browserPid();
+    const browserRssMb = browserProcessTreeRssMb(browserPid, processSnapshot) ?? browserProcessNameRssMb(processSnapshot);
 
-  if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
-    log('warn', 'browser rss pressure, restarting browser', {
-      browserRssMb,
-      thresholdMb: CONFIG.browserRssRestartThresholdMb,
-    });
-    browserRestartsTotal.labels('browser_rss_pressure').inc();
-    closeBrowserFully('browser_rss_pressure').catch((err) => {
-      log('error', 'browser rss pressure browser close failed', { error: err.message });
-    });
-    return;
-  }
+    if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
+      log('warn', 'browser rss pressure, restarting browser', {
+        browserRssMb,
+        thresholdMb: CONFIG.browserRssRestartThresholdMb,
+      });
+      browserRestartsTotal.labels('browser_rss_pressure').inc();
+      closeBrowserFully('browser_rss_pressure').catch((err) => {
+        log('error', 'browser rss pressure browser close failed', { error: err.message });
+      });
+      return;
+    }
 
-  if (_nativeMemBaseline === null) {
-    _nativeMemBaseline = nativeMemMb;
-    return;
-  }
-  const growth = nativeMemMb - _nativeMemBaseline;
-  if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
-    log('warn', 'native memory pressure, restarting browser', {
-      baselineMb: _nativeMemBaseline,
-      currentMb: nativeMemMb,
-      growthMb: growth,
-      thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
-    });
-    browserRestartsTotal.labels('memory_pressure').inc();
-    closeBrowserFully('memory_pressure').catch((err) => {
-      log('error', 'memory pressure browser close failed', { error: err.message });
-    });
+    if (_nativeMemBaseline === null) {
+      _nativeMemBaseline = nativeMemMb;
+      return;
+    }
+    const growth = nativeMemMb - _nativeMemBaseline;
+    if (growth >= NATIVE_MEM_RESTART_THRESHOLD_MB) {
+      log('warn', 'native memory pressure, restarting browser', {
+        baselineMb: _nativeMemBaseline,
+        currentMb: nativeMemMb,
+        growthMb: growth,
+        thresholdMb: NATIVE_MEM_RESTART_THRESHOLD_MB,
+      });
+      browserRestartsTotal.labels('memory_pressure').inc();
+      closeBrowserFully('memory_pressure').catch((err) => {
+        log('error', 'memory pressure browser close failed', { error: err.message });
+      });
+    }
+  } finally {
+    browserRssCheckInFlight = false;
   }
 }, 30_000);
 
