@@ -167,7 +167,10 @@
     },
     "swagger-jsdoc": {
       "glob": "13.0.6"
-    }
+    },
+    "qs": "6.16.0",
+    "fast-uri": "3.1.6",
+    "hono": "4.13.5"
   },
   "bin": {
     "camofox-browser": "./bin/camofox-browser.js",
