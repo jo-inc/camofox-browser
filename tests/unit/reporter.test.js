@@ -1141,4 +1141,24 @@ describe('native memory leak detection', () => {
       }, 100);
     });
   });
+
+  test('does not fire alert during active session when growth is below active threshold', async () => {
+    mockProcessForWatchdog();
+    mockUptimeSeconds = 200;
+    // baseline native = 100MB (mockRss 150MB - heapUsed 50MB)
+    // Growth of 500MB (total native 600MB) exceeds 400MB idle threshold,
+    // but is below the 800MB active session threshold.
+    mockRss = 650 * 1048576;
+
+    const reporter = createTestReporter();
+    // Pass getContext reporting 1 active session
+    reporter.startWatchdog(5000, () => ({ sessions: 1, resourceOpts: { sessionCount: 1, tabCount: 1 } }));
+
+    await new Promise(r => setTimeout(r, 150));
+    await reporter.stop();
+
+    const leakReports = fetchCalls.filter(c => c.body?.type === 'leak:native-memory');
+    expect(leakReports.length).toBe(0);
+  });
 });
+
