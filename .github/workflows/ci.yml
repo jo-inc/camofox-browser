@@ -37,7 +37,6 @@ jobs:
 
       - name: Run unit + plugin tests (Jest)
         run: |
-          npm install --no-save jest-junit
           node --experimental-vm-modules node_modules/.bin/jest \
             --testPathPatterns='tests/unit|plugins' \
             --testPathIgnorePatterns='security\.test|tabRecycling\.test|cookies\.test|timeoutContinuation\.test|operationalFailures\.test|tabLifecycleContract\.test' \
@@ -88,9 +87,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: |
-          npm ci
-          npm install --no-save jest-junit
+        run: npm ci
 
       - name: Cache Playwright browsers
         id: playwright-cache
