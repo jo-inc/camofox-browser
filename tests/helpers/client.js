@@ -100,6 +100,10 @@ class BrowserClient {
     return this.request('POST', `/tabs/${tabId}/click`, { userId: this.userId, ...options });
   }
 
+  async drag(tabId, options) {
+    return this.request('POST', `/tabs/${tabId}/drag`, { userId: this.userId, ...options });
+  }
+
   async evaluate(tabId, expression) {
     return this.request('POST', `/tabs/${tabId}/evaluate`, { userId: this.userId, expression });
   }
