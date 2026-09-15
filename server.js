@@ -21,6 +21,8 @@ import {
   clearTabDownloads,
   clearSessionDownloads,
   attachDownloadListener,
+  attachNavigationResponseTracker,
+  readInlinePdfResponse,
   clickWithDownloadGuard,
   captureFetchedResource,
   MAX_FETCHED_RESOURCE_BYTES,
@@ -1789,8 +1791,10 @@ function createTabState(page) {
     pressureObservedAt: Date.now(),
     pressureObservedToolCalls: 0,
     crashed: false,
+    lastMainFrameResponse: null,
   };
   page?.on?.('crash', () => { tabState.crashed = true; });
+  attachNavigationResponseTracker(tabState);
   return tabState;
 }
 
@@ -5034,18 +5038,30 @@ app.post('/tabs/:tabId/fetch-current-resource', async (req, res) => {
     const url = tabState.page.url();
     if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Current tab does not have an HTTP resource' });
 
-    const response = await tabState.page.context().request.get(url);
-    const headers = response.headers();
-    const mimeType = String(headers['content-type'] || '').split(';', 1)[0].toLowerCase();
-    if (mimeType !== 'application/pdf') return res.status(415).json({ error: 'Current resource is not a PDF' });
-    const declaredBytes = Number(headers['content-length']);
-    if (Number.isFinite(declaredBytes) && declaredBytes > MAX_FETCHED_RESOURCE_BYTES) {
-      return res.status(413).json({ error: `Current resource exceeds ${MAX_FETCHED_RESOURCE_BYTES} byte limit` });
+    // Prefer the bytes the browser already received for the current document
+    // (inline PDF); fall back to a Node-side refetch when unavailable.
+    let body = null;
+    let mimeType = null;
+    let source = 'navigation_response';
+    const inline = await readInlinePdfResponse(tabState, url);
+    if (inline) {
+      ({ body, mimeType } = inline);
+    } else {
+      source = 'refetch';
+      const response = await tabState.page.context().request.get(url);
+      const headers = response.headers();
+      mimeType = String(headers['content-type'] || '').split(';', 1)[0].toLowerCase();
+      if (mimeType !== 'application/pdf') return res.status(415).json({ error: 'Current resource is not a PDF' });
+      const declaredBytes = Number(headers['content-length']);
+      if (Number.isFinite(declaredBytes) && declaredBytes > MAX_FETCHED_RESOURCE_BYTES) {
+        return res.status(413).json({ error: `Current resource exceeds ${MAX_FETCHED_RESOURCE_BYTES} byte limit` });
+      }
+      body = await response.body();
     }
-    const body = await response.body();
     if (body.length > MAX_FETCHED_RESOURCE_BYTES) {
       return res.status(413).json({ error: `Current resource exceeds ${MAX_FETCHED_RESOURCE_BYTES} byte limit` });
     }
+    log('debug', 'fetch current resource', { reqId: req.reqId, source, bytes: body.length });
     const pathname = new URL(url).pathname;
     const filename = pathname.split('/').pop() || 'document.pdf';
     const download = await captureFetchedResource(tabState, { url, mimeType, filename, body });
