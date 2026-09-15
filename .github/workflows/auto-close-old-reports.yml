@@ -15,7 +15,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const MIN_VERSION = [1, 7, 4];
+            const MIN_VERSION = [1, 10, 0];
             const body = context.payload.issue.body || '';
 
             // Parse "- **version:** X.Y.Z" from issue body
@@ -76,12 +76,36 @@ jobs:
                 }
 
                 // Auto-close memory leaks with 0 sessions + 0 tabs (self-healing restart handles these)
+                // or where growth is below 400MB threshold (normal allocator fragmentation)
                 if (labels.includes('memory-leak')) {
+                  const growthMatch = body.match(/growth(?:Mb)?:\s*(\d+)/i) || body.match(/Native memory grew by\s*(\d+)MB/i);
+                  const growthMb = growthMatch ? parseInt(growthMatch[1], 10) : null;
+                  if (growthMb !== null && growthMb < 400) {
+                    console.log(`Memory leak growth ${growthMb}MB is below 400MB threshold, closing.`);
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      body: `Closing — native memory growth of ${growthMb}MB is below the 400MB alert threshold. Normal allocator fragmentation and CDP buffering accounts for growth up to 400MB over extended uptime. If you experience unbounded growth exceeding 400MB during active use, please re-open.`,
+                    });
+                    await github.rest.issues.update({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      state: 'closed',
+                      state_reason: 'not_planned',
+                    });
+                    return;
+                  }
+
                   const ctxMatch = body.match(/\*\*browser contexts:\*\*\s*(\d+)/);
                   const tabMatch = body.match(/\*\*active tabs:\*\*\s*(\d+)/);
-                  if (ctxMatch && tabMatch &&
-                      parseInt(ctxMatch[1], 10) === 0 && parseInt(tabMatch[1], 10) === 0) {
-                    console.log('Memory leak with 0 contexts + 0 tabs, closing (self-healing).');
+                  const sessionsMatch = body.match(/"sessions":\s*(\d+)/);
+                  const isIdle = (ctxMatch && parseInt(ctxMatch[1], 10) === 0 && (!tabMatch || parseInt(tabMatch[1], 10) === 0)) ||
+                                 (sessionsMatch && parseInt(sessionsMatch[1], 10) === 0 && (!tabMatch || parseInt(tabMatch[1], 10) === 0));
+
+                  if (isIdle) {
+                    console.log('Memory leak with 0 contexts/sessions, closing (self-healing).');
                     await github.rest.issues.createComment({
                       owner: context.repo.owner,
                       repo: context.repo.repo,
