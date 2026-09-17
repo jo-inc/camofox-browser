@@ -5364,7 +5364,13 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *                 type: string
  *               expression:
  *                 type: string
- *                 description: JavaScript expression to evaluate.
+ *                 description: >
+ *                   JavaScript expression to evaluate. This is an expression, not a
+ *                   function body: a top-level `return` is a syntax error. Wrap
+ *                   statements in an IIFE — `(() => { ... return x; })()` — and note
+ *                   that a bare arrow function (`() => x`, uncalled) evaluates to a
+ *                   function object and serializes to no result.
+ *                 example: document.title
  *     responses:
  *       200:
  *         description: Evaluation result.
@@ -5377,7 +5383,10 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *                   type: boolean
  *                 result: {}
  *       400:
- *         description: Bad request.
+ *         description: >
+ *           Bad request. `code: invalid_expression` means the expression did not
+ *           compile (for example a top-level `return`); it is not retryable until the
+ *           caller fixes the JavaScript.
  *         content:
  *           application/json:
  *             schema:
