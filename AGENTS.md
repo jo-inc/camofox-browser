@@ -454,17 +454,17 @@ Use the plugin manager to install third-party plugins from git or local paths:
 
 ```bash
 # Install from git
-npm run plugin install https://github.com/user/camofox-screenshot-plugin
-npm run plugin install git:github.com/user/my-plugin
+node scripts/plugin.js install https://github.com/user/camofox-screenshot-plugin
+node scripts/plugin.js install git:github.com/user/my-plugin
 
 # Install from local directory
-npm run plugin install ./path/to/my-plugin
+node scripts/plugin.js install ./path/to/my-plugin
 
 # List installed plugins
-npm run plugin list
+node scripts/plugin.js list
 
 # Remove a plugin
-npm run plugin remove my-plugin
+node scripts/plugin.js remove my-plugin
 ```
 
 The installer copies the plugin into `plugins/`, adds it to `camofox.config.json`, and runs `npm install` for any npm dependencies. System deps (`apt.txt`, `post-install.sh`) are flagged but must be installed manually or via Docker rebuild.

@@ -95,7 +95,7 @@ async function fetchApi(baseUrl, path, options = {}) {
     return res.json();
 }
 export default function register(api) {
-    const cfg = api.pluginConfig ?? api.config;
+    const cfg = (api.pluginConfig ?? api.config);
     const port = cfg.port || 9377;
     const baseUrl = cfg.url || `http://localhost:${port}`;
     const autoStart = cfg.autoStart !== false; // default true
@@ -126,59 +126,54 @@ export default function register(api) {
     for (const def of TOOL_DEFS) {
         api.registerTool((ctx) => ({
             name: def.name,
+            label: def.name,
             description: def.description,
             parameters: def.inputSchema,
             async execute(_id, params) {
                 const userId = ctx.agentId || fallbackUserId;
                 const cfg = loadConfig();
                 const { spec, payload } = await runTool(def.name, params, { userId, sessionKey: ctx.sessionKey }, baseUrl, cfg);
-                return { content: adaptResponse(spec, payload) };
+                return { content: adaptResponse(spec, payload), details: {} };
             },
         }), { name: def.name });
     }
     api.registerCommand({
         name: "camofox",
         description: "Camoufox browser server control (status, start, stop)",
-        handler: async (args) => {
-            const subcommand = args[0] || "status";
+        handler: async ({ args }) => {
+            const subcommand = args?.trim().split(/\s+/, 1)[0] || "status";
             switch (subcommand) {
                 case "status":
                     try {
                         const health = await fetchApi(baseUrl, "/health");
-                        api.logger?.info?.(`Camoufox server at ${baseUrl}: ${JSON.stringify(health)}`);
+                        return { text: `Camoufox server at ${baseUrl}: ${JSON.stringify(health)}` };
                     }
                     catch {
-                        api.logger?.error?.(`Camoufox server at ${baseUrl}: not reachable`);
+                        return { text: `Camoufox server at ${baseUrl}: not reachable` };
                     }
-                    break;
                 case "start":
                     if (serverProcess) {
-                        api.logger?.info?.("Camoufox server already running (managed)");
-                        return;
+                        return { text: "Camoufox server already running (managed)" };
                     }
                     if (await checkServerRunning(baseUrl)) {
-                        api.logger?.info?.(`Camoufox server already running at ${baseUrl}`);
-                        return;
+                        return { text: `Camoufox server already running at ${baseUrl}` };
                     }
                     try {
                         serverProcess = await startServer(pluginDir, port, api.logger, cfg);
+                        return { text: `Started Camoufox server at ${baseUrl}` };
                     }
                     catch (err) {
-                        api.logger?.error?.(`Failed to start server: ${err.message}`);
+                        return { text: `Failed to start Camoufox server: ${err.message}` };
                     }
-                    break;
                 case "stop":
                     if (serverProcess) {
                         serverProcess.kill();
                         serverProcess = null;
-                        api.logger?.info?.("Stopped camofox-browser server");
+                        return { text: "Stopped Camoufox browser server" };
                     }
-                    else {
-                        api.logger?.info?.("No managed server process running");
-                    }
-                    break;
+                    return { text: "No managed Camoufox server process running" };
                 default:
-                    api.logger?.error?.(`Unknown subcommand: ${subcommand}. Use: status, start, stop`);
+                    return { text: `Unknown Camoufox subcommand: ${subcommand}. Use: status, start, stop` };
             }
         },
     });

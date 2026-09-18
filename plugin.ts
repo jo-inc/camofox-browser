@@ -6,6 +6,7 @@
  */
 
 import type { ChildProcess } from "child_process";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
@@ -43,79 +44,12 @@ interface ToolResult {
   content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 }
 
-interface GatewayMethodRequest {
-  params: Record<string, unknown>;
-  respond: (ok: boolean, payload?: unknown) => void;
-}
-
-type GatewayMethodHandler = (request: GatewayMethodRequest) => void | Promise<void>;
-
-interface CliCommand {
-  description: (desc: string) => CliCommand;
-  option: (flags: string, desc: string, defaultValue?: string) => CliCommand;
-  argument: (name: string, desc: string) => CliCommand;
-  action: (handler: (...args: unknown[]) => void | Promise<void>) => CliCommand;
-  command: (name: string) => CliCommand;
-}
-
-interface CliContext {
-  program: CliCommand;
-  config: PluginConfig;
-  logger: {
-    info: (msg: string) => void;
-    error: (msg: string) => void;
-  };
-}
-
-interface ToolContext {
-  sessionKey?: string;
-  agentId?: string;
-  workspaceDir?: string;
-  sandboxed?: boolean;
-}
-
-type ToolDefinition = {
-  name: string;
-  description: string;
-  parameters: object;
-  execute: (id: string, params: Record<string, unknown>) => Promise<ToolResult>;
-};
-
-type ToolFactory = (ctx: ToolContext) => ToolDefinition | ToolDefinition[] | null | undefined;
-
-interface PluginApi {
-  registerTool: (
-    tool: ToolDefinition | ToolFactory,
-    options?: { name?: string; names?: string[]; optional?: boolean }
-  ) => void;
-  registerCommand: (cmd: {
-    name: string;
-    description: string;
-    handler: (args: string[]) => Promise<void>;
-  }) => void;
-  registerCli?: (
-    registrar: (ctx: CliContext) => void | Promise<void>,
-    opts?: { commands?: string[] }
-  ) => void;
-  registerGatewayMethod: (
-    method: string,
-    handler: GatewayMethodHandler,
-    opts?: { scope?: "operator.admin" }
-  ) => void;
-  config: Record<string, unknown>;
-  pluginConfig?: PluginConfig;
-  logger: {
-    info: (msg: string) => void;
-    error: (msg: string) => void;
-  };
-}
-
 let serverProcess: ChildProcess | null = null;
 
 async function startServer(
   pluginDir: string,
   port: number,
-  log: PluginApi["logger"],
+  log: OpenClawPluginApi["logger"],
   pluginCfg?: PluginConfig
 ): Promise<ChildProcess> {
   const cfg = loadConfig();
@@ -190,8 +124,8 @@ async function fetchApi(
   return res.json();
 }
 
-export default function register(api: PluginApi) {
-  const cfg = api.pluginConfig ?? (api.config as unknown as PluginConfig);
+export default function register(api: OpenClawPluginApi) {
+  const cfg = (api.pluginConfig ?? api.config) as unknown as PluginConfig;
   const port = cfg.port || 9377;
   const baseUrl = cfg.url || `http://localhost:${port}`;
   const autoStart = cfg.autoStart !== false; // default true
@@ -220,8 +154,9 @@ export default function register(api: PluginApi) {
   // imports — so the OpenClaw plugin and the MCP server behave identically and
   // cannot drift. Only the userId/sessionKey source (OpenClaw ctx) differs.
   for (const def of TOOL_DEFS) {
-    api.registerTool((ctx: ToolContext) => ({
+    api.registerTool((ctx: OpenClawPluginToolContext) => ({
       name: def.name,
+      label: def.name,
       description: def.description,
       parameters: def.inputSchema,
       async execute(_id, params) {
@@ -234,7 +169,7 @@ export default function register(api: PluginApi) {
           baseUrl,
           cfg
         );
-        return { content: adaptResponse(spec, payload) };
+        return { content: adaptResponse(spec, payload), details: {} };
       },
     }), { name: def.name });
   }
@@ -243,43 +178,38 @@ export default function register(api: PluginApi) {
   api.registerCommand({
     name: "camofox",
     description: "Camoufox browser server control (status, start, stop)",
-    handler: async (args) => {
-      const subcommand = args[0] || "status";
+    handler: async ({ args }) => {
+      const subcommand = args?.trim().split(/\s+/, 1)[0] || "status";
       switch (subcommand) {
         case "status":
           try {
             const health = await fetchApi(baseUrl, "/health");
-            api.logger?.info?.(`Camoufox server at ${baseUrl}: ${JSON.stringify(health)}`);
+            return { text: `Camoufox server at ${baseUrl}: ${JSON.stringify(health)}` };
           } catch {
-            api.logger?.error?.(`Camoufox server at ${baseUrl}: not reachable`);
+            return { text: `Camoufox server at ${baseUrl}: not reachable` };
           }
-          break;
         case "start":
           if (serverProcess) {
-            api.logger?.info?.("Camoufox server already running (managed)");
-            return;
+            return { text: "Camoufox server already running (managed)" };
           }
           if (await checkServerRunning(baseUrl)) {
-            api.logger?.info?.(`Camoufox server already running at ${baseUrl}`);
-            return;
+            return { text: `Camoufox server already running at ${baseUrl}` };
           }
           try {
             serverProcess = await startServer(pluginDir, port, api.logger, cfg);
+            return { text: `Started Camoufox server at ${baseUrl}` };
           } catch (err) {
-            api.logger?.error?.(`Failed to start server: ${(err as Error).message}`);
+            return { text: `Failed to start Camoufox server: ${(err as Error).message}` };
           }
-          break;
         case "stop":
           if (serverProcess) {
             serverProcess.kill();
             serverProcess = null;
-            api.logger?.info?.("Stopped camofox-browser server");
-          } else {
-            api.logger?.info?.("No managed server process running");
+            return { text: "Stopped Camoufox browser server" };
           }
-          break;
+          return { text: "No managed Camoufox server process running" };
         default:
-          api.logger?.error?.(`Unknown subcommand: ${subcommand}. Use: status, start, stop`);
+          return { text: `Unknown Camoufox subcommand: ${subcommand}. Use: status, start, stop` };
       }
     },
   });

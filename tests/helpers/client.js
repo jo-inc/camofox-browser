@@ -1,6 +1,11 @@
 import crypto from 'crypto';
 import { CI_TIMEOUT } from './test-env.js';
 
+export function shouldRetryCreateTab(err) {
+  return (err.status === 500 && /closed|disposed|terminated/i.test(err.message)) ||
+    err.data?.retryable === true;
+}
+
 class BrowserClient {
   constructor(baseUrl) {
     this.baseUrl = baseUrl;
@@ -72,7 +77,7 @@ class BrowserClient {
         }
         return result;
       } catch (err) {
-        const retriable = err.status === 500 && /closed|disposed|terminated/i.test(err.message);
+        const retriable = shouldRetryCreateTab(err);
         if (!retriable || attempt === retries) throw err;
         await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
       }
