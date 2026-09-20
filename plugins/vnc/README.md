@@ -16,7 +16,7 @@ noVNC / websockify (port 6080)
 Your browser → http://localhost:6080/vnc.html
 ```
 
-The plugin overrides Camoufox's default 1x1 virtual display with a human-usable resolution, then runs a watcher process that detects the Xvfb display and attaches x11vnc + noVNC. The watcher handles browser restarts automatically — when Camoufox relaunches on a new display, x11vnc reattaches.
+The plugin overrides Camoufox's default 1x1 virtual display with a human-usable resolution, then starts x11vnc only after `POST /vnc/start`. It pins the watcher to the owning Xvfb PID and display so it cannot attach to another sidecar if display numbers are reused. A time-bounded access lease survives a clean sidecar restart and automatically ends at expiry. Legacy noVNC/websockify is disabled by default; set `ENABLE_NOVNC=1` only when it is explicitly needed.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ The plugin overrides Camoufox's default 1x1 virtual display with a human-usable 
 
 ```bash
 docker run -p 9377:9377 -p 6080:6080 \
-  -e ENABLE_VNC=1 \
+  -e ENABLE_VNC=1 -e ENABLE_NOVNC=1 \
   camofox-browser
 
 # Open http://localhost:6080/vnc.html in your browser
@@ -84,7 +84,7 @@ docker run -p 9377:9377 -p 6080:6080 \
 
 ### GET /sessions/:userId/storage_state
 
-Export the full Playwright storage state (cookies + localStorage origins) for a user's active browser context.
+Export the full Playwright storage state (cookies + localStorage origins) for a user's active normal browser context. Native persistent profiles return `409`: their state is owned by Firefox's `userDataDir`, and Camoufox/Juggler storage-state export can hang for that context type.
 
 **Auth:** Same as cookie import — requires `CAMOFOX_API_KEY` Bearer token, or loopback access in non-production.
 

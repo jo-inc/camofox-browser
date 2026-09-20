@@ -1,8 +1,6 @@
 # persistence
 
-Optional per-user browser storage state persistence for camofox-browser.
-
-Saves and restores cookies + localStorage across session restarts, container deploys, and idle timeouts using Playwright's `storageState` API.
+Optional browser storage persistence for camofox-browser.
 
 ## Configuration
 
@@ -19,22 +17,27 @@ In `camofox.config.json`:
 }
 ```
 
-Or override via environment variable:
+Or override the profile root:
 
-```
+```text
 CAMOFOX_PROFILE_DIR=/data/profiles
 ```
 
 ## How it works
 
-- **Session create**: If a persisted `storageState` exists for the `userId`, it's restored into the new Playwright context.
-- **First run**: If no persisted state exists, bootstrap cookies from `CAMOFOX_COOKIES_DIR/cookies.txt` are imported (if present).
-- **Cookie import / session close / shutdown**: Storage state is checkpointed to disk via atomic tmp-write + rename.
-- **User isolation**: Each `userId` maps to a deterministic SHA256-hashed subdirectory under `profileDir`, so arbitrary userIds are path-safe.
+The persistence mechanism follows the browser mode:
+
+- **Normal browser contexts:** per-user cookies and localStorage are saved with Playwright `storageState`, using an atomic temporary-file rename, and restored through `contextOptions.storageState`.
+- **Native persistent Firefox contexts:** Firefox owns cookie, localStorage, and session-store durability in its `userDataDir`. Launch preferences enable session restore, preserve HTTPS session cookies, and disable cookie/session sanitization on shutdown. Playwright `storageState()` and `cookies()` are deliberately not called in this mode because Camoufox/Juggler can hang on those protocol requests. One sidecar/profile is one browser-identity trust boundary; every logical `userId` attached to it shares browser state, so use separate sidecars and `userDataDir` values for isolated identities.
+- **Last-page handling:** closing the final managed page retains a blank keeper page so Firefox does not terminate before session state is flushed.
+- **First run:** if no prior per-user state exists, bootstrap cookies from `CAMOFOX_COOKIES_DIR/cookies.txt` are imported when configured.
+- **User isolation:** normal-context state uses a deterministic SHA256-hashed subdirectory per `userId`, preventing path traversal.
+
+For native persistent contexts, checkpoint endpoints return `persisted: true` with `reason: "native-profile"`; this confirms that durability is delegated to the configured Firefox profile rather than attempting a protocol export.
 
 ## Docker
 
-When running with Docker, mount the profile directory as a volume:
+Mount the profile directory as a volume:
 
 ```bash
 docker run -d \

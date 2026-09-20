@@ -67,6 +67,28 @@ describe('profile persistence helpers', () => {
     expect(meta.storageStatePath).toBe(result.storageStatePath);
   });
 
+  test('persistent context checkpoints use the native profile without protocol export', async () => {
+    const context = {
+      cookies: jest.fn(async () => { throw new Error('must not be called'); }),
+      storageState: jest.fn(async () => { throw new Error('must not be called'); }),
+    };
+
+    const result = await persistStorageState({
+      profileDir: tmpDir,
+      userId: 'persistent-user',
+      context,
+      logger: { warn: jest.fn() },
+      nativeProfile: true,
+    });
+    expect(result.persisted).toBe(true);
+    expect(result.reason).toBe('native-profile');
+    expect(context.cookies).not.toHaveBeenCalled();
+    expect(context.storageState).not.toHaveBeenCalled();
+    const meta = JSON.parse(await fs.readFile(result.metaPath, 'utf8'));
+    expect(meta.mode).toBe('native-profile');
+    expect(meta.userId).toBe('persistent-user');
+  });
+
   test('loadPersistedStorageState ignores invalid JSON files', async () => {
     const { storageStatePath } = getUserPersistencePaths(tmpDir, 'user-2');
     await fs.mkdir(path.dirname(storageStatePath), { recursive: true });

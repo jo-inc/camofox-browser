@@ -36,6 +36,13 @@ import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import {
+  applyPersistentProfilePrefs,
+  closePagePreservingPersistentContext,
+  isPersistentContext,
+  probeBrowserHealth,
+  wrapPersistentContext,
+} from './lib/persistent-context.js';
 
 const CONFIG = loadConfig();
 
@@ -524,10 +531,12 @@ async function withUserLimit(userId, operation) {
 async function safePageClose(page) {
   if (!page || page.isClosed()) return;
   try {
-    await Promise.race([
-      page.close({ runBeforeUnload: false }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('page close timed out')), PAGE_CLOSE_TIMEOUT_MS)),
-    ]);
+    return await closePagePreservingPersistentContext(page, async () => {
+      await Promise.race([
+        page.close({ runBeforeUnload: false }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('page close timed out')), PAGE_CLOSE_TIMEOUT_MS)),
+      ]);
+    }, { timeoutMs: PAGE_CLOSE_TIMEOUT_MS });
   } catch (e) {
     log('warn', 'page close timed out or failed, force-closing', { error: e.message });
     try { await page.close({ runBeforeUnload: false }); } catch (_) {}
@@ -564,12 +573,25 @@ const BROWSER_IDLE_TIMEOUT_MS = CONFIG.browserIdleTimeoutMs;
 let browserIdleTimer = null;
 let browserLaunchPromise = null;
 let browserWarmRetryTimer = null;
+const browserIdleHolds = new Set();
+
+function acquireBrowserIdleHold(holder) {
+  const key = String(holder || 'anonymous');
+  browserIdleHolds.add(key);
+  clearBrowserIdleTimer();
+  return key;
+}
+
+function releaseBrowserIdleHold(holder) {
+  browserIdleHolds.delete(String(holder || 'anonymous'));
+  scheduleBrowserIdleShutdown();
+}
 
 function scheduleBrowserIdleShutdown() {
   clearBrowserIdleTimer();
-  if (sessions.size === 0 && browser) {
+  if (sessions.size === 0 && browser && browserIdleHolds.size === 0) {
     browserIdleTimer = setTimeout(async () => {
-      if (sessions.size === 0 && browser) {
+      if (sessions.size === 0 && browser && browserIdleHolds.size === 0) {
         log('info', 'browser idle shutdown (no sessions)');
         await closeBrowserFully('idle_shutdown');
       }
@@ -654,7 +676,6 @@ async function restartBrowser(reason) {
   try {
     await closeAllSessions(`browser_restart:${reason}`, { clearDownloads: true, clearLocks: true });
     await closeBrowserFully(`browser_restart:${reason}`);
-    pluginEvents.emit('browser:closed', { reason });
     browserLaunchPromise = null;
     await ensureBrowser();
     healthState.consecutiveNavFailures = 0;
@@ -669,14 +690,24 @@ async function restartBrowser(reason) {
 
 function getTotalTabCount() {
   let total = 0;
+  const countedContexts = new Set();
   for (const session of sessions.values()) {
+    const contextIdentity = session.context?._persistentContext || session.context;
+    if (countedContexts.has(contextIdentity)) continue;
+    countedContexts.add(contextIdentity);
     try {
-      // Use real Playwright page count so leaked pages exert backpressure
-      // on MAX_TABS_GLOBAL, surfacing leaks before Firefox starves.
-      total += session.context.pages().length;
+      // Use real Playwright page count so leaked pages exert backpressure on
+      // MAX_TABS_GLOBAL. Persistent logical leases share one native context,
+      // which must be counted only once.
+      total += contextIdentity.pages().length;
     } catch (_) {
-      // Context is dead — fall back to bookkeeping count for this session.
-      for (const group of session.tabGroups.values()) total += group.size;
+      // Context is dead — fall back to tracked tabs. For a shared persistent
+      // context, combine every lease exactly once.
+      for (const candidate of sessions.values()) {
+        const candidateIdentity = candidate.context?._persistentContext || candidate.context;
+        if (candidateIdentity !== contextIdentity) continue;
+        for (const group of candidate.tabGroups.values()) total += group.size;
+      }
     }
   }
   return total;
@@ -705,12 +736,14 @@ function getExternalCamoufoxLaunch() {
 
 async function probeGoogleSearch(candidateBrowser) {
   let context = null;
+  let page = null;
+  const persistentContext = candidateBrowser?._persistentContext || null;
   try {
-    context = await candidateBrowser.newContext({
+    context = persistentContext || await candidateBrowser.newContext({
       viewport: { width: 1280, height: 720 },
       permissions: ['geolocation'],
     });
-    const page = await context.newPage();
+    page = await context.newPage();
     await page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(1200);
     await page.goto('https://www.google.com/search?q=weather%20today', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -723,7 +756,11 @@ async function probeGoogleSearch(candidateBrowser) {
       blocked,
     };
   } finally {
-    await context?.close().catch(() => {});
+    if (persistentContext) {
+      if (page) await safePageClose(page);
+    } else {
+      await context?.close().catch(() => {});
+    }
   }
 }
 
@@ -766,6 +803,10 @@ async function _closeBrowserFullyImpl(reason) {
   const pid = _lastBrowserPid;
   const preCloseFds = _countOpenFds();
   const preCloseHandles = _countActiveHandles();
+
+  // Tell profile-bound transports to detach before this X display can be
+  // recycled for another sidecar or browser process.
+  pluginEvents.emit('browser:closing', { reason });
 
   // Null the ref so new requests don't use a dying browser
   browser = null;
@@ -817,6 +858,7 @@ async function _closeBrowserFullyImpl(reason) {
   log('info', 'browser closed fully', {
     reason, pid, preCloseFds, postCloseFds, preCloseHandles, postCloseHandles,
   });
+  pluginEvents.emit('browser:closed', { reason });
 }
 
 /**
@@ -954,7 +996,23 @@ async function launchBrowserInstance() {
       options.proxy = normalizePlaywrightProxy(options.proxy);
       await pluginEvents.emitAsync('browser:launching', { options });
 
-      candidateBrowser = await firefox.launch(options);
+      if (CONFIG.persistentContext) {
+        const userDataDir = CONFIG.userDataDir || `${CONFIG.profileDir}/persistent-context`;
+        fs.mkdirSync(userDataDir, { recursive: true });
+        applyPersistentProfilePrefs(options);
+        options.viewport = { width: 1280, height: 720 };
+        options.permissions = ['geolocation'];
+        if (!CONFIG.proxy.host) {
+          options.locale = 'en-US';
+          options.timezoneId = 'America/Los_Angeles';
+          options.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+        }
+        log('info', 'launching persistent camoufox context', { userDataDir });
+        const persistentContext = await firefox.launchPersistentContext(userDataDir, options);
+        candidateBrowser = wrapPersistentContext(persistentContext);
+      } else {
+        candidateBrowser = await firefox.launch(options);
+      }
 
       if (proxyPool?.canRotateSessions) {
         const probe = await probeGoogleSearch(candidateBrowser);
@@ -985,7 +1043,11 @@ async function launchBrowserInstance() {
       browser = candidateBrowser; // publish AFTER PID is captured
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
-      pluginEvents.emit('browser:launched', { browser, display: vdDisplay });
+      pluginEvents.emit('browser:launched', {
+        browser,
+        display: vdDisplay,
+        displayPid: localVirtualDisplay?.proc?.pid ?? null,
+      });
 
       log('info', 'camoufox launched', {
         attempt,
@@ -1038,6 +1100,7 @@ function normalizeUserId(userId) {
 }
 
 const sessionCreations = new Map();
+const sessionTeardowns = new Map();
 
 function clearSessionLocks(session) {
   if (!session?.tabGroups) return;
@@ -1053,13 +1116,31 @@ function clearSessionLocks(session) {
   refreshTabLockQueueDepth();
 }
 
-async function closeSession(userId, session, {
+async function closeSession(userId, session, options = {}) {
+  if (!session) return;
+  const key = normalizeUserId(userId);
+  const existing = sessionTeardowns.get(key);
+  if (existing) {
+    if (existing.session === session) return existing.promise;
+    await existing.promise.catch(() => {});
+  }
+
+  session._closing = true;
+  const entry = { session, promise: null };
+  entry.promise = closeSessionImpl(key, session, options);
+  sessionTeardowns.set(key, entry);
+  try {
+    return await entry.promise;
+  } finally {
+    if (sessionTeardowns.get(key) === entry) sessionTeardowns.delete(key);
+  }
+}
+
+async function closeSessionImpl(userId, session, {
   reason = 'session_closed',
   clearDownloads = true,
   clearLocks = true,
 } = {}) {
-  if (!session) return;
-
   const key = normalizeUserId(userId);
 
   // Drain locks BEFORE closing context — queued operations get clean "Tab destroyed"
@@ -1072,7 +1153,7 @@ async function closeSession(userId, session, {
     await clearSessionDownloads(session).catch(() => {});
   }
 
-  await pluginEvents.emitAsync('session:destroying', { userId: key, reason });
+  await pluginEvents.emitAsync('session:destroying', { userId: key, reason, context: session.context });
   if (session.tracePath) {
     try {
       await session.context.tracing.stop({ path: session.tracePath });
@@ -1082,9 +1163,26 @@ async function closeSession(userId, session, {
     }
   }
 
+  if (isPersistentContext(session.context)) {
+    // A persistent-context lease intentionally makes context.close() a no-op.
+    // Close this logical session's tracked pages explicitly, retaining at most
+    // one blank native-context anchor through safePageClose().
+    const trackedPages = new Set();
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) {
+        if (tabState.navigateAbort) tabState.navigateAbort.abort();
+        if (tabState.page) trackedPages.add(tabState.page);
+      }
+    }
+    for (const page of trackedPages) {
+      await safePageClose(page);
+    }
+    session.tabGroups.clear();
+  }
+
   await session.context.close().catch(() => {});
-  sessions.delete(key);
-  await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
+  if (sessions.get(key) === session) sessions.delete(key);
+  await pluginEvents.emitAsync('session:destroyed', { userId: key, reason, context: session.context });
 
   refreshActiveTabsGauge();
 }
@@ -1098,6 +1196,8 @@ async function closeAllSessions(reason, { clearDownloads = true, clearLocks = tr
 
 async function getSession(userId, { trace = false } = {}) {
   const key = normalizeUserId(userId);
+  const teardown = sessionTeardowns.get(key);
+  if (teardown) await teardown.promise.catch(() => {});
   let session = sessions.get(key);
   
   // Check if existing session's context is still alive
@@ -1119,6 +1219,10 @@ async function getSession(userId, { trace = false } = {}) {
   
   if (!session) {
     session = await coalesceInflight(sessionCreations, key, async () => {
+      const pendingTeardown = sessionTeardowns.get(key);
+      if (pendingTeardown) await pendingTeardown.promise.catch(() => {});
+      const replacement = sessions.get(key);
+      if (replacement && !replacement._closing) return replacement;
       if (sessions.size >= MAX_SESSIONS) {
         throw Object.assign(
           new Error('Maximum concurrent sessions reached'),
@@ -1143,23 +1247,24 @@ async function getSession(userId, { trace = false } = {}) {
         }
       }
       const b = await ensureBrowser();
-      const contextOptions = {
+      const contextOptions = CONFIG.persistentContext ? {} : {
         viewport: { width: 1280, height: 720 },
         permissions: ['geolocation'],
       };
-      // When geoip is active (proxy configured), camoufox auto-configures
-      // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
-      if (!CONFIG.proxy.host) {
+      // A native persistent profile has one browser-level proxy and one shared
+      // identity boundary. Per-session context options only apply to normal
+      // isolated browser contexts.
+      if (!CONFIG.persistentContext && !CONFIG.proxy.host) {
         contextOptions.locale = 'en-US';
         contextOptions.timezoneId = 'America/Los_Angeles';
         contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
       }
       let sessionProxy = null;
-      if (proxyPool?.canRotateSessions) {
+      if (!CONFIG.persistentContext && proxyPool?.canRotateSessions) {
         sessionProxy = proxyPool.getNext(`ctx-${key}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`);
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, sessionId: sessionProxy.sessionId });
-      } else if (proxyPool) {
+      } else if (!CONFIG.persistentContext && proxyPool) {
         sessionProxy = proxyPool.getNext();
         contextOptions.proxy = normalizePlaywrightProxy(sessionProxy);
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
@@ -1403,10 +1508,10 @@ async function recycleOldestTab(session, reqId, userId) {
 function destroySession(userId) {
   const key = normalizeUserId(userId);
   const session = sessions.get(key);
-  if (!session) return;
+  if (!session) return sessionTeardowns.get(key)?.promise;
   log('warn', 'destroying dead session', { userId: key });
   sessions.delete(key);
-  closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
+  return closeSession(key, session, { reason: 'destroy_session', clearDownloads: true, clearLocks: true }).catch(() => {});
 }
 
 function findTab(session, tabId) {
@@ -5016,23 +5121,52 @@ setInterval(() => {
 // pages starve Firefox of DOM threads and eventually block new tab creation.
 setInterval(() => {
   let reaped = 0;
+  const persistentRegistered = new Map();
+  for (const session of sessions.values()) {
+    if (session._closing || !isPersistentContext(session.context)) continue;
+    const contextKey = session.context?._persistentContext || session.context;
+    let registered = persistentRegistered.get(contextKey);
+    if (!registered) {
+      registered = new Set();
+      persistentRegistered.set(contextKey, registered);
+    }
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) registered.add(tabState.page);
+    }
+  }
+
+  const scannedPersistentContexts = new Set();
   for (const session of sessions.values()) {
     if (session._closing) continue;
+    const persistent = isPersistentContext(session.context);
+    const contextKey = session.context?._persistentContext || session.context;
+    if (persistent) {
+      if (scannedPersistentContexts.has(contextKey)) continue;
+      scannedPersistentContexts.add(contextKey);
+    }
+
     let contextPages;
     try {
       contextPages = session.context.pages();
     } catch (_) {
       continue; // context already dead
     }
-    const registered = new Set();
-    for (const group of session.tabGroups.values()) {
-      for (const tabState of group.values()) registered.add(tabState.page);
+    const registered = persistent ? persistentRegistered.get(contextKey) || new Set() : new Set();
+    if (!persistent) {
+      for (const group of session.tabGroups.values()) {
+        for (const tabState of group.values()) registered.add(tabState.page);
+      }
     }
+    let livePageCount = contextPages.filter(page => !page.isClosed?.()).length;
     for (const page of contextPages) {
       if (!registered.has(page)) {
+        // Firefox terminates a persistent browser when its final page closes.
+        // Keep one unregistered page as the native-context anchor.
+        if (persistent && livePageCount <= 1) continue;
         reaped++;
+        livePageCount--;
         page.removeAllListeners();
-        page.close({ runBeforeUnload: false }).catch(() => {});
+        safePageClose(page).catch(() => {});
       }
     }
   }
@@ -5897,18 +6031,12 @@ setInterval(async () => {
     log('warn', 'health probe forced despite active ops', { activeOps: healthState.activeOps, timeSinceSuccessMs: timeSinceSuccess });
   }
   
-  let testContext;
   try {
-    testContext = await browser.newContext();
-    const page = await testContext.newPage();
-    await page.goto('about:blank', { timeout: 5000 });
-    await page.close();
-    await testContext.close();
+    await probeBrowserHealth(browser, { timeoutMs: 5000 });
     healthState.lastSuccessfulNav = Date.now();
   } catch (err) {
     failuresTotal.labels('health_probe', 'internal').inc();
     log('warn', 'health probe failed', { error: err.message, timeSinceSuccessMs: timeSinceSuccess });
-    if (testContext) await testContext.close().catch(() => {});
     restartBrowser('health probe failed').catch(() => {});
   }
 }, 60_000);
@@ -5931,7 +6059,6 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
-  pluginEvents.emit('server:shutdown', { signal });
 
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
@@ -5946,6 +6073,8 @@ async function gracefulShutdown(signal) {
     clearDownloads: false,
     clearLocks: false,
   });
+
+  await pluginEvents.emitAsync('server:shutdown', { signal });
 
   await closeBrowserFully(`shutdown:${signal}`);
   process.exit(0);
@@ -5973,6 +6102,8 @@ const pluginCtx = {
   getSession,
   destroySession,
   closeSession,
+  acquireBrowserIdleHold,
+  releaseBrowserIdleHold,
   withUserLimit,
   safePageClose,
   normalizeUserId,

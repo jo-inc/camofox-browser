@@ -3,8 +3,19 @@
   "name": "Camofox Browser",
   "version": "1.6.0",
   "plugins": {
-    "youtube": { "enabled": true },
-    "persistence": { "enabled": true },
-    "vnc": { "resolution": "1920x1080" }
+    "youtube": {
+      "enabled": true
+    },
+    "persistence": {
+      "enabled": true,
+      "checkpointIntervalMs": 0
+    },
+    "vnc": {
+      "enabled": true,
+      "transportEnabled": false,
+      "overrideDisplay": true,
+      "resolution": "1920x1080",
+      "autoStart": false
+    }
   }
 }

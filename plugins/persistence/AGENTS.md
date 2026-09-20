@@ -1,32 +1,43 @@
 # Persistence Plugin — Agent Guide
 
-Saves and restores per-user browser storage state (cookies + localStorage) across session restarts using Playwright's `storageState` API. Enabled by default — profiles persist to `~/.camofox/profiles/`.
+Persists browser state across logical session expiry and browser-process restarts. Enabled by default; profiles live under `~/.camofox/profiles/`.
 
 ## How It Works
 
-- `session:creating` hook → loads saved `storage_state.json` into `contextOptions.storageState`
-- `session:created` hook → imports bootstrap cookies if no persisted state exists
-- `session:cookies:import` / `session:destroyed` / `server:shutdown` → checkpoints state to disk
+Choose behavior by browser mode:
 
-All hooks are async and awaited via `emitAsync()` — storage state is guaranteed loaded before the context is created.
+- Normal contexts: `session:creating` loads `storage-state.json`; lifecycle hooks checkpoint Playwright `storageState()` atomically.
+- Native persistent contexts: rely on Firefox `userDataDir` plus session-restore and no-sanitize launch preferences. Never call Playwright `storageState()` or `cookies()` for this mode because Camoufox/Juggler can hang on those requests.
+- Persistent contexts retain a blank final page when callers close their last managed tab. Closing Firefox's final page terminates the persistent browser process before session state can flush.
+- Checkpoint requests in native persistent mode write metadata and return `reason: "native-profile"` without a browser-protocol export.
+- One native persistent sidecar/profile is one browser-identity trust boundary: every logical `userId` attached to that sidecar shares its cookies and localStorage. Use a separate sidecar and `userDataDir` when identities must be isolated.
+
+Lifecycle hooks are async and awaited through `emitAsync()`.
 
 ## Key Files
 
-- `index.js` — lifecycle hooks (no routes, no `child_process`)
-- `persistence.test.js` — unit tests for `lib/persistence.js` helpers
-- `plugin.test.js` — integration tests for plugin lifecycle hooks
+- `index.js` — lifecycle hooks and authenticated checkpoint routes
+- `../../lib/persistence.js` — normal-context storage-state writes and native-profile checkpoint metadata
+- `../../lib/persistent-context.js` — persistent-context adapter, Firefox durability preferences, and last-page guard
+- `persistence.test.js` — helper tests
+- `plugin.test.js` — lifecycle and route-registration tests
 
 ## Storage Layout
 
-```
+Normal contexts:
+
+```text
 ~/.camofox/profiles/
 └── <sha256(userId)>/
-    └── storage_state.json
+    ├── storage-state.json
+    └── meta.json
 ```
+
+Native persistent contexts store browser data in the configured `CAMOFOX_USER_DATA_DIR`; hashed user directories contain checkpoint metadata only.
 
 ## Configuration
 
-Enabled by default. Override profile directory with `CAMOFOX_PROFILE_DIR` env var or `"profileDir"` in plugin config. To disable: `"persistence": { "enabled": false }` in `camofox.config.json`.
+Enabled by default. Override the profile root with `CAMOFOX_PROFILE_DIR` or `"profileDir"` in plugin config. Disable with `"persistence": { "enabled": false }`.
 
 ## Original Contributors
 

@@ -44,11 +44,19 @@ async function safePageClose(page) {
  */
 function getTotalTabCount(sessions) {
   let total = 0;
+  const countedContexts = new Set();
   for (const session of sessions.values()) {
+    const contextIdentity = session.context?._persistentContext || session.context;
+    if (countedContexts.has(contextIdentity)) continue;
+    countedContexts.add(contextIdentity);
     try {
-      total += session.context.pages().length;
+      total += contextIdentity.pages().length;
     } catch (_) {
-      for (const group of session.tabGroups.values()) total += group.size;
+      for (const candidate of sessions.values()) {
+        const candidateIdentity = candidate.context?._persistentContext || candidate.context;
+        if (candidateIdentity !== contextIdentity) continue;
+        for (const group of candidate.tabGroups.values()) total += group.size;
+      }
     }
   }
   return total;
@@ -64,22 +72,43 @@ function getTotalTabCount(sessions) {
  */
 function findOrphanPages(sessions) {
   const orphans = [];
+  const persistentRegistered = new Map();
+  for (const session of sessions.values()) {
+    if (session._closing || !session.context?._persistentContext) continue;
+    const key = session.context._persistentContext;
+    let registered = persistentRegistered.get(key);
+    if (!registered) {
+      registered = new Set();
+      persistentRegistered.set(key, registered);
+    }
+    for (const group of session.tabGroups.values()) {
+      for (const tabState of group.values()) registered.add(tabState.page);
+    }
+  }
+
+  const scannedPersistent = new Set();
   for (const session of sessions.values()) {
     if (session._closing) continue;
+    const contextKey = session.context?._persistentContext || session.context;
+    const persistent = !!session.context?._persistentContext;
+    if (persistent) {
+      if (scannedPersistent.has(contextKey)) continue;
+      scannedPersistent.add(contextKey);
+    }
     let contextPages;
     try {
       contextPages = session.context.pages();
     } catch (_) {
       continue;
     }
-    const registered = new Set();
-    for (const group of session.tabGroups.values()) {
-      for (const tabState of group.values()) registered.add(tabState.page);
+    const registered = persistent ? persistentRegistered.get(contextKey) || new Set() : new Set();
+    if (!persistent) {
+      for (const group of session.tabGroups.values()) {
+        for (const tabState of group.values()) registered.add(tabState.page);
+      }
     }
     for (const page of contextPages) {
-      if (!registered.has(page)) {
-        orphans.push(page);
-      }
+      if (!registered.has(page)) orphans.push(page);
     }
   }
   return orphans;
@@ -250,6 +279,17 @@ describe('getTotalTabCount', () => {
     expect(getTotalTabCount(sessions)).toBe(7);
   });
 
+  test('counts one shared persistent context only once', () => {
+    const nativeContext = { pages: () => [{}, {}, {}] };
+    const lease1 = { _persistentContext: nativeContext, pages: nativeContext.pages };
+    const lease2 = { _persistentContext: nativeContext, pages: nativeContext.pages };
+    const sessions = new Map([
+      ['user1', { context: lease1, tabGroups: new Map() }],
+      ['user2', { context: lease2, tabGroups: new Map() }],
+    ]);
+    expect(getTotalTabCount(sessions)).toBe(3);
+  });
+
   test('mixed: some contexts alive, some dead', () => {
     const sessions = new Map([
       ['user1', { context: { pages: () => [{}, {}] }, tabGroups: new Map() }],
@@ -362,6 +402,28 @@ describe('findOrphanPages (orphan page reaper)', () => {
     expect(orphans).toHaveLength(2);
     expect(orphans).toContain(orphan1);
     expect(orphans).toContain(orphan2);
+  });
+
+  test('does not reap sibling-session pages in one persistent context', () => {
+    const tracked1 = { id: 't1' };
+    const tracked2 = { id: 't2' };
+    const keeper = { id: 'keeper' };
+    const nativeContext = { pages: () => [tracked1, tracked2, keeper] };
+    const lease = () => ({ _persistentContext: nativeContext, pages: nativeContext.pages });
+    const sessions = new Map([
+      ['user1', {
+        _closing: false,
+        context: lease(),
+        tabGroups: new Map([['list1', new Map([['tab1', { page: tracked1 }]])]]),
+      }],
+      ['user2', {
+        _closing: false,
+        context: lease(),
+        tabGroups: new Map([['list2', new Map([['tab2', { page: tracked2 }]])]]),
+      }],
+    ]);
+
+    expect(findOrphanPages(sessions)).toEqual([keeper]);
   });
 
   test('handles session with empty tabGroups (all pages are orphans)', () => {
