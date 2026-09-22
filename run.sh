@@ -3,7 +3,7 @@
 # Usage: ./run.sh [-p port]
 # Example: ./run.sh -p 3001
 
-CAMOFOX_PORT=3000
+CAMOFOX_PORT=9377
 while getopts "p:" opt; do
   case $opt in
     p) CAMOFOX_PORT="$OPTARG" ;;
@@ -11,6 +11,8 @@ while getopts "p:" opt; do
   esac
 done
 export CAMOFOX_PORT
+export CAMOFOX_BIND_HOST="${CAMOFOX_BIND_HOST:-127.0.0.1}"
+export CAMOFOX_CRASH_REPORT_ENABLED="${CAMOFOX_CRASH_REPORT_ENABLED:-false}"
 
 # Install deps if needed
 if [ ! -d "node_modules" ]; then
@@ -18,8 +20,10 @@ if [ ! -d "node_modules" ]; then
     npm install
 fi
 
-# Check if camoufox browser is installed
-if ! npx camoufox-js --version &> /dev/null 2>&1; then
+# `version` is a subcommand, not --version, and it exits 0 even when the
+# browser is missing. The install marker is version.json under `camoufox-js path`.
+CAMOFOX_DIR="$(npx camoufox-js path 2>/dev/null || true)"
+if [ ! -f "${CAMOFOX_DIR}/version.json" ]; then
     echo "Fetching Camoufox browser..."
     npx camoufox-js fetch
 fi
