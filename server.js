@@ -86,6 +86,10 @@ function _browserPid() {
 function _resourceOpts() {
   return { sessionCount: sessions.size, tabCount: _countTabs(), browserPid: _browserPid() };
 }
+if (process.platform === 'win32') {
+  void refreshWindowsProcesses();
+  setInterval(refreshWindowsProcesses, 30_000).unref();
+}
 reporter.startWatchdog(30_000, () => {
   const summary = [];
   for (const [sid, session] of sessions) {
@@ -6141,7 +6145,10 @@ setInterval(() => {
   if (sessions.size > 0 || !browser) return;
   const mem = process.memoryUsage();
   const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
-  const browserRssMb = browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb();
+  // ponytail: cached Windows samples can be 30 seconds old; require fresh samples before enabling restarts.
+  const browserRssMb = process.platform === 'linux'
+    ? browserProcessTreeRssMb(_browserPid()) ?? browserProcessNameRssMb()
+    : null;
 
   if (browserRssMb !== null && browserRssMb >= CONFIG.browserRssRestartThresholdMb) {
     log('warn', 'browser rss pressure, restarting browser', {

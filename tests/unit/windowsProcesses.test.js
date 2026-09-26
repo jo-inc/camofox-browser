@@ -1,4 +1,5 @@
-import { spawn } from 'child_process';
+import cp, { spawn } from 'child_process';
+import { jest } from '@jest/globals';
 import { once } from 'events';
 import { launchOptions } from 'camoufox-js';
 import { firefox } from 'playwright-core';
@@ -8,11 +9,27 @@ import {
   isWindowsProcessCurrent,
   killWindowsProcessTree,
   normalizeWindowsProcess,
+  refreshWindowsProcesses,
   selectWindowsProcessTree,
   snapshotWindowsProcesses,
 } from '../../lib/windows-processes.js';
+import { browserProcessTreeRssMb, collectResourceSnapshot } from '../../lib/resources.js';
 
 const testOnWindows = process.platform === 'win32' ? test : test.skip;
+
+testOnWindows('cached memory queries do not request process command lines', async () => {
+  const query = jest.spyOn(cp, 'execFile').mockImplementation((_command, _args, _options, callback) => {
+    callback(null, '[]');
+  });
+  try {
+    await refreshWindowsProcesses();
+    const script = query.mock.calls[0][1].at(-1);
+    expect(script).toContain('-Property ProcessId,ParentProcessId,Name,CreationDate,WorkingSetSize');
+    expect(script).not.toContain('CommandLine');
+  } finally {
+    query.mockRestore();
+  }
+});
 
 test('selects only a root process and its descendants', () => {
   const processes = [
@@ -72,6 +89,12 @@ testOnWindows('production cleanup kills a real Camoufox process tree', async () 
     const root = roots[0];
     const ownedPids = selectWindowsProcessTree(root.pid, snapshot).map((proc) => proc.pid);
     expect(ownedPids).toContain(root.pid);
+
+    await refreshWindowsProcesses();
+    expect(browserProcessTreeRssMb(root.pid)).toBeGreaterThan(0);
+    const resources = collectResourceSnapshot();
+    expect(resources.browserRssMb).toBeGreaterThan(0);
+    expect(resources.browserMemoryMetric).toBe('workingSet');
 
     await killProcessIds([root.pid], { delayMs: 0, processSnapshots: snapshot });
     await waitFor(() => !browser.isConnected());
