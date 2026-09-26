@@ -401,6 +401,10 @@ Telemetry gives us structured data on *which sites fail*, *how they fail*, and *
 
 Each report includes the failure type, stack trace, tab health counters (HTTP status histogram, console errors, request failures, redirect depth), and the target URL -- all anonymized.
 
+Windows browser memory reports use working-set sizes from a process snapshot refreshed every 30 seconds. The value stays in `browserRssMb`, with `browserMemoryMetric: 'workingSet'` identifying the measurement. When Playwright exposes no browser PID, the fallback counts only this server's browser descendants. Cached Windows samples are excluded from automatic browser memory restarts.
+
+Background memory queries do not request process command lines.
+
 #### How it works
 
 Telemetry is sent to a lightweight Cloudflare Worker endpoint at [`https://camofox-telemetry.askjo.workers.dev`](https://camofox-telemetry.askjo.workers.dev/health). The endpoint holds the GitHub App credentials as environment secrets -- **no secrets are shipped in this package**.
