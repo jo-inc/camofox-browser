@@ -10,21 +10,23 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { selectNpmCommand } from './lib/npm-command.mjs';
 
 const execFile = promisify(execFileCallback);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MCP_DIR = join(ROOT, 'mcp');
+const npm = selectNpmCommand({ platform: process.platform, env: process.env, execPath: process.execPath });
 const testDir = await mkdtemp(join(tmpdir(), 'camofox-browser-mcp-package-'));
 let tarball;
 
 try {
-  const { stdout } = await execFile('npm', ['pack', '--json'], { cwd: MCP_DIR });
+  const { stdout } = await execFile(npm.file, [...npm.args, 'pack', '--json'], { cwd: MCP_DIR });
   const [{ filename }] = JSON.parse(stdout);
   tarball = join(MCP_DIR, filename);
 
   const installDir = join(testDir, 'install');
   await mkdir(installDir);
-  await execFile('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], {
+  await execFile(npm.file, [...npm.args, 'install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], {
     cwd: installDir,
   });
 
