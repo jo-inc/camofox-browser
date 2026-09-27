@@ -2901,6 +2901,18 @@ app.post('/pressure/cleanup', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs', async (req, res) => {
+  // The tab is registered before it navigates, and the route deadline can pass
+  // while navigation is still in flight. An error response carries no tabId, so
+  // the catch below attempts to discard any registered tab, and a registration
+  // completed after abandonment attempts its own cleanup.
+  let createdTabId = null;
+  let abandoned = false;
+  const discardCreatedTab = async () => {
+    if (!createdTabId) return;
+    const session = sessions.get(normalizeUserId(req.body.userId));
+    if (session) await destroyTimedOutTab(session, createdTabId, 'tab_create_failed', req.body.userId);
+    createdTabId = null;
+  };
   try {
     const { userId, sessionKey, listItemId, url, trace } = req.body;
     // Accept both sessionKey (preferred) and listItemId (legacy) for backward compatibility
@@ -2956,10 +2968,16 @@ app.post('/tabs', async (req, res) => {
       let tabState = createTabState(page);
       attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
       group.set(tabId, tabState);
+      createdTabId = tabId;
       releasePageLease(session, lease);
       attachPopupHandler(page, userId, resolvedSessionKey);
       refreshActiveTabsGauge();
-      
+      if (abandoned) {
+        // The route deadline passed during session or page creation.
+        await discardCreatedTab();
+        throw new Error('tab create abandoned after the route deadline');
+      }
+
       if (url) {
         const urlErr = validateUrl(url);
         if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
@@ -2969,6 +2987,8 @@ app.post('/tabs', async (req, res) => {
           tabState.lastNavigationHttpStatus = typeof navigationResponse?.status === 'function' ? navigationResponse.status() : null;
           recordNavSuccess(userId);
         } catch (navErr) {
+          // A page closed by discardCreatedTab is not a navigation verdict.
+          if (abandoned) throw navErr;
           if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
             log('warn', 'tab create navigate failed, retrying with fresh proxy', {
               reqId: req.reqId, tabId, error: navErr.message,
@@ -2986,9 +3006,14 @@ app.post('/tabs', async (req, res) => {
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
             retryGroup.set(tabId, tabState);
+            createdTabId = tabId;
             releasePageLease(session, retryLease);
             attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
+            if (abandoned) {
+              await discardCreatedTab();
+              throw new Error('tab create abandoned after the route deadline');
+            }
             const navigationResponse = await withPageLoadDuration('open_url', () => navigatePage(retryPage, url));
             tabState.lastNavigationHttpStatus = typeof navigationResponse?.status === 'function' ? navigationResponse.status() : null;
             recordNavSuccess(userId);
@@ -3001,7 +3026,10 @@ app.post('/tabs', async (req, res) => {
         }
         tabState.visitedUrls.add(url);
       }
-      
+      // The route deadline passed during navigation and the catch below has
+      // begun discarding the tab, so do not announce it.
+      if (abandoned) throw new Error('tab create abandoned after the route deadline');
+
       pluginEvents.emit('tab:created', { userId, tabId, page, url: page.url() });
       log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });
       return {
@@ -3015,6 +3043,12 @@ app.post('/tabs', async (req, res) => {
     res.json(result);
   } catch (err) {
     log('error', 'tab create failed', { reqId: req.reqId, error: err.message });
+    abandoned = true;
+    try {
+      await discardCreatedTab();
+    } catch (cleanupErr) {
+      log('warn', 'tab create cleanup failed', { reqId: req.reqId, tabId: createdTabId, error: cleanupErr?.message ?? String(cleanupErr) });
+    }
     // SSL certificate errors on initial navigation — non-retriable
     const isSslError = err.message && (
       err.message.includes('SEC_ERROR') ||
