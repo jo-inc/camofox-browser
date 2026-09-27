@@ -2960,7 +2960,7 @@ app.post('/tabs', async (req, res) => {
       
       const createdPage = await createPageWithRecoveryForUser(userId, session, { trace: !!trace });
       session = createdPage.session;
-      const page = createdPage.page;
+      let page = createdPage.page;
       const lease = createdPage.lease;
       const group = getTabGroup(session, resolvedSessionKey);
 
@@ -3003,6 +3003,7 @@ app.post('/tabs', async (req, res) => {
             const retryGroup = getTabGroup(session, resolvedSessionKey);
             const { page: retryPage, lease: retryLease } = await createLeasedPage(session);
             tabState = createTabState(retryPage);
+            page = retryPage;
             tabState.lastRequestedUrl = url;
             attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
             retryGroup.set(tabId, tabState);
