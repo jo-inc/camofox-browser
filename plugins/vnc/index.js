@@ -90,6 +90,48 @@ export async function register(app, ctx, pluginConfig = {}) {
   ctx.plugin.registerVirtualDisplayProvider(() => new VncVirtualDisplay());
   log('info', 'vnc plugin: registered Xvfb display provider', { resolution });
 
+  // --- Lock Camoufox's own spoofed screen/window size to match ---
+  // The override above only bounds the Xvfb *display*. Camoufox's anti-detect
+  // engine still independently spoofs its own random screen/window size
+  // (e.g. 2560x1440), which can exceed the locked display and get cut off in
+  // the VNC view. Rewrite the spoofed size in the outgoing CAMOU_CONFIG_* env
+  // chunks on every browser launch so it matches the locked resolution.
+  const resMatch = /^(\d+)x(\d+)/.exec(resolution);
+  if (resMatch) {
+    const screenWidth = parseInt(resMatch[1], 10);
+    const screenHeight = parseInt(resMatch[2], 10);
+    events.on('browser:launching', ({ options }) => {
+      if (!options || !options.env) return;
+      const env = options.env;
+      const chunks = Object.entries(env)
+        .filter(([key]) => key.startsWith('CAMOU_CONFIG_'))
+        .map(([key, value]) => [Number(key.split('_').pop()), value])
+        .sort(([a], [b]) => a - b);
+      if (chunks.length === 0) return;
+      try {
+        const blob = chunks.map(([, value]) => value).join('');
+        const parsed = JSON.parse(blob);
+        parsed['screen.width'] = screenWidth;
+        parsed['screen.height'] = screenHeight;
+        parsed['screen.availWidth'] = screenWidth;
+        parsed['screen.availHeight'] = screenHeight;
+        parsed['window.outerWidth'] = screenWidth;
+        parsed['window.outerHeight'] = screenHeight;
+        const newBlob = JSON.stringify(parsed);
+        const chunkSize = 32767;
+        for (const k of Object.keys(env)) {
+          if (k.startsWith('CAMOU_CONFIG_')) delete env[k];
+        }
+        for (let i = 0; i < newBlob.length; i += chunkSize) {
+          env['CAMOU_CONFIG_' + (Math.floor(i / chunkSize) + 1)] = newBlob.slice(i, i + chunkSize);
+        }
+        log('info', 'vnc plugin: fixed browser resolution to match VNC screen', { screenWidth, screenHeight });
+      } catch (err) {
+        log('warn', 'vnc plugin: failed to rewrite CAMOU_CONFIG resolution', { error: err.message });
+      }
+    });
+  }
+
   // --- VNC watcher process ---
   log('info', 'vnc plugin enabled', {
     resolution,
