@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import {
   anonymize, stackSignature, createReporter, sendToRelay, createUrlAnonymizer,
   createTabHealthTracker, collectResourceSnapshot, detectBotProtection,
@@ -948,12 +949,6 @@ describe('collectResourceSnapshot native memory', () => {
     expect(snap.nodeHeapUsedMb > 0).toBeTruthy();
   });
 
-  test('native memory (RSS - heapUsed) is non-negative', () => {
-    const snap = collectResourceSnapshot();
-    const nativeMb = snap.nodeRssMb - snap.nodeHeapUsedMb;
-    expect(nativeMb >= 0).toBeTruthy();
-  });
-
   test('includes session/tab counts when provided', () => {
     const snap = collectResourceSnapshot({ sessionCount: 3, tabCount: 7 });
     expect(snap.browserContexts).toBe(3);
@@ -980,178 +975,189 @@ describe('collectResourceSnapshot native memory', () => {
 // ============================================================================
 
 describe('native memory leak detection', () => {
-  // These tests verify the three false-positive prevention mechanisms:
-  // 1. Minimum uptime (2 min) -- no alerts during browser initialization
-  // 2. Sustained growth (3 consecutive checks) -- one-time spikes don't trigger
-  // 3. Grace period after baseline reset -- memory settles before re-baselining
-  //
-  // We test by creating a reporter, starting its watchdog, then simulating
-  // time passing via mocked process.uptime() and process.memoryUsage().
-  // The watchdog's native memory check runs every 30s, so we advance the
-  // setInterval manually.
-
+  // The watchdog ticks every second and samples native memory (RSS minus
+  // heapUsed) every 30 s. These tests drive it with fake timers, so each 30 s
+  // advance yields exactly one sample of the values set before it, and they
+  // capture the reports through a mocked fetch.
+  const MB = 1048576;
   const originalFetch = globalThis.fetch;
   const originalUptime = process.uptime;
   const originalMemoryUsage = process.memoryUsage;
+  const started = [];
   let fetchCalls;
-  let mockUptimeSeconds;
-  let mockRss;
-  let mockHeapUsed;
+  let uptimeSeconds;
+  let rss;
+  let heapUsed;
 
   beforeEach(() => {
+    jest.useFakeTimers();
     fetchCalls = [];
     globalThis.fetch = async (url, opts) => {
       fetchCalls.push({ url, body: JSON.parse(opts?.body || '{}') });
       return { ok: true, status: 200 };
     };
-    mockUptimeSeconds = 200; // default: past min uptime
-    mockRss = 150 * 1048576; // 150MB baseline
-    mockHeapUsed = 50 * 1048576; // 50MB heap -> 100MB native
+    uptimeSeconds = 200;    // past the two-minute warm-up unless a test says otherwise
+    process.uptime = () => uptimeSeconds;
+    const origMem = originalMemoryUsage.call(process);
+    process.memoryUsage = () => ({ ...origMem, rss, heapUsed, heapTotal: heapUsed + 10 * MB });
+    process.memoryUsage.rss = () => rss;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const reporter of started.splice(0)) await reporter.stop();
     globalThis.fetch = originalFetch;
     process.uptime = originalUptime;
     process.memoryUsage = originalMemoryUsage;
+    jest.useRealTimers();
   });
 
-  function mockProcessForWatchdog() {
-    process.uptime = () => mockUptimeSeconds;
-    const origMem = originalMemoryUsage.call(process);
-    process.memoryUsage = () => ({
-      ...origMem,
-      rss: mockRss,
-      heapUsed: mockHeapUsed,
-      heapTotal: mockHeapUsed + 10 * 1048576,
-      external: 5 * 1048576,
-      arrayBuffers: 1 * 1048576,
-    });
-    // Also need cpuUsage to not throw
-    if (!process.memoryUsage.rss) {
-      process.memoryUsage.rss = () => mockRss;
+  function createTestReporter() {
+    const reporter = createReporter({ crashReportEnabled: true, crashReportRateLimit: 50 });
+    reporter.startWatchdog(5000);
+    started.push(reporter);
+    return reporter;
+  }
+
+  async function sampleBytes(rssBytes, heapUsedBytes, checks = 1) {
+    rss = rssBytes;
+    heapUsed = heapUsedBytes;
+    for (let i = 0; i < checks; i++) {
+      await jest.advanceTimersByTimeAsync(30_000);
     }
   }
+  const sample = (rssMb, heapUsedMb, checks) => sampleBytes(rssMb * MB, heapUsedMb * MB, checks);
 
-  /**
-   * Simulate N native memory checks by calling the watchdog interval callback.
-   * The watchdog checks native memory every 30s (NATIVE_MEM_CHECK_INTERVAL_MS).
-   * We use Jest's fake timers to advance time.
-   */
-  function createTestReporter() {
-    return createReporter({
-      crashReportEnabled: true,
-      crashReportRateLimit: 50,
-    });
+  function leakReports() {
+    return fetchCalls.filter(c => c.body?.type === 'leak:native-memory').map(c => c.body);
   }
+  const leakTitles = () => leakReports().map(report => report.title);
 
-  test('does not fire alert when process uptime < 2 minutes', async () => {
-    mockProcessForWatchdog();
-    mockUptimeSeconds = 30; // 30 seconds -- below 120s threshold
-    mockRss = 700 * 1048576; // 700MB -- way above any threshold
-    mockHeapUsed = 50 * 1048576; // native = 650MB
-
+  // Growth above 600 MB reports even with no sessions and no browser RSS, so the
+  // idle self-healing rule does not hide these results.
+  test('reports sustained growth above a valid baseline after three consecutive checks', async () => {
     const reporter = createTestReporter();
-    reporter.startWatchdog(5000);
-
-    // Wait for multiple watchdog ticks + native memory check interval
-    await new Promise(r => setTimeout(r, 150));
+    await sample(150, 50);      // baseline: 100 MB native
+    await sample(800, 50, 2);   // 750 MB native: two checks above the threshold
+    expect(leakTitles()).toEqual([]);
+    await sample(800, 50);      // the third consecutive check reports
     await reporter.stop();
-
-    // No leak reports should have been sent (uptime too low)
-    const leakReports = fetchCalls.filter(c => c.body?.type === 'leak:native-memory');
-    expect(leakReports.length).toBe(0);
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('grew by 650MB (baseline: 100MB, current: 750MB, high-water: 750MB)');
   });
 
-  test('does not fire alert on first threshold breach (requires sustained growth)', async () => {
-    mockProcessForWatchdog();
-    mockUptimeSeconds = 200; // well past min uptime
-
+  test('the report carries the native memory details', async () => {
     const reporter = createTestReporter();
-    // Override the check interval to be very short for testing
-    reporter.startWatchdog(5000);
-
-    // Wait for first check to establish baseline at 100MB native
-    await new Promise(r => setTimeout(r, 100));
-
-    // Spike native memory way above threshold (single spike)
-    mockRss = 700 * 1048576; // native = 650MB, growth = 550MB > 400MB threshold
-
-    // Wait for one more check -- should NOT fire yet (only 1 consecutive)
-    await new Promise(r => setTimeout(r, 100));
+    await sample(150, 50);
+    await sample(800, 50, 3);
     await reporter.stop();
-
-    // The first breach should NOT trigger an alert (needs 3 consecutive)
-    const leakReports = fetchCalls.filter(c => c.body?.type === 'leak:native-memory');
-    expect(leakReports.length).toBe(0);
+    const [report] = leakReports();
+    expect(report.labels).toEqual(['auto-report', 'memory-leak']);
+    expect(report.body).toContain('## Native Memory Details');
+    expect(report.body).toContain('- **baseline:** 100 MB');
+    expect(report.body).toContain('- **growth:** 650 MB');
+    expect(report.body).toContain('- **browser RSS (last seen):** not captured (browser already dead)');
   });
 
-  test('resetNativeMemBaseline clears consecutive counter and adds grace period', () => {
+  test('reports once until the baseline is reset', async () => {
     const reporter = createTestReporter();
-    // Just verify resetNativeMemBaseline is callable and doesn't throw
-    expect(typeof reporter.resetNativeMemBaseline).toBe('function');
+    await sample(150, 50);
+    await sample(800, 50, 6);
+    await reporter.stop();
+    expect(leakTitles()).toHaveLength(1);
+  });
+
+  test('does not measure until the process has been up for two minutes', async () => {
+    const reporter = createTestReporter();
+    uptimeSeconds = 119;
+    await sample(150, 50);
+    await sample(800, 50, 3);   // not measured, so no baseline and no report
+    expect(leakTitles()).toEqual([]);
+    uptimeSeconds = 121;
+    await sample(150, 50);      // first measured sample: baseline 100 MB
+    await sample(800, 50, 3);
+    await reporter.stop();
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('baseline: 100MB');
+  });
+
+  test('a drop below the threshold restarts the streak', async () => {
+    const reporter = createTestReporter();
+    await sample(150, 50);
+    await sample(800, 50, 2);
+    await sample(150, 50);      // back at the baseline: the streak restarts
+    await sample(800, 50, 2);
+    expect(leakTitles()).toEqual([]);
+    await sample(800, 50);
+    await reporter.stop();
+    expect(leakTitles()).toHaveLength(1);
+  });
+
+  test('resetNativeMemBaseline re-baselines after two grace checks', async () => {
+    const reporter = createTestReporter();
+    await sample(150, 50);
+    await sample(800, 50, 2);   // two checks above the old baseline
     reporter.resetNativeMemBaseline();
-    reporter.stop();
-  });
-
-  test('native memory alert includes sustained growth metadata', async () => {
-    // This is a structural test -- verifies the report payload shape
-    // when a real alert would fire (after 3 consecutive checks).
-    // We test the report formatting by checking formatIssueBody output.
-    const reporter = createTestReporter();
-    expect(typeof reporter.reportCrash).toBe('function');
-    expect(typeof reporter.resetNativeMemBaseline).toBe('function');
+    await sample(800, 50, 2);   // grace: not measured
+    await sample(800, 50, 4);   // new baseline 750 MB, then no growth
     await reporter.stop();
+    expect(leakTitles()).toEqual([]);
   });
 
-  test('consecutive counter resets when memory drops back below threshold', async () => {
-    mockProcessForWatchdog();
-    mockUptimeSeconds = 200;
-
+  // A process whose heap pages are not resident (swapped out or reclaimed)
+  // reports RSS below heapUsed. Such a sample cannot estimate native memory:
+  // seeding the baseline from it made the later return of those pages look like
+  // a leak (the negative baselines in auto-filed reports).
+  test('a first sample with RSS below the heap does not seed the baseline', async () => {
     const reporter = createTestReporter();
-    reporter.startWatchdog(5000);
-
-    // Wait for baseline to be established
-    await new Promise(r => setTimeout(r, 100));
-
-    // Spike above threshold
-    mockRss = 700 * 1048576;
-    await new Promise(r => setTimeout(r, 100));
-
-    // Drop back below threshold -- should reset consecutive counter
-    mockRss = 150 * 1048576;
-    await new Promise(r => setTimeout(r, 100));
-
-    // Spike again -- counter should be back to 0
-    mockRss = 700 * 1048576;
-    await new Promise(r => setTimeout(r, 100));
-
+    await sample(20, 300);      // skipped instead of a -280 MB baseline
+    await sample(104, 50, 3);   // the first valid sample (54 MB) becomes the baseline
+    expect(leakTitles()).toEqual([]);
+    await sample(800, 50, 3);
     await reporter.stop();
-
-    // No alerts should have fired (never hit 3 consecutive)
-    const leakReports = fetchCalls.filter(c => c.body?.type === 'leak:native-memory');
-    expect(leakReports.length).toBe(0);
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('baseline: 54MB');
   });
 
-  test('minimum uptime constant is 120 seconds', () => {
-    // Verify the constant hasn't been accidentally changed.
-    // This is a public contract -- community users depend on the 2-min warmup.
-    // We can't import the constant directly (it's a closure var), but we can
-    // verify the behavior: uptime=119 should not alert, uptime=121 should allow checks.
-    mockProcessForWatchdog();
-    mockUptimeSeconds = 119;
-    mockRss = 800 * 1048576; // huge spike
-
+  test('a swapped-out sample breaks the streak but keeps the baseline', async () => {
     const reporter = createTestReporter();
-    reporter.startWatchdog(5000);
+    await sample(150, 50);
+    await sample(800, 50, 2);
+    await sample(20, 300);      // skipped: the streak restarts
+    await sample(800, 50, 2);
+    expect(leakTitles()).toEqual([]);
+    await sample(800, 50);
+    await reporter.stop();
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('baseline: 100MB');
+  });
 
-    // Give it a tick
-    return new Promise(resolve => {
-      setTimeout(async () => {
-        await reporter.stop();
-        const leakReports = fetchCalls.filter(c => c.body?.type === 'leak:native-memory');
-        expect(leakReports.length).toBe(0);
-        resolve();
-      }, 100);
-    });
+  test('a swapped-out sample after a baseline reset does not seed the baseline', async () => {
+    const reporter = createTestReporter();
+    await sample(150, 50);
+    reporter.resetNativeMemBaseline();
+    await sample(20, 300, 3);   // two grace checks, then the swapped-out sample
+    await sample(104, 50);
+    await sample(800, 50, 3);
+    await reporter.stop();
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('baseline: 54MB');
+  });
+
+  test('compares raw bytes: one byte below the heap is skipped, equal is a zero estimate', async () => {
+    const reporter = createTestReporter();
+    await sampleBytes(300 * MB - 1, 300 * MB);   // rounds to 0 MB but is skipped
+    await sample(104, 50);
+    await sample(800, 50, 3);
+    await reporter.stop();
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('baseline: 54MB');
+
+    fetchCalls.length = 0;
+    const second = createTestReporter();
+    await sample(300, 300);     // a zero estimate is a valid baseline
+    await sample(800, 50, 3);
+    await second.stop();
+    expect(leakTitles()).toHaveLength(1);
+    expect(leakTitles()[0]).toContain('baseline: 0MB');
   });
 });
