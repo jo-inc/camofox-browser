@@ -1484,6 +1484,15 @@ function getTabGroup(session, listItemId) {
   return group;
 }
 
+// Drop an emptied group only while its key still maps to it. A cleanup that
+// awaited page close can resume after another cleanup dropped the group and a
+// new tab registered a replacement group under the same key.
+function dropEmptyTabGroup(session, listItemId, group) {
+  if (group.size === 0 && session.tabGroups.get(listItemId) === group) {
+    session.tabGroups.delete(listItemId);
+  }
+}
+
 // Centralized error handler for route catch blocks.
 // Auto-destroys dead browser sessions and returns appropriate status codes.
 function isProxyError(err) {
@@ -1687,7 +1696,7 @@ async function destroyTimedOutTab(session, tabId, reason, userId) {
     log('warn', 'timed-out tab cleanup failed', { tabId, error: err.message });
   } finally {
     group.delete(tabId);
-    if (group.size === 0) session.tabGroups.delete(listItemId);
+    dropEmptyTabGroup(session, listItemId, group);
     const lock = tabLocks.get(tabId);
     if (lock) {
       lock.drain();
@@ -1724,7 +1733,7 @@ async function recycleOldestTab(session, reqId, userId) {
 
   await safePageClose(oldestTab.page);
   oldestGroup.delete(oldestTabId);
-  if (oldestGroup.size === 0) session.tabGroups.delete(oldestGroupKey);
+  dropEmptyTabGroup(session, oldestGroupKey, oldestGroup);
   const lock = tabLocks.get(oldestTabId);
   if (lock) { lock.drain(); tabLocks.delete(oldestTabId); }
   refreshTabLockQueueDepth();
@@ -5655,9 +5664,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
       { const _l = tabLocks.get(req.params.tabId); if (_l) _l.drain(); tabLocks.delete(req.params.tabId); refreshTabLockQueueDepth(); }
-      if (found.group.size === 0) {
-        session.tabGroups.delete(found.listItemId);
-      }
+      dropEmptyTabGroup(session, found.listItemId, found.group);
       refreshActiveTabsGauge();
       log('info', 'tab closed', { reqId: req.reqId, tabId: req.params.tabId, userId });
     }
@@ -5720,8 +5727,10 @@ app.delete('/tabs/group/:listItemId', async (req, res) => {
           lock.drain();
           tabLocks.delete(tabId);
         }
+        group.delete(tabId);
       }
-      session.tabGroups.delete(req.params.listItemId);
+      // Do not remove a replacement group registered under the same key.
+      dropEmptyTabGroup(session, req.params.listItemId, group);
       refreshTabLockQueueDepth();
       refreshActiveTabsGauge();
       log('info', 'tab group closed', { reqId: req.reqId, listItemId: req.params.listItemId, userId });
