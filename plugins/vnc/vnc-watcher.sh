@@ -9,6 +9,8 @@
 #   VIEW_ONLY       "1" for view-only mode
 #   VNC_PORT        VNC port (default: 5900)
 #   NOVNC_PORT      noVNC websocket port (default: 6080)
+#   VNC_BIND        Address x11vnc and noVNC listen on (default: 127.0.0.1).
+#                   Use 0.0.0.0 (or ::) in containers so published ports work.
 
 set -e
 
@@ -20,6 +22,7 @@ VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_RESOLUTION="${VNC_RESOLUTION:-1920x1080x24}"
 VNC_STATUS_FILE="${VNC_STATUS_FILE:-}"
+VNC_BIND="${VNC_BIND:-127.0.0.1}"
 
 log() { printf '[vnc-watcher] %s\n' "$*" >&2; }
 clear_status() { [ -z "$VNC_STATUS_FILE" ] || rm -f "$VNC_STATUS_FILE"; }
@@ -29,6 +32,18 @@ write_status() {
 trap clear_status EXIT
 trap 'exit 0' INT TERM
 clear_status
+
+# x11vnc takes IPv4 via -listen and IPv6 via -listenv6. A wildcard bind means
+# "all interfaces", which is x11vnc's default when no -listen option is given.
+case "$VNC_BIND" in
+  127.*|localhost|::1|"[::1]") VNC_LOOPBACK=1 ;;
+  *) VNC_LOOPBACK=0 ;;
+esac
+case "$VNC_BIND" in
+  0.0.0.0|::|"[::]") X11VNC_LISTEN="" ;;
+  *:*) X11VNC_LISTEN="-listenv6 $(printf '%s' "$VNC_BIND" | tr -d '[]')" ;;
+  *) X11VNC_LISTEN="-listen $VNC_BIND" ;;
+esac
 
 CURRENT_DISPLAY=""
 X11VNC_PID=""
@@ -42,7 +57,10 @@ if [ -n "${VNC_PASSWORD:-}" ]; then
   PASSFILE="/tmp/.vnc/passwd"
   log "x11vnc: password protected"
 else
-  log "x11vnc: NO password (bind $NOVNC_PORT to 127.0.0.1 on host + SSH tunnel)"
+  log "x11vnc: NO password set"
+  if [ "$VNC_LOOPBACK" != 1 ]; then
+      log "WARNING: VNC is listening on $VNC_BIND without VNC_PASSWORD. Anyone who can reach ports $VNC_PORT/$NOVNC_PORT controls this browser session. Set VNC_PASSWORD or restrict the published ports."
+  fi
 fi
 
 # Start noVNC (websockify) -- proxies to x11vnc regardless of whether it's up yet
@@ -51,7 +69,6 @@ if [ ! -d "$NOVNC_DIR" ]; then
   log "ERROR: $NOVNC_DIR not found; noVNC cannot start"
   exit 1
 fi
-VNC_BIND="${VNC_BIND:-127.0.0.1}"
 log "Starting noVNC (websockify) on $VNC_BIND:$NOVNC_PORT -> 127.0.0.1:$VNC_PORT"
 websockify --web "$NOVNC_DIR" "$VNC_BIND:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >/tmp/camofox-novnc.log 2>&1 &
 
@@ -92,7 +109,7 @@ while true; do
     CURRENT_DISPLAY="$FOUND"
     log "Attaching x11vnc to DISPLAY=$CURRENT_DISPLAY"
 
-    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -localhost -rfbport $VNC_PORT -noxdamage -quiet -bg -o /tmp/camofox-x11vnc.log"
+    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared $X11VNC_LISTEN -rfbport $VNC_PORT -noxdamage -quiet -bg -o /tmp/camofox-x11vnc.log"
     [ "${VIEW_ONLY:-0}" = "1" ] && X11VNC_ARGS="$X11VNC_ARGS -viewonly"
     if [ -n "$PASSFILE" ]; then
       X11VNC_ARGS="$X11VNC_ARGS -rfbauth $PASSFILE"
@@ -102,7 +119,8 @@ while true; do
 
     # shellcheck disable=SC2086
     if ! x11vnc $X11VNC_ARGS; then
-      log "x11vnc failed to start on DISPLAY=$CURRENT_DISPLAY; will retry"
+      log "x11vnc failed to start on DISPLAY=$CURRENT_DISPLAY (VNC_BIND=$VNC_BIND); will retry"
+      [ ! -f /tmp/camofox-x11vnc.log ] || tail -n 5 /tmp/camofox-x11vnc.log >&2
       CURRENT_DISPLAY=""
       sleep 2
       continue
