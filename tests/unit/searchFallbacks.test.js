@@ -38,7 +38,13 @@ describe('search fallbacks', () => {
 
   test('keeps the Google fallback path for upstream 5xx responses', () => {
     expect(serverSource).toContain("isGoogleSearch && navErr.code === 'destination_unavailable' && await navigateSearchFallback()");
-    expect(serverSource).toContain('if (response && response.status() >= 500) {\n              tabState.lastSnapshot = null;\n              throw Object.assign(');
+    // Upstream renamed this binding from `response` to `searchResponse` (there
+    // are several responses in scope in navigate()). The 5xx fallback itself is
+    // unchanged: it clears the cached snapshot and throws a retryable 502 so the
+    // search-fallback chain takes over. Match the behaviour, not the old name.
+    expect(serverSource).toMatch(
+      /if \(searchResponse && searchResponse\.status\(\) >= 500\) \{\s*tabState\.lastSnapshot = null;\s*throw Object\.assign\(/,
+    );
   });
 
   test('navigation reports the engine used after Google fallback', () => {
