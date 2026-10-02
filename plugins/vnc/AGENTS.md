@@ -25,7 +25,8 @@ Disabled by default. Enable with `ENABLE_VNC=1` env var or `"vnc": { "enabled": 
 
 ## Security
 
-- noVNC binds to `127.0.0.1` by default — set `VNC_BIND=0.0.0.0` to expose externally
+- x11vnc and noVNC bind to `127.0.0.1` by default — set `VNC_BIND=0.0.0.0` (or `::`) to expose externally
+- Without `VNC_PASSWORD`, the watcher warns when `VNC_BIND` is not loopback: the access is then unauthenticated
 - Set `VNC_PASSWORD` for password-protected access
 - `VIEW_ONLY=1` disables keyboard/mouse input (observation only)
 - Storage state export endpoint requires auth (API key or loopback)

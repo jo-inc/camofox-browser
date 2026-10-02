@@ -676,6 +676,8 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `CAMOFOX_CRASH_REPORT_RATE_LIMIT` | Max telemetry reports per hour | `10` |
 | `ENABLE_VNC` | Enable VNC plugin for interactive browser access (`1`) | - |
 | `VNC_PASSWORD` | Password for VNC access (recommended in production) | - |
+| `VNC_BIND` | Listen address for x11vnc and noVNC (`0.0.0.0` or `::` in containers so published ports work) | `127.0.0.1` |
+| `VNC_PORT` | x11vnc RFB port | `5900` |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
 
 ## Interactive desktop browser
