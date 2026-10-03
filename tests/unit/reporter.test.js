@@ -1055,7 +1055,8 @@ describe('native memory leak detection', () => {
     expect(report.body).toContain('## Native Memory Details');
     expect(report.body).toContain('- **baseline:** 100 MB');
     expect(report.body).toContain('- **growth:** 650 MB');
-    expect(report.body).toContain('- **browser RSS (last seen):** not captured (browser already dead)');
+    const browserMemoryLabel = process.platform === 'win32' ? 'working set' : 'RSS';
+    expect(report.body).toContain(`- **browser ${browserMemoryLabel} (last seen):** not captured (browser already dead)`);
   });
 
   test('reports once until the baseline is reset', async () => {
