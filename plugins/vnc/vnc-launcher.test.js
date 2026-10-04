@@ -25,6 +25,7 @@ describe('vnc launcher config', () => {
         PATH: '/usr/bin',
         HOME: '/home/camofox',
         VNC_BIND: '0.0.0.0',
+        VNC_RFB_BIND: '192.0.2.1',
         SECRET_TOKEN: 'do-not-forward',
       }
     );
@@ -33,6 +34,7 @@ describe('vnc launcher config', () => {
       PATH: '/usr/bin',
       HOME: '/home/camofox',
       VNC_BIND: '0.0.0.0',
+      VNC_RFB_BIND: '192.0.2.1',
       VNC_PASSWORD: 'secret',
       VNC_RESOLUTION: '1920x1080x24',
       VIEW_ONLY: '1',

@@ -1,6 +1,6 @@
 {
   "name": "@askjo/camofox-browser",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
   "type": "module",
   "main": "server.js",
@@ -169,8 +169,8 @@
       "glob": "13.0.6"
     },
     "qs": "6.16.0",
-    "fast-uri": "3.1.7",
-    "hono": "4.13.5"
+    "fast-uri": "3.1.8",
+    "hono": "4.13.7"
   },
   "bin": {
     "camofox-browser": "./bin/camofox-browser.js",

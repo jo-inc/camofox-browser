@@ -12,12 +12,14 @@ on:
         required: true
         type: string
     secrets:
+      # Optional: when any of the three is missing the notify step exits
+      # without posting, so callers can pass `secrets: inherit` from a fork.
       AGENTHOOK_URL:
-        required: true
+        required: false
       AGENTHOOK_TOKEN:
-        required: true
+        required: false
       AGENTHOOK_TOPIC:
-        required: true
+        required: false
 
 permissions: {}
 
@@ -33,6 +35,12 @@ jobs:
           EVENT_KIND: ${{ inputs.kind }}
           RESULTS: ${{ inputs.results }}
         run: |
+          # Runs without the agenthook secrets (forks, or a pull request from a fork
+          # in the upstream repository) have nothing to notify; skip instead of failing.
+          if [ -z "$AGENTHOOK_URL" ] || [ -z "$AGENTHOOK_TOKEN" ] || [ -z "$AGENTHOOK_TOPIC" ]; then
+            echo "agenthook secrets are unavailable for this run; skipping the notification"
+            exit 0
+          fi
           status=$(jq -r '[.[] | .result] | if index("failure") then "failure" elif index("cancelled") then "cancelled" else "success" end' <<< "$RESULTS")
           curl --fail --silent --show-error --retry 3 \
             --request POST \

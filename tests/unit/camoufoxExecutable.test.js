@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from '@jest/globals';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { platform, tmpdir } from 'os';
 import { prepareExternalCamoufoxExecutable } from '../../lib/camoufox-executable.js';
 
@@ -43,6 +43,27 @@ describe('prepareExternalCamoufoxExecutable', () => {
       ? join(cacheDir, 'Camoufox.app', 'Contents', 'MacOS', 'camoufox')
       : join(cacheDir, platform() === 'win32' ? 'camoufox.exe' : 'camoufox-bin');
     expect(existsSync(cacheExecutable)).toBe(true);
+  });
+
+  test('preserves a macOS app bundle executable instead of flattening it', () => {
+    if (platform() !== 'darwin') return;
+    const root = makeTempDir();
+    const cacheDir = makeTempDir();
+    const contents = join(root, 'Camoufox.app', 'Contents');
+    const executable = join(contents, 'MacOS', 'camoufox');
+    mkdirSync(dirname(executable), { recursive: true });
+    mkdirSync(join(contents, 'Resources'), { recursive: true });
+    writeFileSync(executable, '#!/bin/sh\nexit 0\n');
+    chmodSync(executable, 0o755);
+    writeFileSync(join(root, 'version.json'), '{"version":"test"}\n');
+    writeFileSync(join(contents, 'Resources', 'properties.json'), '[]\n');
+
+    const prepared = prepareExternalCamoufoxExecutable(executable, { cacheDir });
+
+    expect(prepared.resourceDir).toBe(join(contents, 'Resources'));
+    expect(prepared.executablePath).toBe(executable);
+    expect(existsSync(join(cacheDir, 'version.json'))).toBe(true);
+    expect(existsSync(join(dirname(executable), 'properties.json'))).toBe(true);
   });
 
   test('fails clearly when bundle resources are missing', () => {

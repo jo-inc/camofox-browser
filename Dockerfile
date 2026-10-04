@@ -8,7 +8,7 @@ FROM node:22-trixie-slim AS camofox-browser
 # Update these when upgrading Camoufox
 ARG CAMOUFOX_VERSION=152.0.4
 ARG CAMOUFOX_RELEASE=beta.28
-ARG ARCH=x86_64
+ARG TARGETARCH
 ARG YT_DLP_VERSION=2026.08.19
 ARG YT_DLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
 
@@ -54,9 +54,14 @@ RUN apt-get update && apt-get install -y \
 # -f so a 404 fails here instead of writing "Not Found" into the .zip: without it the
 # build dies three commands later on "unzip: cannot find zipfile directory", which
 # points at the archive rather than at the URL that was actually wrong. Note the Linux
-# arm asset is named lin.arm64.zip -- pass --build-arg ARCH=arm64, not aarch64.
-RUN mkdir -p /root/.cache/camoufox \
-    && curl -fL -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${ARCH}.zip" \
+# BuildKit supplies TARGETARCH; map its names to Camoufox release asset names.
+RUN case "${TARGETARCH}" in \
+      amd64) CAMOUFOX_ARCH="x86_64" ;; \
+      arm64) CAMOUFOX_ARCH="arm64" ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && mkdir -p /root/.cache/camoufox \
+    && curl -fL -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
     && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
     && rm /tmp/camoufox.zip \
     && chmod -R 755 /root/.cache/camoufox \
@@ -67,7 +72,8 @@ RUN mkdir -p /root/.cache/camoufox \
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json postinstall.js ./
+COPY lib/camoufox-download.js ./lib/
 COPY scripts/ ./scripts/
 # better-sqlite3 has no prebuild matching this node/arch, so npm ci falls back to
 # `node-gyp rebuild`, which fails on node:*-slim with "Error: not found: make".

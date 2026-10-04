@@ -11,6 +11,9 @@ describe('normalizeBrowserKey', () => {
   test('normalizes named keys case-insensitively', () => {
     expect(normalizeBrowserKey('Enter')).toBe('Enter');
     expect(normalizeBrowserKey('ENTER')).toBe('Enter');
-    expect(normalizeBrowserKey('TAB')).toBe('TAB');
+    expect(normalizeBrowserKey('TAB')).toBe('Tab');
+    expect(normalizeBrowserKey('END')).toBe('End');
+    expect(normalizeBrowserKey('ARROWDOWN')).toBe('ArrowDown');
+    expect(normalizeBrowserKey('ctrl+ARROWLEFT')).toBe('Control+ArrowLeft');
   });
 });

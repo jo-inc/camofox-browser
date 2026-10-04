@@ -66,6 +66,9 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+# npm ci runs the postinstall hook, which needs postinstall.js and its one lib/ import.
+COPY postinstall.js ./
+COPY lib/camoufox-download.js ./lib/
 COPY scripts/ ./scripts/
 # Build tools are needed when better-sqlite3 has no native prebuild for the target.
 # Trixie's glibc also supports the upstream arm64 prebuild at runtime.

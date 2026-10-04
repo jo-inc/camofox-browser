@@ -52,6 +52,23 @@ display_for_xvfb_pid() {
   done
 }
 
+# VNC_BIND keeps its existing noVNC-only meaning. Exposing raw VNC requires
+# an independent bind setting and a password.
+x11vnc_listen_args() {
+  bind="${1:-127.0.0.1}"
+  password="$2"
+  case "$bind" in
+    127.0.0.1|localhost|::1|"[::1]") printf '%s\n' '-localhost'; return 0 ;;
+    *[!a-zA-Z0-9:.%\[\]-]*|'') return 1 ;;
+  esac
+  [ -n "$password" ] || return 1
+  case "$bind" in
+    0.0.0.0|::|"[::]") printf '%s\n' '' ;;
+    *:*) printf '%s\n' "-listenv6 ${bind#\[}" | tr -d ']' ;;
+    *) printf '%s\n' "-listen $bind" ;;
+  esac
+}
+
 x11vnc_needs_reattach() {
   tracked_pid="$1"
   [ -n "$tracked_pid" ] || return 1

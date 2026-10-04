@@ -9,6 +9,8 @@
 #   VIEW_ONLY       "1" for view-only mode
 #   VNC_PORT        VNC port (default: 5900)
 #   NOVNC_PORT      noVNC websocket port (default: 6080)
+#   VNC_BIND        noVNC address (default: 127.0.0.1)
+#   VNC_RFB_BIND    raw VNC address (default: 127.0.0.1; password required off-loopback)
 
 set -e
 
@@ -20,6 +22,7 @@ VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_RESOLUTION="${VNC_RESOLUTION:-1920x1080x24}"
 VNC_STATUS_FILE="${VNC_STATUS_FILE:-}"
+VNC_RFB_BIND="${VNC_RFB_BIND:-127.0.0.1}"
 
 log() { printf '[vnc-watcher] %s\n' "$*" >&2; }
 clear_status() { [ -z "$VNC_STATUS_FILE" ] || rm -f "$VNC_STATUS_FILE"; }
@@ -34,6 +37,13 @@ CURRENT_DISPLAY=""
 X11VNC_PID=""
 SERVER_PID="$PPID"
 
+# Keep VNC_BIND independent: existing noVNC deployments must not suddenly
+# expose native VNC. Raw non-loopback binds require a password.
+if ! X11VNC_LISTEN=$(x11vnc_listen_args "$VNC_RFB_BIND" "${VNC_PASSWORD:-}"); then
+  log "ERROR: VNC_RFB_BIND=$VNC_RFB_BIND requires a valid address and VNC_PASSWORD outside loopback"
+  exit 1
+fi
+
 # Prepare password file if requested
 PASSFILE=""
 if [ -n "${VNC_PASSWORD:-}" ]; then
@@ -42,7 +52,11 @@ if [ -n "${VNC_PASSWORD:-}" ]; then
   PASSFILE="/tmp/.vnc/passwd"
   log "x11vnc: password protected"
 else
-  log "x11vnc: NO password (bind $NOVNC_PORT to 127.0.0.1 on host + SSH tunnel)"
+  log "x11vnc: NO password (native VNC remains on loopback)"
+  case "${VNC_BIND:-127.0.0.1}" in
+    127.*|localhost|::1|"[::1]") ;;
+    *) log "WARNING: noVNC on ${VNC_BIND} is passwordless; anyone who can reach port $NOVNC_PORT controls the browser" ;;
+  esac
 fi
 
 # Start noVNC (websockify) -- proxies to x11vnc regardless of whether it's up yet
@@ -92,7 +106,7 @@ while true; do
     CURRENT_DISPLAY="$FOUND"
     log "Attaching x11vnc to DISPLAY=$CURRENT_DISPLAY"
 
-    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -localhost -rfbport $VNC_PORT -noxdamage -quiet -bg -o /tmp/camofox-x11vnc.log"
+    X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared $X11VNC_LISTEN -rfbport $VNC_PORT -noxdamage -quiet -bg -o /tmp/camofox-x11vnc.log"
     [ "${VIEW_ONLY:-0}" = "1" ] && X11VNC_ARGS="$X11VNC_ARGS -viewonly"
     if [ -n "$PASSFILE" ]; then
       X11VNC_ARGS="$X11VNC_ARGS -rfbauth $PASSFILE"
