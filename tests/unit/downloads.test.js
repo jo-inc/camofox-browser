@@ -6,7 +6,12 @@ import {
   attachDownloadListener,
   clickWithDownloadGuard,
   downloadEventOccurredSince,
+  captureFetchedResource,
   getDownloadsList,
+  readDownloadContent,
+  cleanupExpiredDownloads,
+  MAX_DOWNLOAD_ARTIFACT_BYTES,
+  DOWNLOAD_ROOT,
 } from '../../lib/downloads.js';
 
 import fs from 'node:fs/promises';
@@ -143,6 +148,42 @@ describe('lib/downloads', () => {
     });
   });
 
+  describe('download failure cleanup', () => {
+    test('removes persisted artifact when download reports failure', async () => {
+      let handler;
+      let stagingPath;
+      const tabState = {
+        downloads: [],
+        downloadEventSequence: 0,
+        visitedUrls: new Set(),
+        page: { on: (_event, callback) => { handler = callback; } },
+      };
+      const download = {
+        suggestedFilename: () => 'failed.txt',
+        url: () => 'https://example.com/failed.txt',
+        saveAs: async (filePath) => {
+          stagingPath = filePath;
+          await fs.writeFile(filePath, 'failed content');
+        },
+        failure: async () => 'download canceled',
+      };
+
+      attachDownloadListener(tabState, 'tab-1', () => {});
+      await handler(download);
+
+      const downloadId = path.basename(stagingPath, '.staging');
+      const persistedPath = path.join(DOWNLOAD_ROOT, `${downloadId}.bin`);
+      await expect(fs.stat(persistedPath)).rejects.toThrow();
+      expect(tabState.downloads[0]).toMatchObject({
+        id: downloadId,
+        state: 'failed',
+        failure: 'download canceled',
+        filePath: null,
+      });
+      await expect(readDownloadContent(tabState, downloadId, '')).resolves.toBeNull();
+    });
+  });
+
   describe('click fallback guard', () => {
     test('does not reject after a click emits a download event', async () => {
       const tabState = { downloadEventSequence: 0 };
@@ -248,6 +289,49 @@ describe('lib/downloads', () => {
 
       const result = await getDownloadsList(tabState, { includeData: true });
       expect(result[0].readError).toBeDefined();
+    });
+    test('returns fetch metadata and enforces owner for content', async () => {
+      const downloadId = `content-${Date.now()}`;
+      const tmpFile = path.join(DOWNLOAD_ROOT, `${downloadId}.bin`);
+      await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
+      await fs.writeFile(tmpFile, Buffer.from('raw bytes'));
+      const tabState = { downloads: [{ id: downloadId, owner: 'alice', state: 'completed', filePath: tmpFile, createdAt: new Date().toISOString() }] };
+      await expect(readDownloadContent(tabState, downloadId, 'bob')).resolves.toBeNull();
+      const result = await readDownloadContent(tabState, downloadId, 'alice');
+      expect(result.data.toString()).toBe('raw bytes');
+      await fs.unlink(tmpFile);
+    });
+
+    test('persists fetched resources as owned artifacts', async () => {
+      const tabState = { downloads: [] };
+      const download = await captureFetchedResource(tabState, {
+        url: 'https://example.com/report.pdf',
+        mimeType: 'application/pdf',
+        filename: 'report.pdf',
+        body: Buffer.from('%PDF-test'),
+        userId: 'alice',
+        tabId: 'tab-1',
+      });
+
+      expect(download.tabId).toBe('tab-1');
+      expect(download.state).toBe('completed');
+      await expect(readDownloadContent(tabState, download.id, 'bob')).resolves.toBeNull();
+      const result = await readDownloadContent(tabState, download.id, 'alice');
+      expect(result.data.toString()).toBe('%PDF-test');
+      await clearTabDownloads(tabState);
+    });
+
+    test('removes expired artifacts', async () => {
+      const tmpFile = path.join(os.tmpdir(), `camofox-test-expired-${Date.now()}.bin`);
+      await fs.writeFile(tmpFile, 'expired');
+      const tabState = { downloads: [{ id: 'expired', filePath: tmpFile, expiresAt: new Date(Date.now() - 1).toISOString() }] };
+      await cleanupExpiredDownloads(tabState);
+      expect(tabState.downloads).toEqual([]);
+      await expect(fs.stat(tmpFile)).rejects.toThrow();
+    });
+
+    test('publishes the bounded artifact size', () => {
+      expect(MAX_DOWNLOAD_ARTIFACT_BYTES).toBe(50 * 1024 * 1024);
     });
   });
 });
