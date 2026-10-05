@@ -1,0 +1,29 @@
+# ============================================================================
+# camofox-browser DSH adapter — bundle patch
+# ============================================================================
+# Registers the DSH host adapter (dsh/index.js). The adapter exposes the same
+# 11 tools as the MCP server and the OpenClaw plugin, from the same canonical
+# contract (mcp/lib/tool-contracts.mjs).
+#
+# Prerequisite: a camofox-browser REST server must already be running
+# (cd camofox-browser && npm start). This adapter forwards calls; it never
+# launches the browser or downloads the engine.
+#
+# Install (from a DSH profile):
+#   dsh plugin --profile desktop add link:<path-to-camofox-browser>/dsh
+# ============================================================================
+
+- insert:
+    - id: camofox-browser-dsh
+      name: '@askjo/camofox-browser-dsh'
+      config:
+        # REST server origin. Defaults to http://localhost:$CAMOFOX_PORT (9377).
+        # baseUrl: 'http://localhost:9377'
+        #
+        # Session owner: scopes cookies/localStorage. Defaults to a per-install
+        # `dsh-<uuid>` so DSH does not share a partition with an MCP client.
+        # userId: 'dsh'
+        # sessionKey: 'default'
+        #
+        # Per-call timeout for REST requests, in ms.
+        requestTimeoutMs: 90000
