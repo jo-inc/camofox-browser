@@ -99,7 +99,7 @@ Or from source:
 git clone https://github.com/jo-inc/camofox-browser
 cd camofox-browser
 npm install
-npm start  # downloads Camoufox on first run (~300MB)
+npm start  # downloads Camoufox on first run (~500MB)
 ```
 
 Default port is `9377`. See [Environment Variables](#environment-variables) for all options.
@@ -710,7 +710,7 @@ Browser Instance (Camoufox)
         \-- Tab (amazon.com)
 ```
 
-Sessions auto-expire after 30 minutes of inactivity. The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.
+Sessions auto-expire after 10 minutes of inactivity (`SESSION_TIMEOUT_MS`, default `600000`). The browser itself shuts down after 5 minutes with no active sessions, and relaunches on the next request.
 
 When a session's tab limit is reached, the oldest/least-used tab is automatically recycled instead of returning an error -- so long-running agent sessions don't hit dead ends.
 
@@ -736,7 +736,7 @@ The cookie import endpoint (`POST /sessions/:userId/cookies`) is gated behind `C
 
 ### Binary download
 
-The Camoufox browser engine (~300MB) is downloaded at `npm install` time by [`camoufox-js`](https://www.npmjs.com/package/camoufox-js), an npm package maintained by the [Camoufox project](https://camoufox.com). It downloads from [official GitHub releases](https://github.com/nicedayzhu/camoufox/releases) with integrity verification handled by `camoufox-js`. No custom download URLs, no URL shorteners, no raw IP addresses.
+The Camoufox browser engine (~500MB) is downloaded at `npm install` time by [`camoufox-js`](https://www.npmjs.com/package/camoufox-js), an npm package maintained by the [Camoufox project](https://camoufox.com). It downloads from [official GitHub releases](https://github.com/daijro/camoufox/releases) with integrity verification handled by `camoufox-js`. No custom download URLs, no URL shorteners, no raw IP addresses.
 
 ### Telemetry
 
