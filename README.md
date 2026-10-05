@@ -371,6 +371,8 @@ npm start
 
 Each browser context gets a unique sticky session, so different users get different IP addresses. Sessions rotate automatically on proxy errors or Google blocks.
 
+`PROXY_PROVIDER` picks how the session and targeting are written into the username: `decodo` (default), `nodemaven`, or `generic` to append the session id unchanged.
+
 Or in Docker:
 
 ```bash
@@ -660,7 +662,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
 | `PROXY_STRATEGY` | Proxy mode: `backconnect` (rotating sticky sessions) or blank (single endpoint) | - |
 | `PROXY_PROTOCOL` | Proxy protocol: `http`, `https`, `socks4`, or `socks5`. | `http` |
-| `PROXY_PROVIDER` | Provider name for session format (e.g. `decodo`) | `decodo` |
+| `PROXY_PROVIDER` | Provider name for session format: `decodo`, `nodemaven` or `generic` | `decodo` |
 | `PROXY_HOST` | Proxy hostname or IP (simple mode) | - |
 | `PROXY_PORT` | Proxy port (simple mode) | - |
 | `PROXY_USERNAME` | Proxy auth username | - |
