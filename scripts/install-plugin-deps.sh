@@ -18,7 +18,16 @@ if [ -f "$CONFIG" ] && command -v node >/dev/null 2>&1; then
       console.log('selected ' + c.plugins.join(' '));
     } else if (c.plugins && typeof c.plugins === 'object') {
       console.log('selected ' + Object.entries(c.plugins)
-        .filter(([, settings]) => settings !== false && settings?.enabled !== false)
+        .filter(([name, settings]) => {
+          if (settings !== false && settings?.enabled !== false) return true;
+          try {
+            const metadata = JSON.parse(require('fs').readFileSync(
+              require('path').join('$PLUGINS_DIR', name, 'plugin.json'), 'utf8'));
+            return typeof metadata.enableEnvVar === 'string' && metadata.enableEnvVar.length > 0;
+          } catch {
+            return false;
+          }
+        })
         .map(([name]) => name).join(' '));
     }
   ")
