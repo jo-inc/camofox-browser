@@ -119,6 +119,11 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps firefox
 
+      - name: Install Camoufox
+        run: npm run fetch-bin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run e2e + browser-dependent unit tests
         run: |
           xvfb-run --auto-servernum \
