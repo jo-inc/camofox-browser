@@ -88,6 +88,10 @@
         "description": "Type text into an element"
       },
       {
+        "name": "camofox_upload",
+        "description": "Attach files from the upload directory to an upload control"
+      },
+      {
         "name": "camofox_navigate",
         "description": "Navigate to URL or search macro"
       },
