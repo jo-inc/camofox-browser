@@ -1,6 +1,6 @@
 {
   "name": "@askjo/camofox-browser",
-  "version": "1.17.0",
+  "version": "1.18.1",
   "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
   "type": "module",
   "main": "server.js",
@@ -42,6 +42,7 @@
     "bin/camofox-browser.js",
     "lib/",
     "mcp/server.mjs",
+    "mcp/package.json",
     "mcp/lib/config.mjs",
     "mcp/lib/cookies.mjs",
     "mcp/lib/tool-contracts.mjs",
@@ -132,7 +133,7 @@
     "version:sync": "node scripts/sync-version.js",
     "version": "node scripts/sync-version.js && node scripts/generate-openapi.js && git add openclaw.plugin.json mcp/package.json mcp/package-lock.json openapi.json",
     "postinstall": "node postinstall.js",
-    "fetch-bin": "npx camoufox-js fetch"
+    "fetch-bin": "node lib/camoufox-download.js"
   },
   "dependencies": {
     "better-sqlite3": "13.0.1",

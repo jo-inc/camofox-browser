@@ -44,6 +44,15 @@ try {
     },
   });
   console.log('packed @askjo/camofox-browser-mcp smoke test passed');
+
+  // The root package also exposes this MCP server as a bin. Its file allowlist
+  // must include the manifest read by mcp/server.mjs at startup.
+  const { stdout: rootPackOutput } = await execFile('npm', ['pack', '--dry-run', '--json'], { cwd: ROOT });
+  const [rootPack] = JSON.parse(rootPackOutput);
+  if (!rootPack.files.some(({ path }) => path === 'mcp/package.json')) {
+    throw new Error('root package is missing mcp/package.json required by its MCP bin');
+  }
+  console.log('root package includes the MCP server manifest');
 } finally {
   if (tarball) await rm(tarball, { force: true });
   await rm(testDir, { recursive: true, force: true });

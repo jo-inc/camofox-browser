@@ -87,6 +87,22 @@ describe('vnc watcher helpers', () => {
     expect(shell('display_for_xvfb_pid "$2" "$3" "$4"', ['222', root, sockets])).toBe('');
   });
 
+  test('keeps raw VNC on loopback by default even when noVNC is exposed', () => {
+    expect(shell('VNC_BIND=0.0.0.0; x11vnc_listen_args "${VNC_RFB_BIND:-127.0.0.1}" "${VNC_PASSWORD:-}"')).toBe('-localhost');
+  });
+
+  test('requires a password before exposing native VNC on another interface', () => {
+    expect(shell('if x11vnc_listen_args "$2" "$3"; then echo allowed; else echo denied; fi', ['0.0.0.0', ''])).toBe('denied');
+    expect(shell('x11vnc_listen_args "$2" "$3"', ['0.0.0.0', 'secret'])).toBe('');
+    expect(shell('x11vnc_listen_args "$2" "$3"', ['192.0.2.1', 'secret'])).toBe('-listen 192.0.2.1');
+    expect(shell('x11vnc_listen_args "$2" "$3"', ['::1', ''])).toBe('-localhost');
+    expect(shell('x11vnc_listen_args "$2" "$3"', ['2001:db8::1', 'secret'])).toBe('-listenv6 2001:db8::1');
+  });
+
+  test('rejects invalid native VNC bind values rather than passing them to x11vnc', () => {
+    expect(shell('if x11vnc_listen_args "$2" "$3"; then echo allowed; else echo denied; fi', ['192.0.2.1 -nopw', 'secret'])).toBe('denied');
+  });
+
   test('requests reattachment only after the tracked process exits', () => {
     expect(shell('if x11vnc_needs_reattach "$2"; then echo yes; else echo no; fi', [String(process.pid)])).toBe('no');
     expect(shell('if x11vnc_needs_reattach 99999999; then echo yes; else echo no; fi')).toBe('yes');

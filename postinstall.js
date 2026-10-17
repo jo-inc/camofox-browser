@@ -33,7 +33,7 @@ function warn(message) {
 function fail(message) {
   warn(message);
   warn('The Camoufox browser binary may not have been downloaded.');
-  warn('Run `npx camoufox-js fetch` manually before starting the server.');
+  warn('Run `npm run fetch-bin` manually before starting the server.');
   process.exit(0);
 }
 
@@ -87,7 +87,7 @@ export async function main() {
   if (!existsSync(versionFile)) {
     warn('Camoufox cache not populated after fetch.');
     warn(`  Expected file: ${versionFile}`);
-    warn('  Manual fix: npx camoufox-js fetch');
+    warn('  Manual fix: npm run fetch-bin');
   }
 }
 

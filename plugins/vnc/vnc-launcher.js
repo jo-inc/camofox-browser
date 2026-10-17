@@ -48,6 +48,7 @@ export function buildWatcherEnv({ resolution, vncPassword, viewOnly, vncPort, no
     PATH: env.PATH,
     HOME: env.HOME,
     VNC_BIND: env.VNC_BIND,
+    VNC_RFB_BIND: env.VNC_RFB_BIND,
     VNC_PASSWORD: vncPassword,
     VNC_RESOLUTION: resolution,
     VIEW_ONLY: viewOnly ? '1' : '0',

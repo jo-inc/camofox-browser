@@ -23,8 +23,8 @@ The plugin registers the `virtualDisplay` capability for its own `plugins.vnc` s
 ### Docker
 
 ```bash
-docker run -p 9377:9377 -p 6080:6080 \
-  -e ENABLE_VNC=1 \
+docker run -p 9377:9377 -p 127.0.0.1:6080:6080 \
+  -e ENABLE_VNC=1 -e VNC_BIND=0.0.0.0 \
   camofox-browser
 
 # Open http://localhost:6080/vnc.html in your browser
@@ -50,7 +50,7 @@ docker run -p 9377:9377 -p 6080:6080 \
 
 1. **Start with VNC enabled:**
    ```bash
-   docker run -p 9377:9377 -p 6080:6080 -e ENABLE_VNC=1 camofox-browser
+   docker run -p 9377:9377 -p 127.0.0.1:6080:6080 -e ENABLE_VNC=1 -e VNC_BIND=0.0.0.0 camofox-browser
    ```
 
 2. **Create a session and navigate to the login page:**
@@ -143,6 +143,8 @@ Export the full Playwright storage state (cookies + localStorage origins) for a 
 |--------|----------|-------------|---------|
 | env | `ENABLE_VNC` | Enable the plugin (`1`) | off |
 | env | `VNC_PASSWORD` | x11vnc password | none (open) |
+| env | `VNC_BIND` | noVNC listener address; use `0.0.0.0` in a container with host-local port publishing | `127.0.0.1` |
+| env | `VNC_RFB_BIND` | Native VNC listener address; non-loopback requires `VNC_PASSWORD` | `127.0.0.1` |
 | env | `VNC_RESOLUTION` | Xvfb screen resolution | `1920x1080` |
 | env | `VIEW_ONLY` | Disable mouse/keyboard input (`1`) | off |
 | env | `VNC_PORT` | x11vnc listen port | `5900` |
@@ -163,7 +165,7 @@ Environment variables override config file values.
 - **Set `VNC_PASSWORD`** — without it, anyone who can reach port 6080 has full browser control
 - **Bind 6080 to localhost** and access via SSH tunnel: `ssh -L 6080:localhost:6080 your-server`
 - **Or use a firewall** to restrict access to port 6080
-- In Docker: `-p 127.0.0.1:6080:6080` binds only to localhost
+- In Docker: set `VNC_BIND=0.0.0.0` for container forwarding and `-p 127.0.0.1:6080:6080` to bind the host port only to localhost. To expose native VNC separately, set `VNC_RFB_BIND=0.0.0.0` **and** `VNC_PASSWORD`, then publish port 5900 only to trusted hosts.
 
 ## System dependencies
 
