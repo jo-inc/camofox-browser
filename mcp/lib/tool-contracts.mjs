@@ -1,7 +1,7 @@
 /**
  * Canonical tool contracts for the camofox-browser REST API.
  *
- * Single source of truth shared by two hosts that expose the same 11 tools:
+ * Single source of truth shared by two hosts that expose the same 12 tools:
  *   - mcp/server.mjs   (stdio MCP server for Claude Code, Codex, agy, Cursor, opencode)
  *   - plugin.ts        (OpenClaw plugin)
  *
@@ -64,7 +64,7 @@ const SEARCH_MACROS = [
 ];
 
 /**
- * The 11 tools, identical schema for both hosts. Edit here and both update.
+ * The 12 tools, identical schema for both hosts. Edit here and both update.
  * @type {ToolDef[]}
  */
 export const TOOL_DEFS = [
@@ -127,6 +127,33 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: 'camofox_upload',
+    description:
+      'Attach files to a file upload control in a Camoufox tab without the native OS file dialog. ' +
+      'Each path must be an absolute path inside the server upload directory (CAMOFOX_UPLOADS_DIR, default ~/.camofox/uploads). ' +
+      'Pass the upload trigger ref or selector from a snapshot; it may be omitted when the page already has an <input type="file">.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tabId: { type: 'string', description: 'Tab identifier' },
+        path: {
+          anyOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+          ],
+          description: 'Absolute file path, or array of paths, inside CAMOFOX_UPLOADS_DIR',
+        },
+        ref: { type: 'string', description: 'Upload trigger element ref from snapshot (e.g., e36)' },
+        selector: { type: 'string', description: 'Upload trigger CSS selector (alternative to ref)' },
+        timeout: {
+          type: 'number',
+          description: 'Milliseconds to wait for the upload input or file chooser to appear after the trigger (default 12000)',
+        },
+      },
+      required: ['tabId', 'path'],
+    },
+  },
+  {
     name: 'camofox_navigate',
     description:
       'Navigate a Camoufox tab to a URL or use a search macro (@google_search, @youtube_search, etc.). Preferred over Chrome for sites with bot detection.',
@@ -165,6 +192,10 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         tabId: { type: 'string', description: 'Tab identifier' },
+        fullPage: {
+          type: 'boolean',
+          description: 'Capture the full scrollable page instead of the viewport (default false)',
+        },
       },
       required: ['tabId'],
     },
@@ -303,13 +334,24 @@ export function buildRequest(name, args, ctx) {
         responseKind: 'json',
         body: { ...without(args), userId },
       };
-    case 'camofox_screenshot':
+    case 'camofox_upload':
+      return {
+        method: 'POST',
+        path: `/tabs/${args.tabId}/upload`,
+        auth: 'accessKey',
+        responseKind: 'json',
+        body: { ...without(args), userId },
+      };
+    case 'camofox_screenshot': {
+      const params = new URLSearchParams({ userId });
+      if (args.fullPage === true || args.fullPage === 'true') params.set('fullPage', 'true');
       return {
         method: 'GET',
-        path: `/tabs/${args.tabId}/screenshot?${new URLSearchParams({ userId })}`,
+        path: `/tabs/${args.tabId}/screenshot?${params}`,
         auth: 'accessKey',
         responseKind: 'image',
       };
+    }
     case 'camofox_close_tab':
       return {
         method: 'DELETE',

@@ -83,7 +83,7 @@ The Docker image includes yt-dlp. For local dev, install it for the `/youtube/tr
 openclaw plugins install @askjo/camofox-browser
 ```
 
-**Tools:** `camofox_create_tab`  |  `camofox_snapshot`  |  `camofox_click`  |  `camofox_type`  |  `camofox_navigate`  |  `camofox_scroll`  |  `camofox_screenshot`  |  `camofox_close_tab`  |  `camofox_list_tabs`  |  `camofox_import_cookies`
+**Tools:** `camofox_create_tab`  |  `camofox_snapshot`  |  `camofox_click`  |  `camofox_type`  |  `camofox_upload`  |  `camofox_navigate`  |  `camofox_scroll`  |  `camofox_screenshot`  |  `camofox_close_tab`  |  `camofox_evaluate`  |  `camofox_list_tabs`  |  `camofox_import_cookies`
 
 ### Standalone
 
@@ -563,6 +563,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots) |
 | `POST` | `/tabs/:id/click` | Click element by ref or CSS selector |
 | `POST` | `/tabs/:id/type` | Type text into element |
+| `POST` | `/tabs/:id/upload` | Attach files from `CAMOFOX_UPLOADS_DIR` to an upload control (`path`, optional `ref`/`selector`, `timeout`) |
 | `POST` | `/tabs/:id/press` | Press a keyboard key |
 | `POST` | `/tabs/:id/scroll` | Scroll page (up/down/left/right) |
 | `POST` | `/tabs/:id/navigate` | Navigate to URL or search macro |
@@ -570,7 +571,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `GET` | `/tabs/:id/links` | Extract all links on page |
 | `GET` | `/tabs/:id/images` | List `<img>` elements. Query params: `includeData=true` (return inline data URLs), `maxBytes=N`, `limit=N` |
 | `GET` | `/tabs/:id/downloads` | List captured downloads. Query params: `includeData=true` (base64 file data), `consume=true` (clear after read), `maxBytes=N` |
-| `GET` | `/tabs/:id/screenshot` | Take screenshot |
+| `GET` | `/tabs/:id/screenshot` | Take screenshot. Query params: `fullPage=true` (capture the full scrollable page) |
 | `POST` | `/tabs/:id/back` | Go back |
 | `POST` | `/tabs/:id/forward` | Go forward |
 | `POST` | `/tabs/:id/refresh` | Refresh page |

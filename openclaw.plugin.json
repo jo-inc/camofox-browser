@@ -120,6 +120,7 @@
       "camofox_snapshot",
       "camofox_click",
       "camofox_type",
+      "camofox_upload",
       "camofox_navigate",
       "camofox_scroll",
       "camofox_screenshot",

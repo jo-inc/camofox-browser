@@ -88,8 +88,24 @@ afterEach(() => {
 
 // --- Schema sanity ----------------------------------------------------------
 describe('TOOL_DEFS', () => {
-  test('exposes exactly 11 tools', () => {
-    expect(TOOL_DEFS).toHaveLength(11);
+  test('exposes exactly 12 tools', () => {
+    expect(TOOL_DEFS).toHaveLength(12);
+  });
+
+  test('upload requires tabId + path and accepts a string or an array of paths', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_upload').inputSchema;
+    expect(schema.required).toEqual(['tabId', 'path']);
+    expect(schema.properties.path.anyOf).toEqual([
+      { type: 'string' },
+      { type: 'array', items: { type: 'string' }, minItems: 1 },
+    ]);
+    expect(Object.keys(schema.properties)).toEqual(['tabId', 'path', 'ref', 'selector', 'timeout']);
+  });
+
+  test('screenshot exposes an optional fullPage boolean', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_screenshot').inputSchema;
+    expect(schema.properties.fullPage.type).toBe('boolean');
+    expect(schema.required).toEqual(['tabId']);
   });
 
   test('every def has a unique name and a valid JSON-Schema object', () => {
@@ -112,7 +128,10 @@ describe('buildRequest', () => {
     ['camofox_type', { tabId: 't1', text: 'hi', pressEnter: true }, { method: 'POST', path: '/tabs/t1/type', auth: 'accessKey', kind: 'json' }],
     ['camofox_navigate', { tabId: 't1', url: 'https://y.com' }, { method: 'POST', path: '/tabs/t1/navigate', auth: 'accessKey', kind: 'json' }],
     ['camofox_scroll', { tabId: 't1', direction: 'down', amount: 200 }, { method: 'POST', path: '/tabs/t1/scroll', auth: 'accessKey', kind: 'json' }],
+    ['camofox_upload', { tabId: 't1', path: '/uploads/a.pdf', ref: 'e3' }, { method: 'POST', path: '/tabs/t1/upload', auth: 'accessKey', kind: 'json' }],
     ['camofox_screenshot', { tabId: 't1' }, { method: 'GET', path: '/tabs/t1/screenshot?userId=u1', auth: 'accessKey', kind: 'image' }],
+    ['camofox_screenshot', { tabId: 't1', fullPage: true }, { method: 'GET', path: '/tabs/t1/screenshot?userId=u1&fullPage=true', auth: 'accessKey', kind: 'image' }],
+    ['camofox_screenshot', { tabId: 't1', fullPage: false }, { method: 'GET', path: '/tabs/t1/screenshot?userId=u1', auth: 'accessKey', kind: 'image' }],
     ['camofox_close_tab', { tabId: 't1' }, { method: 'DELETE', path: '/tabs/t1?userId=u1', auth: 'accessKey', kind: 'json' }],
     ['camofox_evaluate', { tabId: 't1', expression: '1+1' }, { method: 'POST', path: '/tabs/t1/evaluate', auth: 'accessKey', kind: 'json' }],
     ['camofox_list_tabs', {}, { method: 'GET', path: '/tabs?userId=u1', auth: 'accessKey', kind: 'json' }],
@@ -133,6 +152,26 @@ describe('buildRequest', () => {
     const spec = buildRequest('camofox_type', { tabId: 't1', ref: 'e2', text: 'hi', pressEnter: true }, CTX);
     expect(spec.body).toEqual({ ref: 'e2', text: 'hi', pressEnter: true, userId: 'u1' });
     expect(spec.body.tabId).toBeUndefined();
+  });
+
+  test('upload forwards path/ref/selector/timeout + userId in body', () => {
+    const spec = buildRequest(
+      'camofox_upload',
+      { tabId: 't1', path: ['/uploads/a.pdf', '/uploads/b.png'], selector: 'button.attach', timeout: 5000 },
+      CTX
+    );
+    expect(spec.body).toEqual({
+      path: ['/uploads/a.pdf', '/uploads/b.png'],
+      selector: 'button.attach',
+      timeout: 5000,
+      userId: 'u1',
+    });
+    expect(spec.body.tabId).toBeUndefined();
+  });
+
+  test('upload body userId comes from the session context, not tool args', () => {
+    const spec = buildRequest('camofox_upload', { tabId: 't1', path: '/uploads/a.pdf', userId: 'other' }, CTX);
+    expect(spec.body.userId).toBe('u1');
   });
 
   test('evaluate body is exactly { userId, expression }', () => {
@@ -236,6 +275,20 @@ describe('fetchSpec (mock REST)', () => {
     expect(out.data).toBe(pngBytes.toString('base64'));
   });
 
+  test('full-page screenshot sends fullPage=true and decodes the image', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    let seen;
+    installFetch([
+      {
+        match: (r) => r.method === 'GET' && r.path === '/tabs/t1/screenshot?userId=u1&fullPage=true',
+        respond: (r) => { seen = r; return { headers: { 'content-type': 'image/png' }, buffer: pngBytes }; },
+      },
+    ]);
+    const out = await fetchSpec(BASE, buildRequest('camofox_screenshot', { tabId: 't1', fullPage: true }, CTX), cfg());
+    expect(seen.headers.Authorization).toBe('Bearer ACCESS-KEY');
+    expect(out).toEqual({ type: 'image', data: pngBytes.toString('base64'), mimeType: 'image/png' });
+  });
+
   test('screenshot that returns JSON (error with 200) is not base64-encoded', async () => {
     installFetch([
       { match: () => true, respond: () => ({ headers: { 'content-type': 'application/json' }, body: { error: 'tab closed' } }) },
@@ -262,6 +315,29 @@ describe('runTool (end-to-end)', () => {
     const content = adaptResponse(spec, payload);
     expect(content).toHaveLength(2);
     expect(content[1]).toMatchObject({ type: 'image', data: 'IMG' });
+  });
+
+  test('upload POSTs the REST upload body with accessKey bearer', async () => {
+    let seen;
+    installFetch([
+      {
+        match: (r) => r.method === 'POST' && r.path === '/tabs/t1/upload',
+        respond: (r) => { seen = r; return { body: { ok: true, attached: ['/uploads/a.pdf'], via: 'input' } }; },
+      },
+    ]);
+    const { spec, payload } = await runTool('camofox_upload', { tabId: 't1', path: '/uploads/a.pdf', ref: 'e3' }, CTX, BASE, cfg());
+    expect(seen.headers.Authorization).toBe('Bearer ACCESS-KEY');
+    expect(JSON.parse(seen.body)).toEqual({ path: '/uploads/a.pdf', ref: 'e3', userId: 'u1' });
+    expect(JSON.parse(adaptResponse(spec, payload)[0].text)).toEqual({ ok: true, attached: ['/uploads/a.pdf'], via: 'input' });
+  });
+
+  test('upload surfaces REST validation errors', async () => {
+    installFetch([
+      { match: (r) => r.path === '/tabs/t1/upload', respond: () => ({ status: 400, body: { error: 'path resolves outside the upload directory' } }) },
+    ]);
+    await expect(
+      runTool('camofox_upload', { tabId: 't1', path: '/etc/passwd' }, CTX, BASE, cfg())
+    ).rejects.toThrow(/400: .*outside the upload directory/);
   });
 });
 
