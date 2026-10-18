@@ -19,7 +19,7 @@ let tarball;
 
 try {
   const { stdout } = await execFile('npm', ['pack', '--json'], { cwd: MCP_DIR });
-  const [{ filename }] = JSON.parse(stdout);
+  const [{ filename }] = Object.values(JSON.parse(stdout));
   tarball = join(MCP_DIR, filename);
 
   const installDir = join(testDir, 'install');
@@ -48,7 +48,7 @@ try {
   // The root package also exposes this MCP server as a bin. Its file allowlist
   // must include the manifest read by mcp/server.mjs at startup.
   const { stdout: rootPackOutput } = await execFile('npm', ['pack', '--dry-run', '--json'], { cwd: ROOT });
-  const [rootPack] = JSON.parse(rootPackOutput);
+  const [rootPack] = Object.values(JSON.parse(rootPackOutput));
   if (!rootPack.files.some(({ path }) => path === 'mcp/package.json')) {
     throw new Error('root package is missing mcp/package.json required by its MCP bin');
   }
