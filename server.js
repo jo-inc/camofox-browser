@@ -55,7 +55,7 @@ import { initSentry, captureException as sentryCaptureException, setupExpressErr
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
-import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, profilePathsFromProcessSnapshot } from './lib/process-ownership.js';
+import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
   safePageUrl, urlDomain, hashIdentifier,
@@ -985,11 +985,13 @@ async function _closeBrowserFullyImpl(reason) {
 
   // Close through Playwright (sends CDP Browser.close, then SIGKILL process group)
   let closeTimer;
+  let closed = false;
   try {
     await Promise.race([
       b.close(),
       new Promise((_, reject) => { closeTimer = setTimeout(() => reject(new Error('browser.close() timeout')), 10000); }),
     ]);
+    closed = true;
   } catch (err) {
     log('warn', 'browser.close() failed or timed out', { reason, error: err.message, pid });
   } finally {
@@ -1004,7 +1006,8 @@ async function _closeBrowserFullyImpl(reason) {
 
   // Clean up stale Firefox temp profiles (enable_cache: true accumulates data)
   try {
-    const cleaned = cleanupStaleFirefoxProfiles();
+    const ownedPaths = completedBrowserProfilePaths(ownedBrowserProcesses, closed);
+    const cleaned = cleanupStaleFirefoxProfiles({ ownedPaths });
     if (cleaned.removed > 0) {
       log('info', 'cleaned stale firefox profiles after browser close', cleaned);
     }
@@ -7209,26 +7212,6 @@ const server = app.listen(PORT, CONFIG.bindHost || undefined, async () => {
   if (tmpCleanup.removed > 0) {
     log('info', 'cleaned up orphaned camoufox temp files', tmpCleanup);
   }
-  const profileCleanup = cleanupStaleFirefoxProfiles();
-  if (profileCleanup.removed > 0) {
-    log('info', 'cleaned up stale firefox profiles on startup', profileCleanup);
-  }
-
-  // Periodic cleanup is liveness-aware: a running browser's profile can look
-  // stale by mtime while its storage is still in use.
-  setInterval(() => {
-    try {
-      const profiles = browser ? profilePathsFromProcessSnapshot(snapshotOwnedBrowserProcesses(process.pid)) : [];
-      if (browser && profiles.size === 0) {
-        log('warn', 'skipped periodic firefox profile cleanup: live profile path unavailable');
-        return;
-      }
-      const cleaned = cleanupStaleFirefoxProfiles({ protectedPaths: profiles });
-      if (cleaned.removed > 0) {
-        log('info', 'periodic firefox profile cleanup', cleaned);
-      }
-    } catch { /* best effort */ }
-  }, 10 * 60 * 1000).unref();
   const traceSweep = sweepOldTraces({
     baseDir: CONFIG.tracesDir,
     ttlMs: CONFIG.tracesTtlHours * 3600 * 1000,
