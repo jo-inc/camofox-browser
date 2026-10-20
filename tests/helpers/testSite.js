@@ -217,6 +217,42 @@ function createTestApp() {
       </body></html>
     `);
   });
+
+  app.get('/click-refs', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Click Ref Test</title></head>
+      <body>
+        <nav><button type="button" id="navigation" onclick="result.textContent = 'Wrong navigation button'">Documents</button></nav>
+        <button type="button" id="unnamed" onclick="result.textContent = 'Clicked unnamed button'"><img alt=""></button>
+        <button type="button" id="save-all" onclick="result.textContent = 'Clicked Save all'">Save all</button>
+        <button type="button" id="save" onclick="result.textContent = 'Clicked Save'">Save</button>
+        <p id="result">Pending</p>
+      </body></html>
+    `);
+  });
+
+  app.get('/click-refs-frame', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Click Frame Ref Test</title></head>
+      <body>
+        <iframe title="Ref Test" name="ref-test" src="/click-refs-frame-content"></iframe>
+      </body></html>
+    `);
+  });
+
+  app.get('/click-refs-frame-content', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Click Frame Content</title></head>
+      <body>
+        <button type="button" onclick="result.textContent = 'Wrong frame button'">Documents</button>
+        <button type="button" onclick="result.textContent = 'Clicked unnamed frame button'"><img alt=""></button>
+        <p id="result">Pending</p>
+      </body></html>
+    `);
+  });
   
   // Echo endpoint for macro expansion testing - echoes the full request URL
   app.get('/echo-url', (req, res) => {

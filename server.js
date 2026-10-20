@@ -2586,7 +2586,7 @@ function refToLocator(page, ref, refs) {
       frame = page.frames().find(f => f.url() === frameUrl || f.url().startsWith(frameUrl.slice(0, 80)));
     }
     if (frame) {
-      let locator = frame.getByRole(role, name ? { name } : undefined);
+      let locator = frame.getByRole(role, { name, exact: true });
       locator = locator.nth(nth);
       return locator;
     }
@@ -2594,7 +2594,7 @@ function refToLocator(page, ref, refs) {
     log('warn', 'refToLocator: frame not found for iframe ref', { ref, frameName, frameUrl: frameUrl?.slice(0, 60) });
   }
   
-  let locator = page.getByRole(role, name ? { name } : undefined);
+  let locator = page.getByRole(role, { name, exact: true });
   
   // Always use .nth() to disambiguate duplicate role+name combinations
   // This avoids "strict mode violation" when multiple elements match
