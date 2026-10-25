@@ -1869,23 +1869,23 @@ async function destroyTimedOutTab(session, tabId, reason, userId) {
 }
 
 /**
- * Recycle the oldest (least-used) tab in a session to free a slot.
+ * Recycle the oldest (least-used) tab in a session key to free a slot.
  * Closes the old tab's page and removes it from its group.
  * Returns { recycledTabId, recycledFromGroup } or null if no tab to recycle.
  */
-async function recycleOldestTab(session, reqId, userId) {
+async function recycleOldestTab(session, reqId, userId, sessionKey) {
   let oldestTab = null;
   let oldestGroup = null;
   let oldestGroupKey = null;
   let oldestTabId = null;
-  for (const [gKey, group] of session.tabGroups) {
-    for (const [tid, ts] of group) {
-      if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
-        oldestTab = ts;
-        oldestGroup = group;
-        oldestGroupKey = gKey;
-        oldestTabId = tid;
-      }
+  const group = session.tabGroups.get(sessionKey);
+  if (!group) return null;
+  for (const [tid, ts] of group) {
+    if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
+      oldestTab = ts;
+      oldestGroup = group;
+      oldestGroupKey = sessionKey;
+      oldestTabId = tid;
     }
   }
   if (!oldestTab) return null;
@@ -3407,7 +3407,7 @@ app.post('/tabs', async (req, res) => {
       
       // Recycle oldest tab when limits are reached instead of rejecting
       if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
-        const recycled = await recycleOldestTab(session, req.reqId, userId);
+        const recycled = await recycleOldestTab(session, req.reqId, userId, resolvedSessionKey);
         if (!recycled) {
           throw Object.assign(new Error('Maximum tabs per session reached'), { statusCode: 429 });
         }
@@ -7722,7 +7722,7 @@ app.post('/tabs/open', async (req, res) => {
     let totalTabs = 0;
     for (const g of session.tabGroups.values()) totalTabs += g.size;
     if (totalTabs >= MAX_TABS_PER_SESSION || getTotalTabCount() >= MAX_TABS_GLOBAL) {
-      const recycled = await recycleOldestTab(session, req.reqId, userId);
+      const recycled = await recycleOldestTab(session, req.reqId, userId, listItemId);
       if (!recycled) {
         return res.status(429).json({ error: 'Maximum tabs per session reached' });
       }
