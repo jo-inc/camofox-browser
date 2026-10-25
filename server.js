@@ -1868,11 +1868,6 @@ async function destroyTimedOutTab(session, tabId, reason, userId) {
   }
 }
 
-/**
- * Recycle the oldest (least-used) tab in a session key to free a slot.
- * Closes the old tab's page and removes it from its group.
- * Returns { recycledTabId, recycledFromGroup } or null if no tab to recycle.
- */
 async function recycleOldestTab(session, reqId, userId, sessionKey) {
   let oldestTab = null;
   let oldestGroup = null;
