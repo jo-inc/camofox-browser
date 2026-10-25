@@ -911,8 +911,12 @@ export async function runTool(name, args, ctx, baseUrl, config) {
 async function runEvaluateJob(args, ctx, baseUrl, config) {
   const spec = buildRequest('camofox_evaluate', args, ctx);
   spec.body.async = true;
+  const deadline = Date.now() + args.timeoutMs + 60000;
   let payload = await fetchSpec(baseUrl, spec, config);
   while (payload?.jobId && payload.state === 'running') {
+    if (Date.now() > deadline) {
+      throw new Error(`504: ${JSON.stringify({ ...payload, code: 'evaluate_timeout', tabKept: true, error: 'job still running past its deadline' })}`);
+    }
     const params = new URLSearchParams({ userId: ctx.userId, waitMs: '60000' });
     payload = await fetchSpec(baseUrl, {
       method: 'GET',

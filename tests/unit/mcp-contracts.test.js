@@ -376,6 +376,22 @@ describe('runTool (end-to-end)', () => {
       .rejects.toThrow(/^504: .*evaluate_timeout/);
   });
 
+  test('a job still running past timeoutMs plus grace stops waiting with 504', async () => {
+    let now = 1_000_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      installFetch([
+        { match: (r) => r.method === 'POST', respond: () => ({ status: 202, body: { jobId: 'j1', state: 'running' } }) },
+        { match: (r) => r.method === 'GET', respond: () => { now += 60000; return { body: { jobId: 'j1', state: 'running' } }; } },
+      ]);
+      await expect(runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg()))
+        .rejects.toThrow(/^504: .*evaluate_timeout.*past its deadline/);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   test('a server without jobs answers the start request directly', async () => {
     installFetch([{ match: (r) => r.method === 'POST', respond: () => ({ body: { ok: true, result: 3 } }) }]);
     const { payload } = await runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg());
