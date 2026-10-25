@@ -45,6 +45,12 @@ describe('timed-out tab operations', () => {
     expect(browserErrorRecovery(error)).toBe('create_new_tab');
   });
 
+  test('a responsive new-page timeout preserves the current Fly session', () => {
+    const source = readFileSync(new URL('../../server.js', import.meta.url), 'utf8');
+    expect(source).toContain("err.statusCode === 503 && err.code !== 'new_page_timeout'");
+    expect(source).toContain("err.code !== 'tab_timeout' && err.code !== 'new_page_timeout'");
+  });
+
   test('destroys a tab before releasing queued evaluate work after an evaluate timeout', async () => {
     const client = createClient(serverUrl);
     const { tabId } = await client.createTab();

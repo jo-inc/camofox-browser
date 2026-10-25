@@ -129,4 +129,15 @@ describe('browser error normalization', () => {
     expect(browserErrorCode(concurrency)).toBe('concurrency_timeout');
     expect(browserErrorRecovery(concurrency)).toBe('retry');
   });
+
+  test('responsive new-page timeouts normalize to a retryable 503', () => {
+    const err = Object.assign(new Error('new page timed out after 10000ms'), {
+      code: 'new_page_timeout',
+      statusCode: 503,
+    });
+    expect(browserErrorStatus(err)).toBe(503);
+    expect(browserErrorCode(err)).toBe('new_page_timeout');
+    expect(browserErrorRecovery(err)).toBe('retry');
+    expect(isRetryableBrowserError(err)).toBe(true);
+  });
 });

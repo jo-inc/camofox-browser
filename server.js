@@ -1731,8 +1731,10 @@ function handleRouteError(err, req, res, extraFields = {}) {
   // granularity and still collects a genuinely stuck tab. recordNavFailure is kept on
   // both paths so session health tracking is unchanged either way.
   const NAVIGATION_TIMEOUT_ACTIONS = new Set(['click', 'navigate', 'open_url']);
+  // A responsive new-page timeout is not a navigation failure and must keep
+  // the existing session (and its tabs) available for the retry.
   const isNavigationTimeout =
-    isTimeoutError(err) && err.code !== 'tab_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action);
+    isTimeoutError(err) && err.code !== 'tab_timeout' && err.code !== 'new_page_timeout' && userId && NAVIGATION_TIMEOUT_ACTIONS.has(action);
   if (isNavigationTimeout && proxyPool?.canRotateSessions) {
     log('warn', 'navigation timeout — destroying session for fresh proxy', {
       action, userId, error: err.message,
@@ -3513,8 +3515,9 @@ app.post('/tabs', async (req, res) => {
         recoverable: false,
       });
     }
-    // Memory pressure / max sessions → bounce through LB to another machine
-    if (FLY_MACHINE_ID && err.statusCode === 503) {
+    // Memory pressure / max sessions → bounce through LB to another machine.
+    // A responsive new-page timeout must stay on this machine with its live session.
+    if (FLY_MACHINE_ID && err.statusCode === 503 && err.code !== 'new_page_timeout') {
       res.set('fly-replay', `app=${CONFIG.flyAppName || 'camofox-browser'}`);
       return res.status(503).json({ error: safeError(err), code: err.code || 'admission_rejected' });
     }
