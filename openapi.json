@@ -78,6 +78,43 @@
             "type": "string"
           }
         }
+      },
+      "EvaluateJob": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "state"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "timeout",
+              "error"
+            ]
+          },
+          "result": {},
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "tabKept": {
+            "type": "boolean"
+          },
+          "elapsedMs": {
+            "type": "integer"
+          }
+        }
       }
     }
   },
@@ -2038,6 +2075,16 @@
                   "expression": {
                     "type": "string",
                     "description": "JavaScript expression to evaluate."
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 900000,
+                    "description": "Deadline for this evaluate. Defaults to the handler timeout (900000 when async). A timeout keeps the tab."
+                  },
+                  "async": {
+                    "type": "boolean",
+                    "description": "Start the evaluate as a job and answer 202 with its jobId; read it from GET /tabs/{tabId}/evaluate/{jobId}."
                   }
                 }
               }
@@ -2057,6 +2104,16 @@
                     },
                     "result": {}
                   }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Async evaluate started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluateJob"
                 }
               }
             }
@@ -2093,6 +2150,82 @@
           },
           "503": {
             "description": "Browser session expired; caller should retry to get a fresh session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The evaluate passed timeoutMs (code evaluate_timeout). The tab is kept and the script may still be running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/evaluate/{jobId}": {
+      "get": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Read an async evaluate job",
+        "description": "Returns the job's state and, once done, its result. waitMs holds the request until the job settles or the wait ends.",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "waitMs",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 120000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluateJob"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job for this tab and user (unknown, or expired 15 minutes after finishing).",
             "content": {
               "application/json": {
                 "schema": {

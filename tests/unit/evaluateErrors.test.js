@@ -25,6 +25,21 @@ describe('evaluate route error handling', () => {
     expect(section).not.toContain('res.status(500)');
   });
 
+  test('an evaluate timeout does not destroy the tab', () => {
+    const start = serverSource.indexOf("app.post('/tabs/:tabId/evaluate'");
+    const section = serverSource.slice(start, serverSource.indexOf('\napp.', start + 1));
+    expect(section).not.toContain('destroyTimedOutTab');
+    expect(section).toContain("code: 'evaluate_timeout'");
+  });
+
+  test('the idle reapers spare a tab while an evaluate runs', () => {
+    const tabReaper = serverSource.slice(serverSource.indexOf('// Per-tab inactivity reaper'));
+    expect(tabReaper).toContain('if (!tabState._lastReaperCheck || isEvaluating(tabState, now)) {');
+    const sessionReaper = serverSource.slice(serverSource.indexOf('// Cleanup stale sessions'));
+    expect(sessionReaper.indexOf('if (evaluating) session.lastAccess = now;'))
+      .toBeLessThan(sessionReaper.indexOf('SESSION_TIMEOUT_MS > 0 && now - session.lastAccess'));
+  });
+
   test('evaluate during a navigation normalizes to 409 navigation_race', () => {
     const err = new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation');
     expect(browserErrorStatus(err)).toBe(409);

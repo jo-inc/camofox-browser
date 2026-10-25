@@ -512,6 +512,7 @@ let _nativeMemBaseline = null; // RSS - heapUsed at first idle measurement
 const FAILURE_THRESHOLD = 3;
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
 const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
+const EVALUATE_MAX_TIMEOUT_MS = 15 * 60 * 1000; // ceiling for a caller's evaluate timeoutMs
 
 
 
@@ -5455,7 +5456,27 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *               expression:
  *                 type: string
  *                 description: JavaScript expression to evaluate.
+ *               timeoutMs:
+ *                 type: integer
+ *                 minimum: 1000
+ *                 maximum: 900000
+ *                 description: Deadline for this evaluate. Defaults to the handler timeout (900000 when async). A timeout keeps the tab.
+ *               async:
+ *                 type: boolean
+ *                 description: Start the evaluate as a job and answer 202 with its jobId; read it from GET /tabs/{tabId}/evaluate/{jobId}.
  *     responses:
+ *       202:
+ *         description: Async evaluate started.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/EvaluateJob'
+ *       504:
+ *         description: The evaluate passed timeoutMs (code evaluate_timeout). The tab is kept and the script may still be running.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       200:
  *         description: Evaluation result.
  *         content:
@@ -5496,6 +5517,11 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     if (!expression) return res.status(400).json({ error: 'expression is required' });
+    const isAsync = req.body.async === true;
+    const timeoutMs = req.body.timeoutMs ?? (isAsync ? EVALUATE_MAX_TIMEOUT_MS : requestTimeoutMs());
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > EVALUATE_MAX_TIMEOUT_MS) {
+      return res.status(400).json({ error: `timeoutMs must be an integer from 1000 to ${EVALUATE_MAX_TIMEOUT_MS}` });
+    }
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -5506,19 +5532,128 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     pluginEvents.emit('tab:evaluate', { userId, tabId: req.params.tabId, expression });
-    const result = await withUserLimit(userId, () => withTabLock(
-      req.params.tabId,
-      () => tabState.page.evaluate(expression),
-      requestTimeoutMs(),
-      () => destroyTimedOutTab(session, req.params.tabId, 'operation_timeout', userId),
-    ));
+    // The idle reapers count tool calls, not running scripts, so a running evaluate holds its tab
+    // busy until it settles or reaches its deadline (a script may never settle).
+    const evaluate = () => {
+      const running = { until: Date.now() + timeoutMs };
+      (tabState.evaluating ??= new Set()).add(running);
+      return tabState.page.evaluate(expression).finally(() => tabState.evaluating.delete(running));
+    };
+    if (isAsync) {
+      const jobId = crypto.randomUUID();
+      const job = { userId: normalizeUserId(userId), tabId: req.params.tabId, state: 'running', startedAt: Date.now() };
+      job.done = withTimeout(evaluate(), timeoutMs, 'action').then(
+        (result) => {
+          Object.assign(job, { state: 'done', result });
+          pluginEvents.emit('tab:evaluated', { userId, tabId: req.params.tabId, result });
+        },
+        (err) => Object.assign(job, { state: isTimeoutError(err) ? 'timeout' : 'error', error: err.message }),
+      ).finally(() => {
+        job.finishedAt = Date.now();
+        setTimeout(() => evaluateJobs.delete(jobId), EVALUATE_JOB_TTL_MS).unref();
+      });
+      evaluateJobs.set(jobId, job);
+      log('info', 'evaluate job started', { reqId: req.reqId, tabId: req.params.tabId, userId, jobId, timeoutMs });
+      return res.status(202).json(evaluateJobView(jobId, job));
+    }
+    // A slow script is the caller's, not a stuck tab: on timeout the tab and its page stay up.
+    // Past the handler timeout the tab lock is skipped, since a call queued behind a long
+    // evaluate would hit the lock-queue timeout, which destroys the tab.
+    const result = await withUserLimit(userId, () => timeoutMs > requestTimeoutMs()
+      ? withTimeout(evaluate(), timeoutMs, 'action')
+      : withTabLock(req.params.tabId, evaluate, timeoutMs));
     pluginEvents.emit('tab:evaluated', { userId, tabId: req.params.tabId, result });
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
   } catch (err) {
     log('error', 'evaluate failed', { reqId: req.reqId, tabId: req.params.tabId, error: err.message });
+    if (isTimeoutError(err)) {
+      return res.status(504).json({
+        error: `${err.message}; the tab was kept and the script may still be running in the page`,
+        code: 'evaluate_timeout', retryable: false, tabKept: true,
+      });
+    }
     handleRouteError(err, req, res);
   }
+});
+
+// An async evaluate is read back here, optionally waiting for it, so a long script survives a
+// dropped connection or a client's own HTTP timeout. Jobs are kept for a while after they finish.
+const EVALUATE_JOB_TTL_MS = 15 * 60 * 1000;
+const EVALUATE_WAIT_MAX_MS = 120000;
+const evaluateJobs = new Map(); // jobId -> { userId, tabId, state, result, error, startedAt, finishedAt, done }
+
+function isEvaluating(tabState, now) {
+  return Array.from(tabState.evaluating ?? []).some((running) => running.until > now);
+}
+
+function evaluateJobView(jobId, job) {
+  return {
+    ok: job.state === 'done',
+    jobId,
+    state: job.state,
+    ...(job.state === 'done' ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+    ...(job.state === 'timeout' ? { code: 'evaluate_timeout', tabKept: true } : {}),
+    elapsedMs: (job.finishedAt ?? Date.now()) - job.startedAt,
+  };
+}
+
+/**
+ * @openapi
+ * /tabs/{tabId}/evaluate/{jobId}:
+ *   get:
+ *     tags: [Interaction]
+ *     summary: Read an async evaluate job
+ *     description: Returns the job's state and, once done, its result. waitMs holds the request until the job settles or the wait ends.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: jobId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: waitMs
+ *         in: query
+ *         schema:
+ *           type: integer
+ *           minimum: 0
+ *           maximum: 120000
+ *     responses:
+ *       200:
+ *         description: Job state.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/EvaluateJob'
+ *       404:
+ *         description: No such job for this tab and user (unknown, or expired 15 minutes after finishing).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/tabs/:tabId/evaluate/:jobId', async (req, res) => {
+  const job = evaluateJobs.get(req.params.jobId);
+  if (!job || job.tabId !== req.params.tabId || job.userId !== normalizeUserId(req.query.userId)) {
+    return res.status(404).json({ error: 'Evaluate job not found', code: 'job_not_found' });
+  }
+  const waitMs = Math.min(Math.max(parseInt(req.query.waitMs, 10) || 0, 0), EVALUATE_WAIT_MAX_MS);
+  if (job.state === 'running' && waitMs > 0) {
+    let timer;
+    await Promise.race([job.done, new Promise((resolve) => { timer = setTimeout(resolve, waitMs); })]);
+    clearTimeout(timer);
+  }
+  res.json(evaluateJobView(req.params.jobId, job));
 });
 
 // Structured extraction using JSON Schema with x-ref hints
@@ -6065,6 +6200,9 @@ app.delete('/sessions/:userId', async (req, res) => {
 setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of Array.from(sessions.entries())) {
+    const evaluating = Array.from(session.tabGroups.values()).some((group) =>
+      Array.from(group.values()).some((tabState) => isEvaluating(tabState, now)));
+    if (evaluating) session.lastAccess = now;
     if (SESSION_TIMEOUT_MS > 0 && now - session.lastAccess > SESSION_TIMEOUT_MS) {
       session._closing = true;
       const idleMs = now - session.lastAccess;
@@ -6133,7 +6271,7 @@ setInterval(() => {
   for (const [userId, session] of sessions) {
     for (const [listItemId, group] of session.tabGroups) {
       for (const [tabId, tabState] of group) {
-        if (!tabState._lastReaperCheck) {
+        if (!tabState._lastReaperCheck || isEvaluating(tabState, now)) {
           tabState._lastReaperCheck = now;
           tabState._lastReaperToolCalls = tabState.toolCalls;
           continue;
