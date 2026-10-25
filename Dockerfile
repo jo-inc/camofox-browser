@@ -7,7 +7,7 @@ FROM node:22-trixie-slim AS camofox-browser
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
 ARG CAMOUFOX_VERSION=152.0.4
-ARG CAMOUFOX_RELEASE=beta.28
+ARG CAMOUFOX_RELEASE=beta.30
 ARG TARGETARCH
 ARG YT_DLP_VERSION=2026.08.19
 ARG YT_DLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
