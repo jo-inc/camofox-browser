@@ -216,6 +216,11 @@ describe('buildRequest', () => {
     expect(spec.body).toEqual({ userId: 'u1', expression: 'document.title' });
   });
 
+  test('evaluate forwards timeoutMs when given', () => {
+    const spec = buildRequest('camofox_evaluate', { tabId: 't1', expression: '1', timeoutMs: 60000 }, CTX);
+    expect(spec.body).toEqual({ userId: 'u1', expression: '1', timeoutMs: 60000 });
+  });
+
   test('import_cookies is NOT synchronous (must use buildCookieRequest)', () => {
     expect(() => buildRequest('camofox_import_cookies', {}, CTX)).toThrow(/buildCookieRequest/);
   });
@@ -336,6 +341,55 @@ describe('fetchSpec (mock REST)', () => {
 
 // --- runTool end-to-end: a few representative tools -------------------------
 describe('runTool (end-to-end)', () => {
+  test('a per-call userId and sessionKey replace the host defaults and stay out of the body', async () => {
+    let seen;
+    installFetch([{ match: (r) => r.method === 'POST' && r.path === '/tabs/t1/evaluate', respond: (r) => { seen = r; return { body: { ok: true } }; } }]);
+    const allowed = cfg({ allowedUserIds: ['shared'] });
+    await runTool('camofox_evaluate', { tabId: 't1', expression: '1', userId: 'shared' }, CTX, BASE, allowed);
+    expect(JSON.parse(seen.body)).toEqual({ userId: 'shared', expression: '1' });
+    installFetch([{ match: (r) => r.method === 'POST' && r.path === '/tabs', respond: (r) => { seen = r; return { body: { tabId: 't2' } }; } }]);
+    await runTool('camofox_create_tab', { url: 'https://x.com', userId: 'shared', sessionKey: 's2' }, CTX, BASE, allowed);
+    expect(JSON.parse(seen.body)).toEqual({ url: 'https://x.com', userId: 'shared', sessionKey: 's2' });
+    expect(TOOL_DEFS.every((t) => t.inputSchema.properties.userId && !t.inputSchema.required.includes('userId'))).toBe(true);
+  });
+
+  test('a long evaluate starts a server job and waits for it in short polls', async () => {
+    const seen = [];
+    let polls = 0;
+    installFetch([
+      { match: (r) => r.method === 'POST' && r.path === '/tabs/t1/evaluate', respond: (r) => { seen.push(JSON.parse(r.body)); return { status: 202, body: { jobId: 'j1', state: 'running' } }; } },
+      { match: (r) => r.method === 'GET' && r.path === '/tabs/t1/evaluate/j1?userId=u1&waitMs=60000',
+        respond: () => (++polls < 2 ? { body: { jobId: 'j1', state: 'running' } } : { body: { ok: true, jobId: 'j1', state: 'done', result: 7 } }) },
+    ]);
+    const { payload } = await runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 600000 }, CTX, BASE, cfg());
+    expect(seen[0]).toEqual({ userId: 'u1', expression: 'x', timeoutMs: 600000, async: true });
+    expect(payload.result).toBe(7);
+    expect(polls).toBe(2);
+  });
+
+  test('a long evaluate that times out on the server throws 504 evaluate_timeout', async () => {
+    installFetch([
+      { match: (r) => r.method === 'POST', respond: () => ({ status: 202, body: { jobId: 'j1', state: 'running' } }) },
+      { match: (r) => r.method === 'GET', respond: () => ({ body: { jobId: 'j1', state: 'timeout', code: 'evaluate_timeout', tabKept: true } }) },
+    ]);
+    await expect(runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg()))
+      .rejects.toThrow(/^504: .*evaluate_timeout/);
+  });
+
+  test('a server without jobs answers the start request directly', async () => {
+    installFetch([{ match: (r) => r.method === 'POST', respond: () => ({ body: { ok: true, result: 3 } }) }]);
+    const { payload } = await runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg());
+    expect(payload).toEqual({ ok: true, result: 3 });
+  });
+
+  test('a per-call userId outside CAMOFOX_MCP_USER_IDS is refused before any request', async () => {
+    installFetch([]);
+    await expect(runTool('camofox_evaluate', { tabId: 't1', expression: '1', userId: 'shared' }, CTX, BASE, cfg()))
+      .rejects.toThrow(/not in CAMOFOX_MCP_USER_IDS/);
+    installFetch([{ match: () => true, respond: () => ({ body: { ok: true } }) }]);
+    await expect(runTool('camofox_evaluate', { tabId: 't1', expression: '1', userId: 'u1' }, CTX, BASE, cfg())).resolves.toBeTruthy();
+  });
+
   test('create_tab round-trips through the real REST shape', async () => {
     installFetch([{ match: (r) => r.method === 'POST' && r.path === '/tabs', respond: () => ({ body: { tabId: 't9', url: 'https://x.com' } }) }]);
     const { spec, payload } = await runTool('camofox_create_tab', { url: 'https://x.com' }, CTX, BASE, cfg());

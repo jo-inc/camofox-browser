@@ -208,6 +208,7 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 | `CAMOFOX_BASE_URL` | `http://localhost:9377` | REST server URL |
 | `CAMOFOX_USER_ID` | `mcp-<random>` | Session isolation (one MCP server = one camofox session) |
 | `CAMOFOX_SESSION_KEY` | `default` | Tab partition within the user |
+| `CAMOFOX_MCP_USER_IDS` | _(unset)_ | Comma-separated userIds a tool call may pass as its optional `userId` argument to reach tabs of another profile. Without it, a `userId` other than this server's own is refused. Calls may also pass `sessionKey` to choose the tab group when creating a tab. |
 | `CAMOFOX_ACCESS_KEY` | _(unset)_ | Global bearer token gating the REST server (superkey). If set, forwarded as `Authorization: Bearer <key>` on **every** tool call automatically — must match the REST server's own `CAMOFOX_ACCESS_KEY`. Without this, a globally-authenticated REST server rejects all tool calls except cookie import. |
 | `CAMOFOX_API_KEY` | _(unset)_ | Self-chosen secret gating cookie import. Optional on localhost; required on remote/production and must match the REST server's `CAMOFOX_API_KEY`. Only affects `camofox_import_cookies`. |
 

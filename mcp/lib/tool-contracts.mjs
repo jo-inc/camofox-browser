@@ -244,6 +244,11 @@ export const TOOL_DEFS = [
           type: 'string',
           description: 'JavaScript expression to evaluate in the page context',
         },
+        timeoutMs: {
+          type: 'number',
+          description:
+            'Evaluate deadline in ms (1000 to 900000, default 30000). Over 30000 the script runs as a server job and this call waits for it. On timeout the tab is kept.',
+        },
       },
       required: ['tabId', 'expression'],
     },
@@ -538,6 +543,14 @@ export const TOOL_DEFS = [
   },
 ];
 
+// Optional per-call profile, so one host can reach tabs opened under another userId.
+for (const def of TOOL_DEFS) {
+  Object.assign(def.inputSchema.properties, {
+    userId: { type: 'string', description: "Camofox profile that owns the tab (default: this host's userId; others must be listed in CAMOFOX_MCP_USER_IDS)" },
+    sessionKey: { type: 'string', description: "Tab group within the profile, used when creating a tab (default: this host's sessionKey)" },
+  });
+}
+
 /** Quick name → def lookup. */
 export const TOOL_BY_NAME = Object.fromEntries(TOOL_DEFS.map((t) => [t.name, t]));
 
@@ -651,7 +664,7 @@ export function buildRequest(name, args, ctx) {
         path: `/tabs/${args.tabId}/evaluate`,
         auth: 'accessKey',
         responseKind: 'json',
-        body: { userId, expression: args.expression },
+        body: { userId, expression: args.expression, ...(args.timeoutMs != null ? { timeoutMs: args.timeoutMs } : {}) },
       };
     case 'camofox_activate':
       return {
@@ -875,11 +888,42 @@ export async function fetchSpec(baseUrl, spec, config) {
  * @returns {Promise<{spec: RequestSpec, payload: unknown}>}
  */
 export async function runTool(name, args, ctx, baseUrl, config) {
+  const { userId, sessionKey, ...rest } = args;
+  // A profile is a signed-in identity, so a host reaches only the ones its operator listed.
+  if (userId && userId !== ctx.userId && !(config.allowedUserIds || []).includes(userId)) {
+    throw new Error(`userId "${userId}" is not in CAMOFOX_MCP_USER_IDS`);
+  }
+  ctx = { userId: userId || ctx.userId, sessionKey: sessionKey || ctx.sessionKey };
+  args = rest;
+  if (name === 'camofox_evaluate' && args.timeoutMs > 30000) return runEvaluateJob(args, ctx, baseUrl, config);
   const spec =
     name === 'camofox_import_cookies'
       ? await buildCookieRequest(args, ctx, config)
       : buildRequest(name, args, ctx);
   const payload = await fetchSpec(baseUrl, spec, config);
+  return { spec, payload };
+}
+
+/**
+ * A long evaluate runs as a server job read back in short waits: Node fetch drops a response
+ * slower than 300 s. A server without jobs answers the start request synchronously instead.
+ */
+async function runEvaluateJob(args, ctx, baseUrl, config) {
+  const spec = buildRequest('camofox_evaluate', args, ctx);
+  spec.body.async = true;
+  let payload = await fetchSpec(baseUrl, spec, config);
+  while (payload?.jobId && payload.state === 'running') {
+    const params = new URLSearchParams({ userId: ctx.userId, waitMs: '60000' });
+    payload = await fetchSpec(baseUrl, {
+      method: 'GET',
+      path: `/tabs/${args.tabId}/evaluate/${payload.jobId}?${params}`,
+      auth: 'accessKey',
+      responseKind: 'json',
+    }, config);
+  }
+  if (payload?.jobId && payload.state !== 'done') {
+    throw new Error(`${payload.state === 'timeout' ? 504 : 500}: ${JSON.stringify(payload)}`);
+  }
   return { spec, payload };
 }
 
