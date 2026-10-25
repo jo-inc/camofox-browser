@@ -777,6 +777,32 @@ function tabCreateRequestTimeoutMs() {
   return Math.max(requestTimeoutMs(), (NEW_PAGE_TIMEOUT_MS * 2) + 5000);
 }
 
+// The service cgroup's memory against its systemd MemoryHigh (else MemoryMax); null off cgroup v2.
+// Sitting near the cap is normal (cache fills it, swap absorbs anon); stalling there is what
+// makes new pages time out, so atCap also needs the kernel's memory pressure (PSI).
+function cgroupMemory() {
+  try {
+    const rel = fs.readFileSync('/proc/self/cgroup', 'utf8').match(/^0::(.*)$/m)?.[1];
+    if (!rel) return null;
+    const read = (name) => fs.readFileSync(`/sys/fs/cgroup${rel}/${name}`, 'utf8').trim();
+    const mb = (v) => (v === 'max' ? null : Math.round(Number(v) / 1048576));
+    const usedMb = mb(read('memory.current'));
+    const capMb = mb(read('memory.high')) ?? mb(read('memory.max'));
+    const stalledPct = Number(read('memory.pressure').match(/^some avg10=([\d.]+)/m)?.[1] ?? 0);
+    const nearCap = capMb !== null && usedMb >= capMb * 0.95;
+    return { usedMb, capMb, stalledPct, nearCap, atCap: nearCap && stalledPct >= 20 };
+  } catch {
+    return null;
+  }
+}
+
+function memoryCapResponse(res, mem) {
+  return res.status(503).json({
+    error: `Camofox is at its memory cap (${mem.usedMb} of ${mem.capMb} MB, ${mem.stalledPct}% stalled); close tabs or raise MemoryHigh`,
+    code: 'memory_cap_reached', retryable: false, memory: mem,
+  });
+}
+
 const userConcurrency = new Map();
 
 async function withUserLimit(userId, operation) {
@@ -3158,7 +3184,7 @@ app.get('/health', (req, res) => {
     activeSessions: sessions.size,
     consecutiveFailures: Array.from(userNavHealth.values())
       .reduce((sum, h) => sum + h.consecutiveNavFailures, 0),
-    memory: { rssMb, heapUsedMb, nativeMemMb },
+    memory: { rssMb, heapUsedMb, nativeMemMb, cgroup: cgroupMemory() },
     ...(FLY_MACHINE_ID ? { machineId: FLY_MACHINE_ID } : {}),
   });
 });
@@ -3389,6 +3415,10 @@ app.post('/tabs', async (req, res) => {
       }
     }
 
+    // At the cap the new page times out and recovery destroys every tab of this userId; refuse first.
+    const mem = cgroupMemory();
+    if (mem?.atCap) return memoryCapResponse(res, mem);
+
     const result = await withTimeout((async () => {
       const existing = sessions.get(normalizeUserId(userId));
       if (trace && existing && !existing.tracePath) {
@@ -3502,6 +3532,8 @@ app.post('/tabs', async (req, res) => {
     } catch (cleanupErr) {
       log('warn', 'tab create cleanup failed', { reqId: req.reqId, tabId: createdTabId, error: cleanupErr?.message ?? String(cleanupErr) });
     }
+    const mem = isTimeoutError(err) ? cgroupMemory() : null;
+    if (mem?.nearCap) return memoryCapResponse(res, mem);
     // SSL certificate errors on initial navigation — non-retriable
     const isSslError = err.message && (
       err.message.includes('SEC_ERROR') ||

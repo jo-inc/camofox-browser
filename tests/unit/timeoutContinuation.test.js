@@ -70,4 +70,12 @@ describe('timed-out tab operations', () => {
       await client.cleanup();
     }
   }, 30000);
+
+  test('reports the cgroup memory reading on /health', async () => {
+    const health = await (await fetch(`${serverUrl}/health`)).json();
+    const cgroup = health.memory.cgroup;
+    if (cgroup === null) return; // not on cgroup v2
+    expect(Number.isInteger(cgroup.usedMb)).toBe(true);
+    expect(typeof cgroup.atCap).toBe('boolean');
+  });
 });

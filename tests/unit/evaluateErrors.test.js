@@ -26,6 +26,13 @@ describe('evaluate route error handling', () => {
     expect(section).not.toContain('res.status(500)');
   });
 
+  test('tab creation refuses at the memory cap before opening a page', () => {
+    const start = serverSource.indexOf("app.post('/tabs', async (req, res) => {");
+    const route = serverSource.slice(start, serverSource.indexOf('\napp.', start + 1));
+    expect(route.indexOf('if (mem?.atCap) return memoryCapResponse(res, mem);'))
+      .toBeLessThan(route.indexOf('createPageWithRecoveryForUser'));
+  });
+
   test('evaluate during a navigation normalizes to 409 navigation_race', () => {
     const err = new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation');
     expect(browserErrorStatus(err)).toBe(409);
