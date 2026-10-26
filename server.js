@@ -8794,6 +8794,7 @@ const pluginCtx = {
   auth: authMiddleware,
   ensureBrowser,
   getSession,
+  findTab,
   destroySession,
   closeSession,
   withUserLimit,

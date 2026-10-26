@@ -324,6 +324,7 @@ export function register(app, ctx) {
 | `auth` | `function` | `auth()` returns Express middleware enforcing API key / loopback |
 | `ensureBrowser` | `async function` | Launch browser if not running, return browser instance |
 | `getSession` | `async function` | `getSession(userId)` -- get or create a session |
+| `findTab` | `function` | `findTab(session, tabId)` -- look up a live tab; returns `{ tabState, listItemId, group }` or `null` |
 | `destroySession` | `async function` | `destroySession(userId, { reason })` -- tear down and await a session close |
 | `withUserLimit` | `async function` | `withUserLimit(userId, fn)` -- run `fn` within per-user concurrency limit |
 | `safePageClose` | `async function` | `safePageClose(page)` -- close a page with timeout guard |
