@@ -668,8 +668,9 @@ async function safePageClose(page) {
   }
 }
 
-// Detect host OS for fingerprint generation
+// Detect host OS for fingerprint generation (CAMOFOX_OS overrides it)
 function getHostOS() {
+  if (CONFIG.fingerprintOs) return CONFIG.fingerprintOs;
   const platform = os.platform();
   if (platform === 'darwin') return 'macos';
   if (platform === 'win32') return 'windows';

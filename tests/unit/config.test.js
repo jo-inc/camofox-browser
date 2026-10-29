@@ -73,6 +73,19 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow('CAMOFOX_TIMEZONE must be a valid IANA timezone');
   });
 
+  test('configures an optional fingerprint OS and forwards it to subprocesses', () => {
+    delete process.env.CAMOFOX_OS;
+    expect(loadConfig().fingerprintOs).toBeNull();
+
+    process.env.CAMOFOX_OS = 'Windows';
+    const config = loadConfig();
+    expect(config.fingerprintOs).toBe('windows');
+    expect(config.serverEnv.CAMOFOX_OS).toBe('Windows');
+
+    process.env.CAMOFOX_OS = 'android';
+    expect(() => loadConfig()).toThrow('CAMOFOX_OS must be windows, macos, or linux');
+  });
+
   test('configures and forwards the upload directory', () => {
     process.env.CAMOFOX_UPLOADS_DIR = '/mounted/uploads';
 
