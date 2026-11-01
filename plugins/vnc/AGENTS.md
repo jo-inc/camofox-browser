@@ -6,6 +6,7 @@ Interactive browser access via noVNC. Log into sites visually, solve CAPTCHAs, a
 
 - `GET /vnc/status` — check if VNC is running (no auth)
 - `GET /sessions/:userId/storage_state` — export cookies + localStorage as JSON (requires auth)
+- `POST /sessions/:userId/front` — raise the user's newest window on the shared display (requires auth)
 
 ## Activation
 

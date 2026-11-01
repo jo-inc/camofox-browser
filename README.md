@@ -615,6 +615,7 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 | `GET` | `/tabs/:tabId/downloads` | List captured browser downloads and saved current-resource PDFs |
 | `POST` | `/tabs/:tabId/fetch-current-resource` | Save the current inline PDF with its browser-session authentication as a download artifact |
 | `GET` | `/sessions/:userId/storage_state` | Export persisted browser storage ([VNC plugin](plugins/vnc/)) |
+| `POST` | `/sessions/:userId/front` | Raise the user's newest window on the shared display ([VNC plugin](plugins/vnc/)) |
 | `DELETE` | `/sessions/:userId/storage_state` | Reset the live session and delete its persisted browser storage ([persistence plugin](plugins/persistence/)) |
 
 ## Search Macros
