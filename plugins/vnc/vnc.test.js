@@ -69,6 +69,7 @@ describe('vnc plugin', () => {
     routes = {};
     mockApp = {
       get: jest.fn((path, ...handlers) => { routes[`GET ${path}`] = handlers; }),
+      post: jest.fn((path, ...handlers) => { routes[`POST ${path}`] = handlers; }),
     };
     const displayProvider = { create: () => new MockVirtualDisplay() };
     ctx = {
@@ -110,6 +111,11 @@ describe('vnc plugin', () => {
     expect(mockStartWatcher).toHaveBeenCalled();
     expect(mockApp.get).toHaveBeenCalledWith(
       '/sessions/:userId/storage_state',
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(mockApp.post).toHaveBeenCalledWith(
+      '/sessions/:userId/front',
       expect.any(Function),
       expect.any(Function),
     );
@@ -286,6 +292,50 @@ describe('vnc plugin', () => {
       userId: 'user-1',
       storageState: { cookies: [], origins: [] },
     });
+  });
+
+  test('front endpoint returns 404 for unknown user', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    const handler = routes['POST /sessions/:userId/front'].at(-1);
+    const req = { params: { userId: 'unknown' }, reqId: 'test' };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    await handler(req, res);
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('front endpoint raises the newest page for active session', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    const older = { bringToFront: jest.fn(async () => {}) };
+    const newer = { bringToFront: jest.fn(async () => {}) };
+    ctx.sessions.set('user-1', { context: { pages: () => [older, newer] } });
+
+    const handler = routes['POST /sessions/:userId/front'].at(-1);
+    const req = { params: { userId: 'user-1' }, reqId: 'test' };
+    const res = { json: jest.fn() };
+
+    await handler(req, res);
+    expect(newer.bringToFront).toHaveBeenCalled();
+    expect(older.bringToFront).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({ ok: true });
+  });
+
+  test('front endpoint uses safeError on failure', async () => {
+    await register(mockApp, ctx, { enabled: true });
+
+    ctx.sessions.set('user-1', {
+      context: { pages: () => [{ bringToFront: jest.fn(async () => { throw new Error('page closed'); }) }] },
+    });
+
+    const handler = routes['POST /sessions/:userId/front'].at(-1);
+    const req = { params: { userId: 'user-1' }, reqId: 'test' };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    await handler(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'page closed' });
   });
 
   test('watcher is killed on server:shutdown', async () => {

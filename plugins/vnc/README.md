@@ -137,6 +137,22 @@ Export the full Playwright storage state (cookies + localStorage origins) for a 
 - `403` — Missing or invalid API key
 - `500` — Context is dead or storageState export failed
 
+### POST /sessions/:userId/front
+
+Raise the newest window of a user's browser context to the top of the display. All sessions on one server render to the same Xvfb display, so a viewer watching one user calls this before connecting.
+
+**Auth:** Same as storage state export.
+
+**Response:**
+```json
+{ "ok": true }
+```
+
+**Errors:**
+- `404` — No active session or open window for the given userId
+- `403` — Missing or invalid API key
+- `500` — Raising the window failed
+
 ## Configuration
 
 | Source | Variable | Description | Default |
