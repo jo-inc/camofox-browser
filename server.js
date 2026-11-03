@@ -3994,22 +3994,6 @@ app.post('/tabs/:tabId/click', async (req, res) => {
         }
       };
       
-      // Report where the click will land so live viewers can draw it. Read-only
-      // and best-effort: a failed lookup is ignored and never blocks the click.
-      const announceClickTarget = async (locator) => {
-        try {
-          const box = await locator.boundingBox({ timeout: 500 });
-          if (!box) return;
-          pluginEvents.emit('tab:click:target', {
-            userId,
-            tabId,
-            x: box.x + box.width / 2,
-            y: box.y + box.height / 2,
-            viewport: tabState.page.viewportSize(),
-          });
-        } catch {}
-      };
-
       if (ref) {
         let locator = refToLocator(tabState.page, ref, tabState.refs);
         if (!locator) {
@@ -4031,10 +4015,8 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none';
           throw new StaleRefsError(ref, maxRef, tabState.refs.size);
         }
-        await announceClickTarget(locator);
         await doClick(locator, true);
       } else {
-        await announceClickTarget(tabState.page.locator(selector).first());
         await doClick(selector, false);
       }
       

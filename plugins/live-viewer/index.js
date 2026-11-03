@@ -1,33 +1,28 @@
 /**
- * Live viewer: per-session screenshot viewer with an action overlay.
+ * Live viewer: per-session screenshot viewer.
  *
  * Each user gets a signed, expiring link to watch one of their own tabs.
- * The viewer page polls screenshots and the tab's action log from the server,
- * so the browser never sees CAMOFOX_ACCESS_KEY and no shared VNC password is needed.
+ * The viewer page polls screenshots from the server, so the browser never
+ * sees CAMOFOX_ACCESS_KEY and no shared VNC password is needed.
  *
  * Routes:
- *   POST /live-viewer/links    (Bearer access key)     -> signed viewer URL for one tab
- *   GET  /live-viewer/view     (none; static page)     -> HTML viewer page
- *   GET  /live-viewer/frame    (signed token)          -> PNG screenshot of that tab
- *   GET  /live-viewer/events   (signed token, since=N) -> action log entries after seq N
- *
- * Action log: the server emits 'tab:click:target' (screen position of each click),
- * 'tab:navigated', and 'tab:type'. This plugin keeps the last MAX_ACTIONS per tab.
- * Typed text is never stored, only its length, so passwords do not reach the log.
+ *   POST /live-viewer/links   (Bearer access key)  -> signed viewer URL for one tab
+ *   GET  /live-viewer/view    (none; page is static) -> HTML viewer page
+ *   GET  /live-viewer/frame   (signed token)       -> PNG screenshot of that tab
  *
  * Token = base64url(JSON{u,t,e}) + "." + HMAC-SHA256(accessKey, payload).
  * The token is a bearer credential for one tab until it expires. Anyone who
  * holds the link can watch that tab, so share it only with the user it was
  * issued for.
  *
- * lib/auth.js exempts GET /live-viewer/view, /live-viewer/frame, and /live-viewer/events
- * from the access-key check, since those routes are authorized by the signed token.
+ * Note: the global access-key middleware in lib/auth.js must exempt
+ * GET /live-viewer/view and GET /live-viewer/frame, since those routes are
+ * authorized by the signed token instead.
  */
 import crypto from 'node:crypto';
 
 const DEFAULT_TTL_SECONDS = 30 * 60;
 const MAX_TTL_SECONDS = 4 * 60 * 60;
-const MAX_ACTIONS = 50;
 
 const VIEWER_HTML = `<!doctype html>
 <html lang="en">
@@ -39,79 +34,18 @@ const VIEWER_HTML = `<!doctype html>
   html, body { margin: 0; background: #111; color: #ddd; font: 14px system-ui, sans-serif; }
   header { padding: 8px 12px; border-bottom: 1px solid #333; }
   #status { opacity: 0.7; margin-left: 8px; }
-  #stage { position: relative; max-width: 100%; }
-  #frame { display: block; width: 100%; height: auto; }
-  #dot {
-    position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
-    border-radius: 50%; background: rgba(235, 30, 30, 0.85);
-    box-shadow: 0 0 0 4px rgba(235, 30, 30, 0.3); pointer-events: none;
-    display: none; transition: opacity 0.4s;
-  }
-  #log { list-style: none; margin: 0; padding: 8px 12px; border-top: 1px solid #333; font-size: 13px; }
-  #log li { padding: 3px 0; opacity: 0.85; }
-  #log li.old { opacity: 0.45; }
+  img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
 </style>
 </head>
 <body>
 <header>Live view <span id="status">connecting…</span></header>
-<div id="stage">
-  <img id="frame" alt="Live browser view">
-  <div id="dot"></div>
-</div>
-<ul id="log"></ul>
+<img id="frame" alt="Live browser view">
 <script>
   const token = new URLSearchParams(location.search).get('t') || '';
   const img = document.getElementById('frame');
-  const dot = document.getElementById('dot');
-  const logEl = document.getElementById('log');
   const statusEl = document.getElementById('status');
   let busy = false;
   let previousUrl = null;
-  let sinceSeq = 0;
-  let actions = [];
-  let dotHideTimer = null;
-
-  function describe(a) {
-    if (a.kind === 'click') return 'Clicked on the page';
-    if (a.kind === 'navigate') return 'Went to ' + (a.url || 'a new page');
-    if (a.kind === 'type') return 'Typed ' + a.chars + ' character' + (a.chars === 1 ? '' : 's');
-    return a.kind;
-  }
-
-  function showDot(a) {
-    if (a.kind !== 'click' || !a.viewport || !a.viewport.width) return;
-    dot.style.left = (a.x / a.viewport.width * 100) + '%';
-    dot.style.top = (a.y / a.viewport.height * 100) + '%';
-    dot.style.opacity = '1';
-    dot.style.display = 'block';
-    clearTimeout(dotHideTimer);
-    dotHideTimer = setTimeout(() => { dot.style.opacity = '0'; }, 1500);
-  }
-
-  function renderLog() {
-    logEl.innerHTML = '';
-    const recent = actions.slice(-8).reverse();
-    recent.forEach((a, i) => {
-      const li = document.createElement('li');
-      if (i > 0) li.className = 'old';
-      li.textContent = new Date(a.at).toLocaleTimeString() + '  ' + describe(a);
-      logEl.appendChild(li);
-    });
-  }
-
-  async function pollEvents() {
-    const res = await fetch('/live-viewer/events?t=' + encodeURIComponent(token) + '&since=' + sinceSeq, { cache: 'no-store' });
-    if (!res.ok) return;
-    const body = await res.json();
-    if (!Array.isArray(body.events) || body.events.length === 0) return;
-    for (const a of body.events) {
-      actions.push(a);
-      sinceSeq = Math.max(sinceSeq, a.seq);
-      showDot(a);
-    }
-    actions = actions.slice(-MAX_ACTIONS);
-    renderLog();
-  }
 
   async function tick() {
     if (busy) return;
@@ -124,7 +58,6 @@ const VIEWER_HTML = `<!doctype html>
         if (previousUrl) URL.revokeObjectURL(previousUrl);
         previousUrl = url;
         statusEl.textContent = 'live · ' + new Date().toLocaleTimeString();
-        await pollEvents();
       } else if (res.status === 401) {
         statusEl.textContent = 'link expired';
       } else if (res.status === 404) {
@@ -194,43 +127,8 @@ function findPage(sessions, userId, tabId) {
 }
 
 export async function register(app, ctx) {
-  const { auth, sessions, config, log, events } = ctx;
+  const { auth, sessions, config, log } = ctx;
   const secret = config.accessKey;
-
-  // Per-tab action log, keyed by "userId:tabId". Bounded and cleared when the tab closes.
-  const actionLogs = new Map();
-  let nextSeq = 1;
-  const keyOf = (userId, tabId) => `${userId}:${tabId}`;
-
-  function record(userId, tabId, entry) {
-    if (!userId || !tabId) return;
-    const key = keyOf(String(userId), String(tabId));
-    let list = actionLogs.get(key);
-    if (!list) {
-      list = [];
-      actionLogs.set(key, list);
-    }
-    list.push({ seq: nextSeq++, at: Date.now(), ...entry });
-    if (list.length > MAX_ACTIONS) list.splice(0, list.length - MAX_ACTIONS);
-  }
-
-  events.on('tab:click:target', ({ userId, tabId, x, y, viewport }) => {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    record(userId, tabId, { kind: 'click', x, y, viewport: viewport || null });
-  });
-
-  events.on('tab:navigated', ({ userId, tabId, url }) => {
-    record(userId, tabId, { kind: 'navigate', url: typeof url === 'string' ? url : null });
-  });
-
-  events.on('tab:type', ({ userId, tabId, text }) => {
-    // Length only. The typed text itself is never stored.
-    record(userId, tabId, { kind: 'type', chars: typeof text === 'string' ? text.length : 0 });
-  });
-
-  events.on('tab:destroyed', ({ userId, tabId }) => {
-    actionLogs.delete(keyOf(String(userId), String(tabId)));
-  });
 
   app.post('/live-viewer/links', auth(), (req, res) => {
     if (!secret) {
@@ -282,18 +180,5 @@ export async function register(app, ctx) {
       log('warn', 'live-viewer screenshot failed', { error: err.message });
       res.status(503).json({ error: 'Screenshot unavailable' });
     }
-  });
-
-  app.get('/live-viewer/events', (req, res) => {
-    if (!secret) return res.status(503).json({ error: 'Live viewer unavailable' });
-
-    const claims = verifyToken(secret, req.query.t);
-    if (!claims) return res.status(401).json({ error: 'Invalid or expired link' });
-
-    const since = Number(req.query.since) || 0;
-    const list = actionLogs.get(keyOf(claims.u, claims.t)) || [];
-    const fresh = list.filter((entry) => entry.seq > since);
-    const seq = fresh.length ? fresh[fresh.length - 1].seq : since;
-    res.set('Cache-Control', 'no-store').json({ seq, events: fresh });
   });
 }
