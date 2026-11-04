@@ -844,6 +844,191 @@
         }
       }
     },
+    "/tabs/{tabId}/state": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Describe the current page state",
+        "description": "Returns the page URL and title, a state classification (captcha, block, two_factor, login_wall, consent, no_results, or ok), and the refs of overlays that can safely be closed. Overlay refs come from the most recent snapshot, so call /snapshot first if the page has changed.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "captcha",
+                            "block",
+                            "two_factor",
+                            "login_wall",
+                            "consent",
+                            "no_results",
+                            "ok"
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "overlayRefs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "refsCount": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "userId missing."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/overlays/dismiss": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Close pop-ups and overlays",
+        "description": "Refreshes element refs, then clicks up to maxClicks buttons whose exact name is a close label (Close, Dismiss, No thanks, Not now, and similar). Consent, sign-in, purchase and submit controls are never clicked.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "maxClicks": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "default": 3
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Which overlays were closed and which could not be.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "dismissed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "failed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "userId missing."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/click": {
       "post": {
         "tags": [

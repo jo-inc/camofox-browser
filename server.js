@@ -15,6 +15,8 @@ import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins, typeEventPayload } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
+import { classifyPageState } from './lib/page-state.js';
+import { refsToCandidates, selectOverlayTargets } from './lib/overlays.js';
 import { extractPageStructure, attachStructureRefs } from './lib/page-structure.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -3791,6 +3793,207 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
     res.json({ ok: true, ready });
   } catch (err) {
     log('error', 'wait failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Page state (read-only)
+/**
+ * @openapi
+ * /tabs/{tabId}/state:
+ *   get:
+ *     tags: [Content]
+ *     summary: Describe the current page state
+ *     description: >
+ *       Returns the page URL and title, a state classification (captcha, block,
+ *       two_factor, login_wall, consent, no_results, or ok), and the refs of
+ *       overlays that can safely be closed. Overlay refs come from the most
+ *       recent snapshot, so call /snapshot first if the page has changed.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Page state.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 url:
+ *                   type: string
+ *                 title:
+ *                   type: string
+ *                 state:
+ *                   type: object
+ *                   properties:
+ *                     kind:
+ *                       type: string
+ *                       enum: [captcha, block, two_factor, login_wall, consent, no_results, ok]
+ *                     reasons:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                 overlayRefs:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                 refsCount:
+ *                   type: integer
+ *       400:
+ *         description: userId missing.
+ *       404:
+ *         description: Tab not found.
+ */
+app.get('/tabs/:tabId/state', async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+    const page = tabState.page;
+    const { title, text } = await withTimeout((async () => ({
+      title: await page.title().catch(() => ''),
+      text: await page.evaluate(() => ((document.body && document.body.innerText) || '').slice(0, 20000)).catch(() => ''),
+    }))(), 10000, 'page state');
+
+    const url = page.url();
+    const state = classifyPageState({ url, title, text });
+    const overlayRefs = selectOverlayTargets(refsToCandidates(tabState.refs), { limit: 5 }).map((c) => c.ref);
+    log('info', 'page state', { reqId: req.reqId, tabId: req.params.tabId, kind: state.kind });
+    res.json({
+      ok: true,
+      url,
+      title,
+      state,
+      overlayRefs,
+      refsCount: tabState.refs.size,
+    });
+  } catch (err) {
+    log('error', 'page state failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Overlay dismissal: closes pop-ups, modals and banners using only safe close labels
+/**
+ * @openapi
+ * /tabs/{tabId}/overlays/dismiss:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Close pop-ups and overlays
+ *     description: >
+ *       Refreshes element refs, then clicks up to maxClicks buttons whose exact
+ *       name is a close label (Close, Dismiss, No thanks, Not now, and similar).
+ *       Consent, sign-in, purchase and submit controls are never clicked.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               maxClicks:
+ *                 type: integer
+ *                 minimum: 1
+ *                 maximum: 5
+ *                 default: 3
+ *     responses:
+ *       200:
+ *         description: Which overlays were closed and which could not be.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 dismissed:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       ref:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                 failed:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       ref:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                       reason:
+ *                         type: string
+ *       400:
+ *         description: userId missing.
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/overlays/dismiss', async (req, res) => {
+  try {
+    const { userId, maxClicks = 3 } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+    session.lastAccess = Date.now();
+
+    const { tabState } = found;
+    tabState.toolCalls++;
+    const result = await withUserLimit(userId, () => withTimeout((async () => {
+      tabState.refs = await refreshTabRefs(tabState, { reason: 'overlay_dismiss' });
+      const targets = selectOverlayTargets(refsToCandidates(tabState.refs), { limit: maxClicks });
+      const dismissed = [];
+      const failed = [];
+      for (const target of targets) {
+        const locator = refToLocator(tabState.page, target.ref, tabState.refs);
+        if (!locator) {
+          failed.push({ ref: target.ref, name: target.name, reason: 'ref_not_found' });
+          continue;
+        }
+        try {
+          await locator.click({ timeout: 2000 });
+          dismissed.push({ ref: target.ref, name: target.name });
+          await tabState.page.waitForTimeout(300);
+        } catch (err) {
+          failed.push({ ref: target.ref, name: target.name, reason: String(err.message || 'click_failed').split('\n')[0] });
+        }
+      }
+      return { dismissed, failed };
+    })(), 30000, 'overlay dismiss'));
+
+    log('info', 'overlay dismiss', { reqId: req.reqId, tabId: req.params.tabId, dismissed: result.dismissed.length, failed: result.failed.length });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    log('error', 'overlay dismiss failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });

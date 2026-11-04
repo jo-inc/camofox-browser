@@ -18,7 +18,40 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@tiktok_search');
     expect(macros).toContain('@twitch_search');
     expect(macros).toContain('@reddit_subreddit');
-    expect(macros.length).toBe(14);
+    expect(macros).toContain('@bestbuy_search');
+    expect(macros).toContain('@indeed_search');
+    expect(macros).toContain('@pubmed_search');
+    expect(macros).toContain('@zillow_search');
+    expect(macros.length).toBe(18);
+  });
+
+  test('@bestbuy_search expands correctly', () => {
+    expect(expandMacro('@bestbuy_search', 'usb c hub'))
+      .toBe('https://www.bestbuy.com/site/searchpage.jsp?st=usb%20c%20hub');
+  });
+
+  test('@indeed_search expands correctly', () => {
+    expect(expandMacro('@indeed_search', 'data analyst'))
+      .toBe('https://www.indeed.com/jobs?q=data%20analyst');
+  });
+
+  test('@pubmed_search expands correctly', () => {
+    expect(expandMacro('@pubmed_search', 'sleep apnea'))
+      .toBe('https://pubmed.ncbi.nlm.nih.gov/?term=sleep%20apnea');
+  });
+
+  test('@zillow_search builds a City,-ST slug', () => {
+    expect(expandMacro('@zillow_search', 'Austin, TX'))
+      .toBe('https://www.zillow.com/homes/for_sale/Austin,-TX_rb/');
+    expect(expandMacro('@zillow_search', 'San Francisco, CA'))
+      .toBe('https://www.zillow.com/homes/for_sale/San-Francisco,-CA_rb/');
+  });
+
+  test('@zillow_search drops unsafe characters and handles empty query', () => {
+    expect(expandMacro('@zillow_search', 'Austin/../admin?x=1'))
+      .toBe('https://www.zillow.com/homes/for_sale/Austin..adminx1_rb/');
+    expect(expandMacro('@zillow_search', ''))
+      .toBe('https://www.zillow.com/homes/for_sale/');
   });
 
   test('@google_search expands correctly', () => {
