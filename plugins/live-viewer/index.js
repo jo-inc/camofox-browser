@@ -59,9 +59,10 @@ const VIEWER_HTML = `<!doctype html>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; border-bottom: 1px solid #333; }
-  #status { opacity: 0.75; flex: 1 1 auto; min-width: 0; }
-  #done, #open { font: inherit; min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #444; background: #1d1d1d; color: #eee; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 8px 12px; }
+  #status { opacity: 0.6; font-size: 12px; min-width: 0; }
+  .actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  #done, #open { font: inherit; min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #ccc; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
   #done { background: #2b6cb0; border-color: #2b6cb0; color: #fff; font-weight: 600; }
   #done[hidden] { display: none; }
   #stage { position: relative; padding: 0 16px 16px; }
@@ -78,10 +79,11 @@ const VIEWER_HTML = `<!doctype html>
 </head>
 <body>
 <header>
-  <span>Live view</span>
-  <span id="status" role="status" aria-live="polite">connecting…</span>
-  <button id="done" type="button" hidden>Done</button>
-  <a id="open" href="#" target="_blank" rel="noopener">Open in new tab</a>
+  <span id="status" role="status" aria-live="polite">connecting</span>
+  <span class="actions">
+    <button id="done" type="button" hidden>Done</button>
+    <a id="open" href="#" target="_blank" rel="noopener">Open in new tab</a>
+  </span>
 </header>
 <main id="stage">
   <img id="frame" alt="Live browser view" draggable="false">
@@ -134,7 +136,7 @@ const VIEWER_HTML = `<!doctype html>
       }).then(function (res) {
         if (endedByServer(res)) return;
         if (res.status === 409) { controlActive = false; renderControl(); setStatus('agent resumed'); }
-      }).catch(function () { setStatus('reconnecting…'); });
+      }).catch(function () { setStatus('offline'); });
     });
   }
 
@@ -216,7 +218,7 @@ const VIEWER_HTML = `<!doctype html>
           renderControl();
           setStatus('returned to agent');
         })
-        .catch(function () { setStatus('reconnecting…'); })
+        .catch(function () { setStatus('offline'); })
         .finally(function () { doneBtn.disabled = false; });
     });
   });
@@ -233,7 +235,7 @@ const VIEWER_HTML = `<!doctype html>
       renderControl();
       if (wasActive && !controlActive) setStatus('agent resumed');
     } catch (err) {
-      setStatus('reconnecting…');
+      setStatus('offline');
     }
   }
 
@@ -245,8 +247,8 @@ const VIEWER_HTML = `<!doctype html>
         img.src = url;
         if (previousUrl) URL.revokeObjectURL(previousUrl);
         previousUrl = url;
-        if (!controlActive) setStatus('live · ' + new Date().toLocaleTimeString());
-        else setStatus('you are in control · ' + new Date().toLocaleTimeString());
+        if (!controlActive) setStatus('live');
+        else setStatus('you have control');
       } else if (res.status === 401) {
         expired = true;
         setStatus('link expired');
@@ -256,7 +258,7 @@ const VIEWER_HTML = `<!doctype html>
         setStatus('unavailable (' + res.status + ')');
       }
     } catch (err) {
-      setStatus('reconnecting…');
+      setStatus('offline');
     }
   }
 
