@@ -4,11 +4,17 @@
  *
  * Usage (reads CAMOFOX_BASE_URL and CAMOFOX_ACCESS_KEY from the environment or .env):
  *   node scripts/test-branch-features.mjs
+ *   node scripts/test-branch-features.mjs https://example.org/some-page https://news.example.com/
+ *
+ * Any URLs passed on the command line replace the default pages. Use this to
+ * try pages with cookie banners or pop-ups, which exercise the page-state and
+ * overlay checks properly.
  *
  * Checks:
  *   - GET /tabs/:tabId/state without a key is rejected (401)
- *   - GET /tabs/:tabId/state reports a page state and overlay refs
- *   - POST /tabs/:tabId/overlays/dismiss runs and returns dismissed/failed lists
+ *   - on each real page: state returns a known kind, the page's host, and a
+ *     snapshot with a realistic number of element refs
+ *   - POST /tabs/:tabId/overlays/dismiss runs on each page and returns lists
  *   - each new search macro lands on its site
  *   - unknown tab IDs are rejected (404) on the new routes
  *
@@ -33,6 +39,20 @@ const userId = `branch-test-${randomUUID()}`;
 const sessionKey = `branch-test-${randomUUID()}`;
 // Deliberately not a UUID: UUID-shaped unknown tabs get 410 instead of 404.
 const missingTabId = 'missing-tab-for-branch-test';
+
+// Real pages with dense content. minRefs is the number of interactive
+// elements a snapshot should find on that page. The bar is set low enough that
+// a healthy page passes, but a blank or blocked page fails.
+const DEFAULT_PAGES = [
+  { url: 'https://en.wikipedia.org/wiki/Web_browser', minRefs: 50 },
+  { url: 'https://en.wikipedia.org/wiki/Headless_browser', minRefs: 30 },
+];
+
+const cliUrls = process.argv.slice(2).filter((arg) => /^https:\/\//.test(arg));
+const PAGES = (cliUrls.length ? cliUrls : DEFAULT_PAGES.map((p) => p.url)).map((url) => {
+  const known = DEFAULT_PAGES.find((p) => p.url === url);
+  return { url, host: new URL(url).hostname, minRefs: known?.minRefs ?? 10 };
+});
 
 // Each macro, the query used, and the host its page must land on.
 const MACRO_CASES = [
@@ -92,60 +112,100 @@ async function json(res) {
   }
 }
 
-async function run() {
-  // 1. Open a tab on a stable page.
-  const opened = await call('/tabs', {
-    method: 'POST',
-    body: { userId, sessionKey, url: 'https://example.com/' },
-  });
-  const openedBody = await json(opened);
-  tabId = openedBody?.tabId ?? null;
-  check('open test tab', opened.ok && typeof tabId === 'string', `HTTP ${opened.status}`);
-  if (!tabId) return;
+const tabPath = (suffix = '') => `/tabs/${encodeURIComponent(tabId)}${suffix}`;
+const userQuery = `userId=${encodeURIComponent(userId)}`;
 
-  // Let the page finish loading before checking its state.
-  await call(`/tabs/${encodeURIComponent(tabId)}/wait`, {
-    method: 'POST',
-    body: { userId, timeout: 10000 },
-  });
+async function checkPage(page, index) {
+  const label = `page ${index + 1} (${page.host})`;
 
-  // 2. /state needs the access key.
-  const noKey = await call(`/tabs/${encodeURIComponent(tabId)}/state?userId=${encodeURIComponent(userId)}`, { key: '' });
-  check('state without access key is rejected', noKey.status === 401, `HTTP ${noKey.status}`);
+  if (index === 0) {
+    const opened = await call('/tabs', {
+      method: 'POST',
+      body: { userId, sessionKey, url: page.url },
+    });
+    const openedBody = await json(opened);
+    tabId = openedBody?.tabId ?? null;
+    check(`${label}: open tab`, opened.ok && typeof tabId === 'string', `HTTP ${opened.status}`);
+    if (!tabId) return false;
+  } else {
+    const nav = await call(tabPath('/navigate'), {
+      method: 'POST',
+      body: { userId, url: page.url },
+      timeoutMs: 90_000,
+    });
+    check(`${label}: navigate`, nav.ok, `HTTP ${nav.status}`);
+    if (!nav.ok) return false;
+  }
 
-  // 3. /state reports the page state.
-  const state = await call(`/tabs/${encodeURIComponent(tabId)}/state?userId=${encodeURIComponent(userId)}`);
+  await call(tabPath('/wait'), { method: 'POST', body: { userId, timeout: 15000 } });
+
+  // /state needs the access key (checked once, on the first page).
+  if (index === 0) {
+    const noKey = await call(`${tabPath('/state')}?${userQuery}`, { key: '' });
+    check('state without access key is rejected', noKey.status === 401, `HTTP ${noKey.status}`);
+  }
+
+  // /state reports the page.
+  const state = await call(`${tabPath('/state')}?${userQuery}`);
   const stateBody = await json(state);
-  check('state returns 200 with a body', state.ok && stateBody?.ok === true, `HTTP ${state.status}`);
+  check(`${label}: state returns 200`, state.ok && stateBody?.ok === true, `HTTP ${state.status}`);
+  const hostMatches = typeof stateBody?.url === 'string' && new URL(stateBody.url).hostname.endsWith(page.host);
+  check(`${label}: state url is the page`, hostMatches, stateBody?.url ?? 'no url');
   check(
-    'state url is example.com',
-    typeof stateBody?.url === 'string' && stateBody.url.includes('example.com'),
-    stateBody?.url ?? 'no url',
-  );
-  check(
-    'state kind is a known value',
+    `${label}: state kind is a known value`,
     PAGE_STATE_KINDS.includes(stateBody?.state?.kind),
     stateBody?.state?.kind ?? 'no kind',
   );
   check(
-    'state reports overlayRefs as a list',
+    `${label}: state reports overlayRefs as a list`,
     Array.isArray(stateBody?.overlayRefs),
-    `${stateBody?.overlayRefs?.length ?? 'n/a'} refs`,
+    `${stateBody?.overlayRefs?.length ?? 'n/a'} overlay refs`,
+  );
+  // A normal article should not be classified as a block or captcha page.
+  check(
+    `${label}: article is not a block or captcha page`,
+    !['captcha', 'block'].includes(stateBody?.state?.kind),
+    stateBody?.state?.kind ?? 'no kind',
   );
 
-  // 4. Dismiss overlays after a snapshot so refs are current.
-  await call(`/tabs/${encodeURIComponent(tabId)}/snapshot?userId=${encodeURIComponent(userId)}`);
-  const dismiss = await call(`/tabs/${encodeURIComponent(tabId)}/overlays/dismiss`, {
+  // Snapshot gives a realistic number of refs on a content-rich page.
+  const snap = await call(`${tabPath('/snapshot')}?${userQuery}`);
+  const snapBody = await json(snap);
+  check(
+    `${label}: snapshot finds at least ${page.minRefs} element refs`,
+    snap.ok && (snapBody?.refsCount ?? 0) >= page.minRefs,
+    `${snapBody?.refsCount ?? 'n/a'} refs`,
+  );
+
+  // Dismiss runs on the page and returns lists. Pages without pop-ups should
+  // report zero clicks, so this also checks the route does nothing extra.
+  const dismiss = await call(tabPath('/overlays/dismiss'), {
     method: 'POST',
     body: { userId, maxClicks: 3 },
   });
   const dismissBody = await json(dismiss);
-  check('dismiss returns 200 with lists', dismiss.ok && Array.isArray(dismissBody?.dismissed) && Array.isArray(dismissBody?.failed), `HTTP ${dismiss.status}`);
-  check('dismiss on example.com leaves the page open', dismiss.ok, `${dismissBody?.dismissed?.length ?? 0} closed, ${dismissBody?.failed?.length ?? 0} failed`);
+  check(
+    `${label}: dismiss returns lists`,
+    dismiss.ok && Array.isArray(dismissBody?.dismissed) && Array.isArray(dismissBody?.failed),
+    `HTTP ${dismiss.status}`,
+  );
+  info(
+    `${label}: overlays`,
+    `${dismissBody?.dismissed?.length ?? 0} closed, ${dismissBody?.failed?.length ?? 0} could not be closed`,
+  );
+  return true;
+}
 
-  // 5. Each new macro lands on its site.
+async function run() {
+  // 1. Each real page.
+  for (let i = 0; i < PAGES.length; i++) {
+    const ok = await checkPage(PAGES[i], i);
+    if (!ok) return;
+  }
+
+  // 2. Each new search macro lands on its site.
   for (const testCase of MACRO_CASES) {
-    const nav = await call(`/tabs/${encodeURIComponent(tabId)}/navigate`, {
+    const nav = await call(tabPath('/navigate'), {
       method: 'POST',
       body: { userId, macro: testCase.macro, query: testCase.query },
       timeoutMs: 90_000,
@@ -166,14 +226,14 @@ async function run() {
 
     // Informational: what the page-state check says about the landing page.
     if (nav.ok) {
-      const after = await call(`/tabs/${encodeURIComponent(tabId)}/state?userId=${encodeURIComponent(userId)}`);
+      const after = await call(`${tabPath('/state')}?${userQuery}`);
       const afterBody = await json(after);
       info(`page state after ${testCase.macro}`, afterBody?.state?.kind ?? `HTTP ${after.status}`);
     }
   }
 
-  // 6. Unknown tabs are rejected on the new routes.
-  const missingState = await call(`/tabs/${encodeURIComponent(missingTabId)}/state?userId=${encodeURIComponent(userId)}`);
+  // 3. Unknown tabs are rejected on the new routes.
+  const missingState = await call(`/tabs/${encodeURIComponent(missingTabId)}/state?${userQuery}`);
   check('state for unknown tab is 404', missingState.status === 404, `HTTP ${missingState.status}`);
   const missingDismiss = await call(`/tabs/${encodeURIComponent(missingTabId)}/overlays/dismiss`, {
     method: 'POST',
@@ -181,13 +241,13 @@ async function run() {
   });
   check('dismiss for unknown tab is 404', missingDismiss.status === 404, `HTTP ${missingDismiss.status}`);
 
-  // 7. Handoff gate: cannot be exercised live yet.
+  // 4. Handoff gate: cannot be exercised live yet.
   skip('handoff gate returns 409 human_in_control', 'no route sets human control until handoff Phase 3; covered by unit tests');
 }
 
 async function cleanup() {
   if (tabId) {
-    const res = await call(`/tabs/${encodeURIComponent(tabId)}?userId=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    const res = await call(`${tabPath()}?${userQuery}`, { method: 'DELETE' });
     check('cleanup: close test tab', res.ok, `HTTP ${res.status}`);
   }
   const session = await call(`/sessions/${encodeURIComponent(userId)}`, { method: 'DELETE' });
