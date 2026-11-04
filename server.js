@@ -17,7 +17,7 @@ import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompa
 import { windowSnapshot } from './lib/snapshot.js';
 import { classifyPageState } from './lib/page-state.js';
 import { refsToCandidates, selectOverlayTargets } from './lib/overlays.js';
-import { agentActionBlock } from './lib/tab-control.js';
+import { agentActionBlock, getControl, setAgent, setHuman } from './lib/tab-control.js';
 import { extractPageStructure, attachStructureRefs } from './lib/page-structure.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -6104,6 +6104,7 @@ app.delete('/tabs/:tabId', async (req, res) => {
       await clearTabDownloads(found.tabState);
       await safePageClose(found.tabState.page);
       found.group.delete(req.params.tabId);
+      setAgent(req.params.tabId);
       { const _l = tabLocks.get(req.params.tabId); if (_l) _l.drain(); tabLocks.delete(req.params.tabId); refreshTabLockQueueDepth(); }
       dropEmptyTabGroup(session, found.listItemId, found.group);
       refreshActiveTabsGauge();
@@ -6112,6 +6113,229 @@ app.delete('/tabs/:tabId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     log('error', 'tab close failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+// Handoff: a person takes over a tab while the agent waits
+/**
+ * @openapi
+ * /tabs/{tabId}/handoff:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Hand a tab to a person
+ *     description: >
+ *       Pauses agent actions on the tab. Action routes return 409
+ *       human_in_control until the handoff ends. The person works in the live
+ *       view: create a control link with POST /live-viewer/links and
+ *       control set to true. The handoff ends when the person presses Done, when
+ *       the agent calls /handoff/release, or after idleMs with no input. Only the
+ *       tab owner (userId) can start a handoff. Starting a new handoff replaces
+ *       an active one.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               reason:
+ *                 type: string
+ *                 description: Shown to the person and in 409 responses. Max 200 characters.
+ *               idleMs:
+ *                 type: integer
+ *                 description: Idle time before control returns to the agent. Clamped to 10 seconds to 30 minutes. Default 10 minutes.
+ *     responses:
+ *       200:
+ *         description: Handoff started.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 mode:
+ *                   type: string
+ *                   enum: [human]
+ *                 until:
+ *                   type: string
+ *                   format: date-time
+ *                 reason:
+ *                   type: string
+ *       400:
+ *         description: userId missing.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/handoff', (req, res) => {
+  try {
+    const userId = req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+
+    const control = setHuman(req.params.tabId, { reason: req.body?.reason, idleMs: req.body?.idleMs });
+    log('info', 'handoff started', { reqId: req.reqId, tabId: req.params.tabId, userId });
+    res.json({
+      ok: true,
+      mode: 'human',
+      until: new Date(control.until).toISOString(),
+      reason: control.reason,
+    });
+  } catch (err) {
+    log('error', 'handoff start failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/handoff/release:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Return a tab to the agent
+ *     description: >
+ *       Ends an active handoff so agent actions work again. Safe to call when no
+ *       handoff is active.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Tab returned to the agent.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 mode:
+ *                   type: string
+ *                   enum: [agent]
+ *       400:
+ *         description: userId missing.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/handoff/release', (req, res) => {
+  try {
+    const userId = req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+
+    setAgent(req.params.tabId);
+    log('info', 'handoff released', { reqId: req.reqId, tabId: req.params.tabId, userId });
+    res.json({ ok: true, mode: 'agent' });
+  } catch (err) {
+    log('error', 'handoff release failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/control:
+ *   get:
+ *     tags: [Interaction]
+ *     summary: Read who controls a tab
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Current control mode.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 mode:
+ *                   type: string
+ *                   enum: [agent, human]
+ *                 until:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Present when mode is human.
+ *                 reason:
+ *                   type: string
+ *                   description: Present when mode is human.
+ *       400:
+ *         description: userId missing.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.get('/tabs/:tabId/control', (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+
+    const control = getControl(req.params.tabId);
+    if (control.mode !== 'human') return res.json({ mode: 'agent' });
+    res.json({ mode: 'human', until: new Date(control.until).toISOString(), reason: control.reason });
+  } catch (err) {
+    log('error', 'control read failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
