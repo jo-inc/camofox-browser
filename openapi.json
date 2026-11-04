@@ -663,6 +663,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -844,6 +871,218 @@
         }
       }
     },
+    "/tabs/{tabId}/state": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Describe the current page state",
+        "description": "Returns the page URL and title, a state classification (captcha, block, two_factor, login_wall, consent, no_results, or ok), and the refs of overlays that can safely be closed. Overlay refs come from the most recent snapshot, so call /snapshot first if the page has changed.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "captcha",
+                            "block",
+                            "two_factor",
+                            "login_wall",
+                            "consent",
+                            "no_results",
+                            "ok"
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "overlayRefs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "refsCount": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "userId missing."
+          },
+          "404": {
+            "description": "Tab not found."
+          }
+        }
+      }
+    },
+    "/tabs/{tabId}/overlays/dismiss": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Close pop-ups and overlays",
+        "description": "Refreshes element refs, then clicks up to maxClicks buttons whose exact name is a close label (Close, Dismiss, No thanks, Not now, and similar). Consent, sign-in, purchase and submit controls are never clicked.\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "maxClicks": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "default": 3
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Which overlays were closed and which could not be.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "dismissed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "failed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "userId missing."
+          },
+          "404": {
+            "description": "Tab not found."
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/{tabId}/click": {
       "post": {
         "tags": [
@@ -933,7 +1172,7 @@
             }
           },
           "409": {
-            "description": "Page changed during the click; caller should take a fresh snapshot and retry with current refs.",
+            "description": "A 409 with error human_in_control means a person holds the tab; page changed during the click; caller should take a fresh snapshot and retry with current refs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1017,6 +1256,33 @@
           },
           "404": {
             "description": "Tab not found."
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1106,7 +1372,7 @@
             }
           },
           "409": {
-            "description": "Page changed or target became invalid; caller should take a fresh snapshot and retry.",
+            "description": "A 409 with error human_in_control means a person holds the tab; page changed or target became invalid; caller should take a fresh snapshot and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1193,6 +1459,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1258,6 +1551,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -1329,6 +1649,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -1483,6 +1830,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1549,6 +1923,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1612,6 +2013,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -2082,7 +2510,7 @@
             }
           },
           "409": {
-            "description": "Page navigated while evaluating; caller should retry once the page settles.",
+            "description": "A 409 with error human_in_control means a person holds the tab; page navigated while evaluating; caller should retry once the page settles.",
             "content": {
               "application/json": {
                 "schema": {
