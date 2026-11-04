@@ -3920,6 +3920,7 @@ app.get('/tabs/:tabId/state', async (req, res) => {
  *       Refreshes element refs, then clicks up to maxClicks buttons whose exact
  *       name is a close label (Close, Dismiss, No thanks, Not now, and similar).
  *       Consent, sign-in, purchase and submit controls are never clicked.
+ *       Hidden controls are skipped and reported with reason not_visible.
  *     parameters:
  *       - name: tabId
  *         in: path
@@ -4007,13 +4008,26 @@ app.post('/tabs/:tabId/overlays/dismiss', async (req, res) => {
     tabState.toolCalls++;
     const result = await withUserLimit(userId, () => withTimeout((async () => {
       tabState.refs = await refreshTabRefs(tabState, { reason: 'overlay_dismiss' });
-      const targets = selectOverlayTargets(refsToCandidates(tabState.refs), { limit: maxClicks });
+      const max = Math.min(Math.max(Number(maxClicks) || 1, 1), 5);
+      // Hidden controls are skipped and do not use up the click limit.
+      const candidates = selectOverlayTargets(refsToCandidates(tabState.refs), { limit: 5 });
       const dismissed = [];
       const failed = [];
-      for (const target of targets) {
+      for (const target of candidates) {
+        if (dismissed.length >= max) break;
         const locator = refToLocator(tabState.page, target.ref, tabState.refs);
         if (!locator) {
           failed.push({ ref: target.ref, name: target.name, reason: 'ref_not_found' });
+          continue;
+        }
+        let visible = false;
+        try {
+          visible = await locator.isVisible({ timeout: 500 });
+        } catch {
+          visible = false;
+        }
+        if (!visible) {
+          failed.push({ ref: target.ref, name: target.name, reason: 'not_visible' });
           continue;
         }
         try {
