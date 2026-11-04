@@ -17,6 +17,7 @@ import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompa
 import { windowSnapshot } from './lib/snapshot.js';
 import { classifyPageState } from './lib/page-state.js';
 import { refsToCandidates, selectOverlayTargets } from './lib/overlays.js';
+import { agentActionBlock } from './lib/tab-control.js';
 import { extractPageStructure, attachStructureRefs } from './lib/page-structure.js';
 import {
   MAX_DOWNLOAD_INLINE_BYTES,
@@ -3152,8 +3153,26 @@ app.post('/tabs', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/navigate', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -4057,13 +4076,15 @@ app.post('/tabs/:tabId/overlays/dismiss', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: Page changed during the click; caller should take a fresh snapshot and retry with current refs.
+ *         description: A 409 with error human_in_control means a person holds the tab; page changed during the click; caller should take a fresh snapshot and retry with current refs.
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/click', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -4362,8 +4383,26 @@ const UPLOAD_SETTLE_MS = 1500; // let the page process the upload / render a pre
  *         description: "Bad request (missing path/userId; non-regular file; or a path that is missing or outside the configured upload directory)."
  *       404:
  *         description: "Tab not found."
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/upload', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   try {
     const { userId, ref, selector } = req.body;
@@ -4564,13 +4603,15 @@ app.post('/tabs/:tabId/upload', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: Page changed or target became invalid; caller should take a fresh snapshot and retry.
+ *         description: A 409 with error human_in_control means a person holds the tab; page changed or target became invalid; caller should take a fresh snapshot and retry.
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/type', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -4705,9 +4746,27 @@ app.post('/tabs/:tabId/type', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 // Select a native form option by its visible label or HTML value.
 app.post('/tabs/:tabId/select', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   try {
     const { userId, ref, selector, option } = req.body;
@@ -4786,8 +4845,26 @@ app.post('/tabs/:tabId/select', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/press', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -4858,8 +4935,26 @@ app.post('/tabs/:tabId/press', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/scroll', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   try {
     const { userId, direction = 'down', amount = 500 } = req.body;
     const session = sessions.get(normalizeUserId(userId));
@@ -5009,8 +5104,26 @@ app.post('/tabs/:tabId/viewport', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/back', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -5087,8 +5200,26 @@ app.post('/tabs/:tabId/back', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/forward', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -5155,8 +5286,26 @@ app.post('/tabs/:tabId/forward', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/refresh', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   const tabId = req.params.tabId;
   
   try {
@@ -5682,7 +5831,7 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: Page navigated while evaluating; caller should retry once the page settles.
+ *         description: A 409 with error human_in_control means a person holds the tab; page navigated while evaluating; caller should retry once the page settles.
  *         content:
  *           application/json:
  *             schema:
@@ -5695,6 +5844,8 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySize }), async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   try {
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });

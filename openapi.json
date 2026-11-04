@@ -663,6 +663,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1118,7 +1145,7 @@
             }
           },
           "409": {
-            "description": "Page changed during the click; caller should take a fresh snapshot and retry with current refs.",
+            "description": "A 409 with error human_in_control means a person holds the tab; page changed during the click; caller should take a fresh snapshot and retry with current refs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1202,6 +1229,33 @@
           },
           "404": {
             "description": "Tab not found."
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1291,7 +1345,7 @@
             }
           },
           "409": {
-            "description": "Page changed or target became invalid; caller should take a fresh snapshot and retry.",
+            "description": "A 409 with error human_in_control means a person holds the tab; page changed or target became invalid; caller should take a fresh snapshot and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1378,6 +1432,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1443,6 +1524,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -1514,6 +1622,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -1668,6 +1803,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1734,6 +1896,33 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1797,6 +1986,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -2267,7 +2483,7 @@
             }
           },
           "409": {
-            "description": "Page navigated while evaluating; caller should retry once the page settles.",
+            "description": "A 409 with error human_in_control means a person holds the tab; page navigated while evaluating; caller should retry once the page settles.",
             "content": {
               "application/json": {
                 "schema": {
