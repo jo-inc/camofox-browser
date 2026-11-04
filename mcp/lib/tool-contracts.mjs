@@ -65,6 +65,11 @@ const SEARCH_MACROS = [
   '@indeed_search',
   '@pubmed_search',
   '@zillow_search',
+  '@npm_search',
+  '@dockerhub_search',
+  '@nhs_search',
+  '@legislation_search',
+  '@dailymed_search',
 ];
 
 /**

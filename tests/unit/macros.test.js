@@ -22,7 +22,20 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@indeed_search');
     expect(macros).toContain('@pubmed_search');
     expect(macros).toContain('@zillow_search');
-    expect(macros.length).toBe(18);
+    expect(macros).toContain('@npm_search');
+    expect(macros).toContain('@dockerhub_search');
+    expect(macros).toContain('@nhs_search');
+    expect(macros).toContain('@legislation_search');
+    expect(macros).toContain('@dailymed_search');
+    expect(macros.length).toBe(23);
+  });
+
+  test('professional and public-interest macros expand to their search pages', () => {
+    expect(expandMacro('@npm_search', 'react')).toBe('https://www.npmjs.com/search?q=react');
+    expect(expandMacro('@dockerhub_search', 'nginx')).toBe('https://hub.docker.com/search?q=nginx');
+    expect(expandMacro('@nhs_search', 'diabetes')).toBe('https://www.nhs.uk/search/results?q=diabetes');
+    expect(expandMacro('@legislation_search', 'tax')).toBe('https://www.legislation.gov.uk/all?title=tax');
+    expect(expandMacro('@dailymed_search', 'ibuprofen')).toBe('https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=ibuprofen');
   });
 
   test('@bestbuy_search expands correctly', () => {
