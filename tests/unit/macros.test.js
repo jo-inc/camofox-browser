@@ -22,7 +22,29 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@indeed_search');
     expect(macros).toContain('@pubmed_search');
     expect(macros).toContain('@zillow_search');
-    expect(macros.length).toBe(18);
+    expect(macros).toContain('@npm_search');
+    expect(macros).toContain('@dockerhub_search');
+    expect(macros).toContain('@nhs_search');
+    expect(macros).toContain('@legislation_search');
+    expect(macros).toContain('@dailymed_search');
+    expect(macros).toContain('@huggingface_search');
+    expect(macros).toContain('@jsr_search');
+    expect(macros).toContain('@bing_news_search');
+    expect(macros.length).toBe(26);
+  });
+
+  test('AI, package and news macros expand to their search pages', () => {
+    expect(expandMacro('@huggingface_search', 'llama')).toBe('https://huggingface.co/models?search=llama');
+    expect(expandMacro('@jsr_search', 'zod')).toBe('https://jsr.io/packages?search=zod');
+    expect(expandMacro('@bing_news_search', 'climate')).toBe('https://www.bing.com/news/search?q=climate');
+  });
+
+  test('professional and public-interest macros expand to their search pages', () => {
+    expect(expandMacro('@npm_search', 'react')).toBe('https://www.npmjs.com/search?q=react');
+    expect(expandMacro('@dockerhub_search', 'nginx')).toBe('https://hub.docker.com/search?q=nginx');
+    expect(expandMacro('@nhs_search', 'diabetes')).toBe('https://www.nhs.uk/search/results?q=diabetes');
+    expect(expandMacro('@legislation_search', 'tax')).toBe('https://www.legislation.gov.uk/all?title=tax');
+    expect(expandMacro('@dailymed_search', 'ibuprofen')).toBe('https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=ibuprofen');
   });
 
   test('@bestbuy_search expands correctly', () => {

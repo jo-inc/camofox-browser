@@ -35,6 +35,11 @@ const VIEWER_HTML = `<!doctype html>
   header { padding: 8px 12px; border-bottom: 1px solid #333; }
   #status { opacity: 0.7; margin-left: 8px; }
   img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+  /* Thin, low-contrast scrollbar so it stays out of the way. */
+  html { scrollbar-width: thin; scrollbar-color: #333 transparent; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
 </style>
 </head>
 <body>
