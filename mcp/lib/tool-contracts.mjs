@@ -61,6 +61,10 @@ const SEARCH_MACROS = [
   '@instagram_search',
   '@tiktok_search',
   '@twitch_search',
+  '@bestbuy_search',
+  '@indeed_search',
+  '@pubmed_search',
+  '@zillow_search',
 ];
 
 /**

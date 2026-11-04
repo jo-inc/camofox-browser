@@ -5,6 +5,7 @@
   "newPageTimeoutMs": 10000,
   "interactive": { "mode": "off" },
   "plugins": {
+    "live-viewer": { "enabled": true }
     "youtube": { "enabled": true },
     "persistence": { "enabled": true },
     "vnc": { "enabled": false, "resolution": "1920x1080" }
