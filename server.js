@@ -3975,8 +3975,26 @@ app.get('/tabs/:tabId/state', async (req, res) => {
  *         description: userId missing.
  *       404:
  *         description: Tab not found.
+ *       409:
+ *         description: A person is controlling this tab (handoff). Agent actions are refused until control returns.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                 reason:
+ *                   type: string
  */
 app.post('/tabs/:tabId/overlays/dismiss', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   try {
     const { userId, maxClicks = 3 } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'userId required' });

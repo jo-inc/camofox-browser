@@ -102,7 +102,7 @@ describe('action routes are gated (static guard)', () => {
 
   const ACTION_ROUTES = [
     'navigate', 'click', 'upload', 'type', 'select', 'press',
-    'scroll', 'back', 'forward', 'refresh', 'evaluate',
+    'scroll', 'back', 'forward', 'refresh', 'evaluate', 'overlays/dismiss',
   ];
 
   test.each(ACTION_ROUTES)('POST /tabs/:tabId/%s checks agentActionBlock first', (route) => {

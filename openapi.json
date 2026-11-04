@@ -1052,6 +1052,33 @@
           },
           "404": {
             "description": "Tab not found."
+          },
+          "409": {
+            "description": "A person is controlling this tab (handoff). Agent actions are refused until control returns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "human_in_control"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
