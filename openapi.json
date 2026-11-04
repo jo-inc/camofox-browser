@@ -965,7 +965,7 @@
           "Interaction"
         ],
         "summary": "Close pop-ups and overlays",
-        "description": "Refreshes element refs, then clicks up to maxClicks buttons whose exact name is a close label (Close, Dismiss, No thanks, Not now, and similar). Consent, sign-in, purchase and submit controls are never clicked.\n",
+        "description": "Refreshes element refs, then clicks up to maxClicks buttons whose exact name is a close label (Close, Dismiss, No thanks, Not now, and similar). Consent, sign-in, purchase and submit controls are never clicked. Hidden controls are skipped and reported with reason not_visible.\n",
         "parameters": [
           {
             "name": "tabId",
