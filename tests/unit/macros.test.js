@@ -27,7 +27,16 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@nhs_search');
     expect(macros).toContain('@legislation_search');
     expect(macros).toContain('@dailymed_search');
-    expect(macros.length).toBe(23);
+    expect(macros).toContain('@huggingface_search');
+    expect(macros).toContain('@jsr_search');
+    expect(macros).toContain('@bing_news_search');
+    expect(macros.length).toBe(26);
+  });
+
+  test('AI, package and news macros expand to their search pages', () => {
+    expect(expandMacro('@huggingface_search', 'llama')).toBe('https://huggingface.co/models?search=llama');
+    expect(expandMacro('@jsr_search', 'zod')).toBe('https://jsr.io/packages?search=zod');
+    expect(expandMacro('@bing_news_search', 'climate')).toBe('https://www.bing.com/news/search?q=climate');
   });
 
   test('professional and public-interest macros expand to their search pages', () => {
