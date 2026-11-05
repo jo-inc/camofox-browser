@@ -15,7 +15,7 @@ import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins, typeEventPayload } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
-import { classifyPageState } from './lib/page-state.js';
+import { classifyPageState, HANDOFF_REASON_BY_STATE } from './lib/page-state.js';
 import { refsToCandidates, selectOverlayTargets } from './lib/overlays.js';
 import { agentActionBlock, getControl, setAgent, setHuman } from './lib/tab-control.js';
 import { extractPageStructure, attachStructureRefs } from './lib/page-structure.js';
@@ -6337,6 +6337,123 @@ app.get('/tabs/:tabId/control', (req, res) => {
     res.json({ mode: 'human', until: new Date(control.until).toISOString(), reason: control.reason });
   } catch (err) {
     log('error', 'control read failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/checkpoint:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Check the page and hand off to a person when one is needed
+ *     description: >
+ *       Reads the page state. When the page is a captcha, a sign-in wall or a
+ *       verification-code prompt, starts a handoff so the agent pauses and a
+ *       person can act. Other page states never start a handoff. Idempotent: if
+ *       a handoff is already active, nothing new starts. To give the person a
+ *       link, create a control link with POST /live-viewer/links (control true).
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               idleMs:
+ *                 type: integer
+ *                 description: Idle time before control returns to the agent. Clamped to 10 seconds to 30 minutes.
+ *     responses:
+ *       200:
+ *         description: Page state, and the handoff if one is active.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 state:
+ *                   type: object
+ *                   properties:
+ *                     kind:
+ *                       type: string
+ *                       enum: [captcha, block, two_factor, login_wall, consent, no_results, ok]
+ *                     reasons:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                 started:
+ *                   type: boolean
+ *                   description: True when this call started a new handoff.
+ *                 handoff:
+ *                   type: object
+ *                   properties:
+ *                     mode:
+ *                       type: string
+ *                       enum: [agent, human]
+ *                     until:
+ *                       type: string
+ *                       format: date-time
+ *                     reason:
+ *                       type: string
+ *       400:
+ *         description: userId missing.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/checkpoint', async (req, res) => {
+  try {
+    const userId = req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+
+    const page = found.tabState.page;
+    const { title, text } = await withTimeout((async () => ({
+      title: await page.title().catch(() => ''),
+      text: await page.evaluate(() => ((document.body && document.body.innerText) || '').slice(0, 20000)).catch(() => ''),
+    }))(), 10000, 'page state');
+    const state = classifyPageState({ url: page.url(), title, text });
+
+    let control = getControl(req.params.tabId);
+    let started = false;
+    const reason = HANDOFF_REASON_BY_STATE[state.kind];
+    if (reason && control.mode !== 'human') {
+      control = setHuman(req.params.tabId, { reason, idleMs: req.body?.idleMs });
+      started = true;
+      log('info', 'handoff started by checkpoint', { reqId: req.reqId, tabId: req.params.tabId, userId, kind: state.kind });
+    }
+
+    res.json({
+      ok: true,
+      state,
+      started,
+      handoff: control.mode === 'human'
+        ? { mode: 'human', until: new Date(control.until).toISOString(), reason: control.reason }
+        : { mode: 'agent' },
+    });
+  } catch (err) {
+    log('error', 'checkpoint failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });
