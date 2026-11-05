@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live view</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fg: #e8e8e8;
+    --chip: rgba(18, 18, 18, 0.78);
+    --line: rgba(255, 255, 255, 0.12);
+    --hover: rgba(255, 255, 255, 0.1);
+    --accent: #2b6cb0;
+    --warn: #d69e2e;
+    --ok: #3fb950;
+    --off: #6b6b6b;
+  }
+  /* Transparent so the chat card behind the iframe shows through. */
+  html, body { margin: 0; height: 100%; background: transparent; color: var(--fg); font: 13px/1.3 system-ui, -apple-system, sans-serif; overflow: hidden; }
+
+  #root { position: relative; width: 100%; height: 100%; }
+  #stage { position: absolute; inset: 0; }
+  /* The frame fills the whole viewer. Letterboxing uses the card background. */
+  #frame { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+  #root.control #frame { cursor: pointer; }
+
+  #bar {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    display: flex; align-items: center; gap: 2px;
+    height: 32px; padding: 0 4px 0 10px;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--chip); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  #dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; flex: none; }
+  #root.handoff #dot { background: var(--warn); }
+  #root.off #dot { background: var(--off); }
+  #label { font-size: 12px; white-space: nowrap; margin-right: 4px; }
+  #label:empty { display: none; }
+
+  .btn {
+    font: inherit; font-size: 12px; height: 26px; min-width: 26px; padding: 0 9px;
+    border: 0; border-radius: 999px; background: transparent; color: var(--fg);
+    display: inline-flex; align-items: center; justify-content: center; text-decoration: none; cursor: pointer;
+  }
+  .btn:hover { background: var(--hover); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .btn[hidden] { display: none; }
+  #done { background: var(--accent); color: #fff; font-weight: 600; }
+  #done:hover { background: #3a7bc4; }
+  #expand, #min { padding: 0; width: 26px; font-size: 14px; }
+
+  /* Minimized: only the slim bar remains. The frame is not fetched, but the handoff state still updates. */
+  #root.min { height: 48px; }
+  #root.min #stage { display: none; }
+  #root.min #bar { top: 8px; right: 8px; }
+
+  /* Expanded: the viewer covers the chat area it is in. */
+  #root.expanded { position: fixed; inset: 0; height: 100%; z-index: 10; background: #111; }
+  #root.expanded #frame { object-fit: contain; }
+
+  @media (max-width: 420px) {
+    #bar { top: 6px; right: 6px; height: 30px; }
+    #label { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="stage">
+    <img id="frame" alt="Live browser view" draggable="false">
+  </div>
+  <div id="bar">
+    <span id="dot" aria-hidden="true"></span>
+    <span id="label" role="status" aria-live="polite"></span>
+    <a id="open" class="btn" href="#" target="_blank" rel="noopener" hidden>Open&nbsp;↗</a>
+    <button id="done" class="btn" type="button" hidden>Done</button>
+    <button id="expand" class="btn" type="button" aria-label="Expand live view" aria-pressed="false">⤢</button>
+    <button id="min" class="btn" type="button" aria-label="Minimize live view">–</button>
+  </div>
+  <textarea id="kbd" aria-hidden="true" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false" style="position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0"></textarea>
+</div>
+<script>
+  var token = new URLSearchParams(location.search).get('t') || '';
+  var root = document.getElementById('root');
+  var img = document.getElementById('frame');
+  var labelEl = document.getElementById('label');
+  var openLink = document.getElementById('open');
+  var doneBtn = document.getElementById('done');
+  var expandBtn = document.getElementById('expand');
+  var minBtn = document.getElementById('min');
+  var kbd = document.getElementById('kbd');
+
+  var canControl = false;
+  var controlActive = false;
+  var minimized = false;
+  var expandedMode = false;
+  var status = 'live';          // live | offline | closed | expired
+  var resumedNote = '';
+  var resumedTimer = null;
+  var busy = false;
+  var stopped = false;
+  var previousUrl = null;
+  var inputChain = Promise.resolve();
+  var pendingText = '';
+  var flushTimer = null;
+  var scrollAcc = 0;
+  var scrollTimer = null;
+
+  openLink.href = location.href;
+
+  // One place decides what the toolbar shows.
+  function render() {
+    root.classList.toggle('handoff', controlActive);
+    root.classList.toggle('off', status !== 'live');
+    root.classList.toggle('control', canControl && controlActive);
+    root.classList.toggle('min', minimized);
+    root.classList.toggle('expanded', expandedMode && !minimized);
+    doneBtn.hidden = !(canControl && controlActive);
+    openLink.hidden = !controlActive;
+    expandBtn.hidden = minimized;
+    expandBtn.setAttribute('aria-pressed', String(expandedMode));
+    minBtn.textContent = minimized ? '▢' : '–';
+    minBtn.setAttribute('aria-label', minimized ? 'Restore live view' : 'Minimize live view');
+
+    var text = '';
+    if (status === 'expired') text = 'Link expired';
+    else if (status === 'closed') text = 'Tab closed';
+    else if (status === 'offline') text = 'Offline';
+    else if (controlActive) text = 'Your turn';
+    else if (resumedNote) text = resumedNote;
+    labelEl.textContent = text;
+  }
+
+  function showResumed() {
+    resumedNote = 'Agent resumed';
+    clearTimeout(resumedTimer);
+    resumedTimer = setTimeout(function () { resumedNote = ''; render(); }, 3000);
+  }
+
+  function endedByServer(res) {
+    if (res.status === 401) { status = 'expired'; stopped = true; render(); return true; }
+    return false;
+  }
+
+  // Inputs go out one at a time so the server receives them in the order typed.
+  function sendInput(body) {
+    if (!canControl || !controlActive || stopped) return;
+    inputChain = inputChain.then(function () {
+      return fetch('/live-viewer/input?t=' + encodeURIComponent(token), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store'
+      }).then(function (res) {
+        if (endedByServer(res)) return;
+        if (res.status === 409) { controlActive = false; showResumed(); render(); }
+      }).catch(function () { status = 'offline'; render(); });
+    });
+  }
+
+  function flushText() {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+    if (!pendingText) return;
+    var text = pendingText.slice(0, 500);
+    pendingText = pendingText.slice(text.length);
+    sendInput({ action: 'type', text: text });
+    if (pendingText) flushText();
+  }
+
+  function queueText(text) {
+    pendingText += text;
+    if (!flushTimer) flushTimer = setTimeout(flushText, 120);
+  }
+
+  function flushScroll() {
+    clearTimeout(scrollTimer);
+    scrollTimer = null;
+    var delta = Math.max(-2000, Math.min(2000, Math.round(scrollAcc)));
+    scrollAcc = 0;
+    if (delta !== 0) sendInput({ action: 'scroll', deltaY: delta });
+  }
+
+  img.addEventListener('click', function (e) {
+    if (!canControl || !controlActive) return;
+    var rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    // object-fit: contain adds letterboxing, so map clicks onto the picture itself, not the box.
+    var scale = Math.min(rect.width / (img.naturalWidth || rect.width), rect.height / (img.naturalHeight || rect.height));
+    var drawW = (img.naturalWidth || rect.width) * scale;
+    var drawH = (img.naturalHeight || rect.height) * scale;
+    var left = rect.left + (rect.width - drawW) / 2;
+    var top = rect.top + (rect.height - drawH) / 2;
+    var x = (e.clientX - left) / drawW;
+    var y = (e.clientY - top) / drawH;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    flushText();
+    sendInput({ action: e.detail >= 2 ? 'dblclick' : 'click', x: x, y: y });
+    kbd.focus({ preventScroll: true });
+  });
+
+  root.addEventListener('wheel', function (e) {
+    if (!canControl || !controlActive) return;
+    e.preventDefault();
+    scrollAcc += e.deltaY;
+    if (!scrollTimer) scrollTimer = setTimeout(flushScroll, 100);
+  }, { passive: false });
+
+  var SPECIAL_KEYS = { Enter: 1, Tab: 1, Backspace: 1, Delete: 1, Escape: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, Home: 1, End: 1, PageUp: 1, PageDown: 1 };
+
+  kbd.addEventListener('keydown', function (e) {
+    if (!canControl || !controlActive) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (SPECIAL_KEYS[e.key]) {
+      e.preventDefault();
+      flushText();
+      sendInput({ action: 'key', key: e.key });
+    }
+  });
+
+  kbd.addEventListener('input', function (e) {
+    if (e.isComposing) return;
+    var value = kbd.value;
+    kbd.value = '';
+    if (value) queueText(value);
+  });
+
+  kbd.addEventListener('compositionend', function () {
+    var value = kbd.value;
+    kbd.value = '';
+    if (value) queueText(value);
+  });
+
+  doneBtn.addEventListener('click', function () {
+    if (!canControl || !controlActive) return;
+    doneBtn.disabled = true;
+    flushText();
+    inputChain = inputChain.then(function () {
+      return fetch('/live-viewer/done?t=' + encodeURIComponent(token), { method: 'POST', cache: 'no-store' })
+        .then(function (res) {
+          if (endedByServer(res)) return;
+          controlActive = false;
+          showResumed();
+          render();
+        })
+        .catch(function () { status = 'offline'; render(); })
+        .finally(function () { doneBtn.disabled = false; });
+    });
+  });
+
+  expandBtn.addEventListener('click', function () {
+    expandedMode = !expandedMode;
+    render();
+  });
+
+  minBtn.addEventListener('click', function () {
+    minimized = !minimized;
+    if (minimized) expandedMode = false;
+    render();
+  });
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && expandedMode) { expandedMode = false; render(); }
+  });
+
+  async function refreshControl() {
+    try {
+      var res = await fetch('/live-viewer/control?t=' + encodeURIComponent(token), { cache: 'no-store' });
+      if (endedByServer(res)) return;
+      if (!res.ok) return;
+      var data = await res.json();
+      var wasActive = controlActive;
+      canControl = !!data.canControl;
+      controlActive = !!data.handoff;
+      // A person is needed, so show the frame even if it was minimized.
+      if (!wasActive && controlActive && minimized) minimized = false;
+      if (wasActive && !controlActive) showResumed();
+      render();
+    } catch (err) {
+      status = 'offline';
+      render();
+    }
+  }
+
+  async function refreshFrame() {
+    try {
+      var res = await fetch('/live-viewer/frame?t=' + encodeURIComponent(token), { cache: 'no-store' });
+      if (endedByServer(res)) return;
+      if (res.ok) {
+        var url = URL.createObjectURL(await res.blob());
+        img.src = url;
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        previousUrl = url;
+        status = 'live';
+      } else if (res.status === 404) {
+        status = 'closed';
+      } else {
+        status = 'offline';
+      }
+    } catch (err) {
+      status = 'offline';
+    }
+    render();
+  }
+
+  async function loop() {
+    if (stopped) return;
+    if (!busy) {
+      busy = true;
+      try {
+        await refreshControl();
+        if (!stopped && !minimized) await refreshFrame();
+      } finally {
+        busy = false;
+      }
+    }
+    if (!stopped) setTimeout(loop, status === 'closed' ? 3000 : controlActive ? 600 : 1000);
+  }
+
+  render();
+  loop();
+</script>
+</body>
+</html>

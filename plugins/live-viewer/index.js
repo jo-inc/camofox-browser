@@ -9,6 +9,10 @@
  * act on the tab from the same page: click, type, press keys and scroll. The
  * viewer then shows a Done button that returns the tab to the agent.
  *
+ * The viewer page itself is plugins/live-viewer/viewer.html. It is built to be
+ * embedded in an iframe: the frame fills the iframe, and a small toolbar offers
+ * Open, Done (during a handoff), expand, and minimize.
+ *
  * Routes:
  *   POST /live-viewer/links    (Bearer access key) -> signed viewer URL for one tab.
  *                              Body { userId, tabId, ttlSeconds?, control? }.
@@ -36,6 +40,7 @@
  * routes, since they are authorized by the signed token instead.
  */
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { getControl, setAgent, touchHuman } from '../../lib/tab-control.js';
 import {
   DEFAULT_VIEWPORT,
@@ -50,237 +55,8 @@ const ACTION_TIMEOUT_MS = 5000;
 const INPUT_RATE_LIMIT_PER_SECOND = 30;
 const MAX_RATE_LIMITERS = 1000;
 
-const VIEWER_HTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live view</title>
-<style>
-  :root { color-scheme: dark; }
-  html, body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
-  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 8px 12px; }
-  #status { opacity: 0.6; font-size: 12px; min-width: 0; }
-  .actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-  #done, #open { font: inherit; min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid #333; background: #1a1a1a; color: #ccc; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
-  #done { background: #2b6cb0; border-color: #2b6cb0; color: #fff; font-weight: 600; }
-  #done[hidden] { display: none; }
-  #stage { position: relative; padding: 0 16px 16px; }
-  #frame { display: block; width: 100%; height: auto; margin: 0 auto; user-select: none; -webkit-user-drag: none; }
-  #stage.control #frame { cursor: pointer; outline: 2px solid #2b6cb0; outline-offset: 2px; }
-  #kbd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; }
-  /* Thin, low-contrast scrollbar so it stays out of the way. */
-  html { scrollbar-width: thin; scrollbar-color: #333 transparent; }
-  ::-webkit-scrollbar { width: 4px; height: 4px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
-  @media (max-width: 420px) { header { padding: 10px 12px; } #stage { padding: 0 12px 12px; } }
-</style>
-</head>
-<body>
-<header>
-  <span id="status" role="status" aria-live="polite">connecting</span>
-  <span class="actions">
-    <button id="done" type="button" hidden>Done</button>
-    <a id="open" href="#" target="_blank" rel="noopener">Open in new tab</a>
-  </span>
-</header>
-<main id="stage">
-  <img id="frame" alt="Live browser view" draggable="false">
-  <textarea id="kbd" aria-hidden="true" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
-</main>
-<script>
-  var token = new URLSearchParams(location.search).get('t') || '';
-  var img = document.getElementById('frame');
-  var stage = document.getElementById('stage');
-  var statusEl = document.getElementById('status');
-  var doneBtn = document.getElementById('done');
-  var openLink = document.getElementById('open');
-  var kbd = document.getElementById('kbd');
-
-  var canControl = false;
-  var controlActive = false;
-  var expired = false;
-  var busy = false;
-  var previousUrl = null;
-  var inputChain = Promise.resolve();
-  var pendingText = '';
-  var flushTimer = null;
-  var scrollAcc = 0;
-  var scrollTimer = null;
-
-  openLink.href = location.href;
-
-  function setStatus(text) { statusEl.textContent = text; }
-
-  function renderControl() {
-    var showDone = canControl && controlActive;
-    doneBtn.hidden = !showDone;
-    stage.className = showDone ? 'control' : '';
-  }
-
-  function endedByServer(res) {
-    if (res.status === 401) { expired = true; setStatus('link expired'); return true; }
-    return false;
-  }
-
-  // Inputs go out one at a time so the server receives them in the order typed.
-  function sendInput(body) {
-    if (!canControl || !controlActive || expired) return;
-    inputChain = inputChain.then(function () {
-      return fetch('/live-viewer/input?t=' + encodeURIComponent(token), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        cache: 'no-store'
-      }).then(function (res) {
-        if (endedByServer(res)) return;
-        if (res.status === 409) { controlActive = false; renderControl(); setStatus('agent resumed'); }
-      }).catch(function () { setStatus('offline'); });
-    });
-  }
-
-  function flushText() {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-    if (!pendingText) return;
-    var text = pendingText.slice(0, 500);
-    pendingText = pendingText.slice(text.length);
-    sendInput({ action: 'type', text: text });
-    if (pendingText) flushText();
-  }
-
-  function queueText(text) {
-    pendingText += text;
-    if (!flushTimer) flushTimer = setTimeout(flushText, 120);
-  }
-
-  function flushScroll() {
-    clearTimeout(scrollTimer);
-    scrollTimer = null;
-    var delta = Math.max(-2000, Math.min(2000, Math.round(scrollAcc)));
-    scrollAcc = 0;
-    if (delta !== 0) sendInput({ action: 'scroll', deltaY: delta });
-  }
-
-  img.addEventListener('click', function (e) {
-    if (!canControl || !controlActive) return;
-    var rect = img.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    var x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    var y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-    flushText();
-    sendInput({ action: e.detail >= 2 ? 'dblclick' : 'click', x: x, y: y });
-    kbd.focus({ preventScroll: true });
-  });
-
-  stage.addEventListener('wheel', function (e) {
-    if (!canControl || !controlActive) return;
-    e.preventDefault();
-    scrollAcc += e.deltaY;
-    if (!scrollTimer) scrollTimer = setTimeout(flushScroll, 100);
-  }, { passive: false });
-
-  var SPECIAL_KEYS = { Enter: 1, Tab: 1, Backspace: 1, Delete: 1, Escape: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, Home: 1, End: 1, PageUp: 1, PageDown: 1 };
-
-  kbd.addEventListener('keydown', function (e) {
-    if (!canControl || !controlActive) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (SPECIAL_KEYS[e.key]) {
-      e.preventDefault();
-      flushText();
-      sendInput({ action: 'key', key: e.key });
-    }
-  });
-
-  kbd.addEventListener('input', function (e) {
-    if (e.isComposing) return;
-    var value = kbd.value;
-    kbd.value = '';
-    if (value) queueText(value);
-  });
-
-  kbd.addEventListener('compositionend', function () {
-    var value = kbd.value;
-    kbd.value = '';
-    if (value) queueText(value);
-  });
-
-  doneBtn.addEventListener('click', function () {
-    if (!canControl || !controlActive) return;
-    doneBtn.disabled = true;
-    flushText();
-    inputChain = inputChain.then(function () {
-      return fetch('/live-viewer/done?t=' + encodeURIComponent(token), { method: 'POST', cache: 'no-store' })
-        .then(function (res) {
-          if (endedByServer(res)) return;
-          controlActive = false;
-          renderControl();
-          setStatus('returned to agent');
-        })
-        .catch(function () { setStatus('offline'); })
-        .finally(function () { doneBtn.disabled = false; });
-    });
-  });
-
-  async function refreshControl() {
-    try {
-      var res = await fetch('/live-viewer/control?t=' + encodeURIComponent(token), { cache: 'no-store' });
-      if (endedByServer(res)) return;
-      if (!res.ok) return;
-      var data = await res.json();
-      var wasActive = controlActive;
-      canControl = !!data.canControl;
-      controlActive = !!data.handoff;
-      renderControl();
-      if (wasActive && !controlActive) setStatus('agent resumed');
-    } catch (err) {
-      setStatus('offline');
-    }
-  }
-
-  async function refreshFrame() {
-    try {
-      var res = await fetch('/live-viewer/frame?t=' + encodeURIComponent(token), { cache: 'no-store' });
-      if (res.ok) {
-        var url = URL.createObjectURL(await res.blob());
-        img.src = url;
-        if (previousUrl) URL.revokeObjectURL(previousUrl);
-        previousUrl = url;
-        if (!controlActive) setStatus('live');
-        else setStatus('you have control');
-      } else if (res.status === 401) {
-        expired = true;
-        setStatus('link expired');
-      } else if (res.status === 404) {
-        setStatus('tab closed');
-      } else {
-        setStatus('unavailable (' + res.status + ')');
-      }
-    } catch (err) {
-      setStatus('offline');
-    }
-  }
-
-  async function loop() {
-    if (expired) return;
-    if (!busy) {
-      busy = true;
-      try {
-        await refreshControl();
-        if (!expired) await refreshFrame();
-      } finally {
-        busy = false;
-      }
-    }
-    if (!expired) setTimeout(loop, controlActive ? 600 : 1000);
-  }
-
-  loop();
-</script>
-</body>
-</html>
-`;
+// Read once at startup. Edit viewer.html to change the page; no server code changes needed.
+const VIEWER_HTML = readFileSync(new URL('./viewer.html', import.meta.url), 'utf8');
 
 function b64url(value) {
   return Buffer.from(value).toString('base64url');
