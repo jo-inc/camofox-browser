@@ -64,13 +64,13 @@ async function run(label, viewport, withHandoff) {
   check(`${tag}: toolbar is small`, m.bar && m.bar.h <= 34, `bar h=${m.bar && m.bar.h}`);
   if (m.done) check(`${tag}: Done button not huge`, m.done.h <= 28, `done h=${m.done.h}`);
   check(`${tag}: page background transparent`, m.bodyBg === 'rgba(0, 0, 0, 0)', m.bodyBg);
-  await page.screenshot({ path: `${tag.replace(/[^a-z0-9]+/gi,'-')}.png` });
+  await page.screenshot({ path: new URL(`../viewer-screenshots/${tag.replace(/[^a-z0-9]+/gi,'-')}.png`, import.meta.url).pathname });
   // Minimize, check the frame hides and the bar stays.
   await page.click('#min');
   await page.waitForTimeout(200);
   const minState = await page.evaluate(() => ({ frameHidden: getComputedStyle(document.getElementById('stage')).display === 'none', barVisible: !!document.getElementById('bar').getBoundingClientRect().width }));
   check(`${tag}: minimize hides frame, keeps bar`, minState.frameHidden && minState.barVisible, JSON.stringify(minState));
-  await page.screenshot({ path: `${tag.replace(/[^a-z0-9]+/gi,'-')}-min.png` });
+  await page.screenshot({ path: new URL(`../viewer-screenshots/${tag.replace(/[^a-z0-9]+/gi,'-')}-min.png`, import.meta.url).pathname });
   await page.click('#min');
   await page.waitForTimeout(200);
   await ctx.close();
