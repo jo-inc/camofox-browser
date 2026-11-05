@@ -43,3 +43,4 @@ fly.toml
 test-results/
 playwright-report/
 viewer-screenshots/
+bench-results/
