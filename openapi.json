@@ -2537,8 +2537,8 @@
         "tags": [
           "Content"
         ],
-        "summary": "Structured data extraction via JSON Schema",
-        "description": "Extracts structured data from the current page using a JSON Schema whose properties\ncarry `x-ref` hints pointing at snapshot element refs (e.g. `e1`, `e2`).  \nCall `GET /tabs/{tabId}/snapshot` first to populate the ref table.\n",
+        "summary": "Extract data from a page as JSON",
+        "description": "Two modes. Send schema for the fields it names (uses refs from the last snapshot; returns 409 if there is none). Send kinds, or nothing, to read the page itself: tables (with headers), prices, schema.org JSON-LD and listings. Kinds mode is read-only and needs no snapshot. Refused with 409 human_in_control while a person holds the tab. Send either schema or kinds, not both.\n",
         "parameters": [
           {
             "name": "tabId",
@@ -2556,8 +2556,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "userId",
-                  "schema"
+                  "userId"
                 ],
                 "properties": {
                   "userId": {
@@ -2565,48 +2564,19 @@
                   },
                   "schema": {
                     "type": "object",
-                    "description": "JSON Schema with `type: \"object\"` and a `properties` map.  \nEach property may include `x-ref` (a snapshot element ref) and an optional\n`type` (`string`, `number`, `integer`, `boolean`).\n",
-                    "required": [
-                      "type",
-                      "properties"
-                    ],
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "object"
-                        ]
-                      },
-                      "properties": {
-                        "type": "object",
-                        "additionalProperties": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "enum": [
-                                "string",
-                                "number",
-                                "integer",
-                                "boolean",
-                                "object",
-                                "null"
-                              ]
-                            },
-                            "x-ref": {
-                              "type": "string",
-                              "description": "Snapshot element ref (e.g. `e1`)."
-                            }
-                          }
-                        }
-                      },
-                      "required": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "description": "Property names that must resolve to a non-null value."
-                      }
+                    "description": "JSON Schema (type object) with x-ref hints. Schema mode."
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "description": "Kinds mode. Any of tables, prices, json_ld, listings. Defaults to all.",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "tables",
+                        "prices",
+                        "json_ld",
+                        "listings"
+                      ]
                     }
                   }
                 }
@@ -2616,7 +2586,7 @@
         },
         "responses": {
           "200": {
-            "description": "Extraction succeeded.",
+            "description": "Extracted data. Schema mode returns data; kinds mode returns the requested parts.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2627,7 +2597,34 @@
                     },
                     "data": {
                       "type": "object",
-                      "description": "Extracted key-value pairs matching the input schema."
+                      "description": "Schema mode result."
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "tables": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "prices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "json_ld": {
+                      "type": "object"
+                    },
+                    "listings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
                     }
                   }
                 }
@@ -2635,7 +2632,7 @@
             }
           },
           "400": {
-            "description": "Missing userId, missing schema, or invalid schema.",
+            "description": "Invalid request (missing userId, bad schema or kinds, or both schema and kinds).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2655,7 +2652,7 @@
             }
           },
           "409": {
-            "description": "No refs available -- call snapshot first.",
+            "description": "A person holds the tab, or (schema mode) no refs yet.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2674,7 +2671,7 @@
             }
           },
           "422": {
-            "description": "Extraction failed (e.g. required ref not found).",
+            "description": "Schema mode could not satisfy a required property.",
             "content": {
               "application/json": {
                 "schema": {
