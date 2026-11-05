@@ -15,7 +15,8 @@ import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins, typeEventPayload } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { windowSnapshot } from './lib/snapshot.js';
-import { classifyPageState } from './lib/page-state.js';
+import { classifyPageState, HANDOFF_REASON_BY_STATE } from './lib/page-state.js';
+import { EXTRACT_KINDS, buildExtraction, collectPageData } from './lib/extract.js';
 import { refsToCandidates, selectOverlayTargets } from './lib/overlays.js';
 import { agentActionBlock, getControl, setAgent, setHuman } from './lib/tab-control.js';
 import { extractPageStructure, attachStructureRefs } from './lib/page-structure.js';
@@ -6268,6 +6269,7 @@ app.post('/tabs/:tabId/handoff/release', (req, res) => {
 
     setAgent(req.params.tabId);
     log('info', 'handoff released', { reqId: req.reqId, tabId: req.params.tabId, userId });
+    pluginEvents.emit('handoff:ended', { userId: normalizeUserId(userId), tabId: req.params.tabId, reason: 'released' });
     res.json({ ok: true, mode: 'agent' });
   } catch (err) {
     log('error', 'handoff release failed', { reqId: req.reqId, error: err.message });
@@ -6336,6 +6338,281 @@ app.get('/tabs/:tabId/control', (req, res) => {
     res.json({ mode: 'human', until: new Date(control.until).toISOString(), reason: control.reason });
   } catch (err) {
     log('error', 'control read failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/checkpoint:
+ *   post:
+ *     tags: [Interaction]
+ *     summary: Check the page and hand off to a person when one is needed
+ *     description: >
+ *       Reads the page state. When the page is a captcha, a sign-in wall or a
+ *       verification-code prompt, starts a handoff so the agent pauses and a
+ *       person can act. Other page states never start a handoff. Idempotent: if
+ *       a handoff is already active, nothing new starts. To give the person a
+ *       link, create a control link with POST /live-viewer/links (control true).
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               idleMs:
+ *                 type: integer
+ *                 description: Idle time before control returns to the agent. Clamped to 10 seconds to 30 minutes.
+ *     responses:
+ *       200:
+ *         description: Page state, and the handoff if one is active.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 state:
+ *                   type: object
+ *                   properties:
+ *                     kind:
+ *                       type: string
+ *                       enum: [captcha, block, two_factor, login_wall, consent, no_results, ok]
+ *                     reasons:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                 started:
+ *                   type: boolean
+ *                   description: True when this call started a new handoff.
+ *                 handoff:
+ *                   type: object
+ *                   properties:
+ *                     mode:
+ *                       type: string
+ *                       enum: [agent, human]
+ *                     until:
+ *                       type: string
+ *                       format: date-time
+ *                     reason:
+ *                       type: string
+ *       400:
+ *         description: userId missing.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+app.post('/tabs/:tabId/checkpoint', async (req, res) => {
+  try {
+    const userId = req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+
+    const page = found.tabState.page;
+    const { title, text } = await withTimeout((async () => ({
+      title: await page.title().catch(() => ''),
+      text: await page.evaluate(() => ((document.body && document.body.innerText) || '').slice(0, 20000)).catch(() => ''),
+    }))(), 10000, 'page state');
+    const state = classifyPageState({ url: page.url(), title, text });
+
+    let control = getControl(req.params.tabId);
+    let started = false;
+    const reason = HANDOFF_REASON_BY_STATE[state.kind];
+    if (reason && control.mode !== 'human') {
+      control = setHuman(req.params.tabId, { reason, idleMs: req.body?.idleMs });
+      started = true;
+      log('info', 'handoff started by checkpoint', { reqId: req.reqId, tabId: req.params.tabId, userId, kind: state.kind });
+    }
+
+    res.json({
+      ok: true,
+      state,
+      started,
+      handoff: control.mode === 'human'
+        ? { mode: 'human', until: new Date(control.until).toISOString(), reason: control.reason }
+        : { mode: 'agent' },
+    });
+  } catch (err) {
+    log('error', 'checkpoint failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/extract:
+ *   post:
+ *     tags: [Content]
+ *     summary: Read a page as structured JSON
+ *     description: >
+ *       Read-only. Returns the tables (with headers), the schema.org JSON-LD
+ *       blocks (Product, Offer, ItemList and similar), the prices found on the
+ *       page, and listings (a link with a price nearby). Nothing on the page is
+ *       clicked or changed. Blocked with 409 while a person holds the tab.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               kinds:
+ *                 type: array
+ *                 description: Which parts to return. Default is all four.
+ *                 items:
+ *                   type: string
+ *                   enum: [tables, prices, json_ld, listings]
+ *     responses:
+ *       200:
+ *         description: Structured page data.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 url:
+ *                   type: string
+ *                 title:
+ *                   type: string
+ *                 tables:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       headers:
+ *                         type: array
+ *                         items:
+ *                           type: string
+ *                       rows:
+ *                         type: array
+ *                         items:
+ *                           type: array
+ *                           items:
+ *                             type: string
+ *                 json_ld:
+ *                   type: object
+ *                   properties:
+ *                     items:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     skipped:
+ *                       type: integer
+ *                 prices:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       amount:
+ *                         type: number
+ *                       currency:
+ *                         type: string
+ *                       text:
+ *                         type: string
+ *                       source:
+ *                         type: string
+ *                 listings:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       title:
+ *                         type: string
+ *                       url:
+ *                         type: string
+ *                       price:
+ *                         type: object
+ *                         nullable: true
+ *       400:
+ *         description: userId missing, or kinds is not valid.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Tab not found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: A person is controlling this tab right now.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   enum: [human_in_control]
+ *                 message:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                   format: date-time
+ *                 reason:
+ *                   type: string
+ */
+app.post('/tabs/:tabId/extract', async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
+  try {
+    const userId = req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const requested = req.body?.kinds === undefined ? EXTRACT_KINDS : req.body.kinds;
+    if (!Array.isArray(requested) || requested.length === 0 || !requested.every((k) => EXTRACT_KINDS.includes(k))) {
+      return res.status(400).json({ error: `kinds must be one or more of: ${EXTRACT_KINDS.join(', ')}` });
+    }
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+
+    const raw = await withTimeout(found.tabState.page.evaluate(collectPageData), 15000, 'extract');
+    const data = buildExtraction(raw, requested);
+    log('info', 'page extracted', {
+      reqId: req.reqId,
+      tabId: req.params.tabId,
+      kinds: requested,
+      tables: data.tables?.length,
+      prices: data.prices?.length,
+      listings: data.listings?.length,
+    });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    log('error', 'extract failed', { reqId: req.reqId, error: err.message });
     handleRouteError(err, req, res);
   }
 });

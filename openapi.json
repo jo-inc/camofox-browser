@@ -3012,6 +3012,130 @@
         }
       }
     },
+    "/tabs/{tabId}/checkpoint": {
+      "post": {
+        "tags": [
+          "Interaction"
+        ],
+        "summary": "Check the page and hand off to a person when one is needed",
+        "description": "Reads the page state. When the page is a captcha, a sign-in wall or a verification-code prompt, starts a handoff so the agent pauses and a person can act. Other page states never start a handoff. Idempotent: if a handoff is already active, nothing new starts. To give the person a link, create a control link with POST /live-viewer/links (control true).\n",
+        "parameters": [
+          {
+            "name": "tabId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "idleMs": {
+                    "type": "integer",
+                    "description": "Idle time before control returns to the agent. Clamped to 10 seconds to 30 minutes."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Page state, and the handoff if one is active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "captcha",
+                            "block",
+                            "two_factor",
+                            "login_wall",
+                            "consent",
+                            "no_results",
+                            "ok"
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "started": {
+                      "type": "boolean",
+                      "description": "True when this call started a new handoff."
+                    },
+                    "handoff": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "agent",
+                            "human"
+                          ]
+                        },
+                        "until": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "userId missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tab not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tabs/group/{listItemId}": {
       "delete": {
         "tags": [
