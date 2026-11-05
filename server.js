@@ -33,7 +33,13 @@ import {
   getDownloadsList,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
-import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
+import {
+  EXTRACT_KINDS,
+  buildExtraction,
+  collectPageData,
+  extractDeterministic,
+  validateSchema as validateExtractSchema,
+} from './lib/extract.js';
 import {
   ensureTracesDir, resolveTracePath, tracePathFor, makeTraceFilename,
   listUserTraces, statTrace, deleteTrace, sweepOldTraces,
@@ -5908,17 +5914,24 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
   }
 });
 
-// Structured extraction using JSON Schema with x-ref hints
+// Structured extraction. One route, two modes:
+//   - schema: { userId, schema } reads the fields the schema names, using the
+//     element refs from the last snapshot. Existing behaviour, unchanged.
+//   - kinds:  { userId, kinds? } reads tables, prices, JSON-LD and listings from
+//     the page itself. Read-only, and it needs no snapshot.
 /**
  * @openapi
  * /tabs/{tabId}/extract:
  *   post:
  *     tags: [Content]
- *     summary: Structured data extraction via JSON Schema
- *     description: |
- *       Extracts structured data from the current page using a JSON Schema whose properties
- *       carry `x-ref` hints pointing at snapshot element refs (e.g. `e1`, `e2`).  
- *       Call `GET /tabs/{tabId}/snapshot` first to populate the ref table.
+ *     summary: Extract data from a page as JSON
+ *     description: >
+ *       Two modes. Send schema for the fields it names (uses refs from the
+ *       last snapshot; returns 409 if there is none). Send kinds, or nothing,
+ *       to read the page itself: tables (with headers), prices, schema.org
+ *       JSON-LD and listings. Kinds mode is read-only and needs no snapshot.
+ *       Refused with 409 human_in_control while a person holds the tab. Send
+ *       either schema or kinds, not both.
  *     parameters:
  *       - name: tabId
  *         in: path
@@ -5931,40 +5944,22 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
  *         application/json:
  *           schema:
  *             type: object
- *             required: [userId, schema]
+ *             required: [userId]
  *             properties:
  *               userId:
  *                 type: string
  *               schema:
  *                 type: object
- *                 description: |
- *                   JSON Schema with `type: "object"` and a `properties` map.  
- *                   Each property may include `x-ref` (a snapshot element ref) and an optional
- *                   `type` (`string`, `number`, `integer`, `boolean`).
- *                 required: [type, properties]
- *                 properties:
- *                   type:
- *                     type: string
- *                     enum: [object]
- *                   properties:
- *                     type: object
- *                     additionalProperties:
- *                       type: object
- *                       properties:
- *                         type:
- *                           type: string
- *                           enum: [string, number, integer, boolean, object, "null"]
- *                         x-ref:
- *                           type: string
- *                           description: Snapshot element ref (e.g. `e1`).
- *                   required:
- *                     type: array
- *                     items:
- *                       type: string
- *                     description: Property names that must resolve to a non-null value.
+ *                 description: JSON Schema (type object) with x-ref hints. Schema mode.
+ *               kinds:
+ *                 type: array
+ *                 description: Kinds mode. Any of tables, prices, json_ld, listings. Defaults to all.
+ *                 items:
+ *                   type: string
+ *                   enum: [tables, prices, json_ld, listings]
  *     responses:
  *       200:
- *         description: Extraction succeeded.
+ *         description: Extracted data. Schema mode returns data; kinds mode returns the requested parts.
  *         content:
  *           application/json:
  *             schema:
@@ -5974,9 +5969,27 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
  *                   type: boolean
  *                 data:
  *                   type: object
- *                   description: Extracted key-value pairs matching the input schema.
+ *                   description: Schema mode result.
+ *                 url:
+ *                   type: string
+ *                 title:
+ *                   type: string
+ *                 tables:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 prices:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 json_ld:
+ *                   type: object
+ *                 listings:
+ *                   type: array
+ *                   items:
+ *                     type: object
  *       400:
- *         description: Missing userId, missing schema, or invalid schema.
+ *         description: Invalid request (missing userId, bad schema or kinds, or both schema and kinds).
  *         content:
  *           application/json:
  *             schema:
@@ -5988,7 +6001,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       409:
- *         description: No refs available -- call snapshot first.
+ *         description: A person holds the tab, or (schema mode) no refs yet.
  *         content:
  *           application/json:
  *             schema:
@@ -6000,7 +6013,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
  *                   type: string
  *                   nullable: true
  *       422:
- *         description: Extraction failed (e.g. required ref not found).
+ *         description: Schema mode could not satisfy a required property.
  *         content:
  *           application/json:
  *             schema:
@@ -6021,13 +6034,26 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
  *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/extract', express.json({ limit: '256kb' }), async (req, res) => {
+  const blocked = agentActionBlock(req.params.tabId);
+  if (blocked) return res.status(409).json(blocked);
   try {
-    const { userId, schema } = req.body;
+    const { userId, schema, kinds } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'userId is required' });
-    if (!schema) return res.status(400).json({ error: 'schema is required' });
+    if (schema !== undefined && kinds !== undefined) {
+      return res.status(400).json({ error: 'send either schema or kinds, not both' });
+    }
 
-    const check = validateExtractSchema(schema);
-    if (!check.ok) return res.status(400).json({ error: check.error });
+    const schemaMode = schema !== undefined;
+    let requested = EXTRACT_KINDS;
+    if (schemaMode) {
+      const check = validateExtractSchema(schema);
+      if (!check.ok) return res.status(400).json({ error: check.error });
+    } else {
+      requested = kinds === undefined ? EXTRACT_KINDS : kinds;
+      if (!Array.isArray(requested) || requested.length === 0 || !requested.every((k) => EXTRACT_KINDS.includes(k))) {
+        return res.status(400).json({ error: `kinds must be one or more of: ${EXTRACT_KINDS.join(', ')}` });
+      }
+    }
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -6035,23 +6061,38 @@ app.post('/tabs/:tabId/extract', express.json({ limit: '256kb' }), async (req, r
 
     session.lastAccess = Date.now();
     const { tabState } = found;
-    tabState.toolCalls++; tabState.consecutiveTimeouts = 0;
+    tabState.toolCalls++;
+    tabState.consecutiveTimeouts = 0;
 
-    if (!tabState.refs || tabState.refs.size === 0) {
-      return res.status(409).json({
-        error: 'no refs available -- call GET /tabs/:tabId/snapshot first to build the ref table',
-        snapshot: tabState.lastSnapshot || null,
-      });
+    if (schemaMode) {
+      if (!tabState.refs || tabState.refs.size === 0) {
+        return res.status(409).json({
+          error: 'no refs available -- call GET /tabs/:tabId/snapshot first to build the ref table',
+          snapshot: tabState.lastSnapshot || null,
+        });
+      }
+      try {
+        const data = extractDeterministic({ schema, refs: tabState.refs });
+        log('info', 'extract', { reqId: req.reqId, tabId: req.params.tabId, userId, keys: Object.keys(data) });
+        return res.json({ ok: true, data });
+      } catch (extractErr) {
+        log('warn', 'extract failed', { reqId: req.reqId, error: extractErr.message });
+        return res.status(422).json({ ok: false, error: extractErr.message, snapshot: tabState.lastSnapshot || null });
+      }
     }
 
-    try {
-      const data = extractDeterministic({ schema, refs: tabState.refs });
-      log('info', 'extract', { reqId: req.reqId, tabId: req.params.tabId, userId, keys: Object.keys(data) });
-      res.json({ ok: true, data });
-    } catch (extractErr) {
-      log('warn', 'extract failed', { reqId: req.reqId, error: extractErr.message });
-      res.status(422).json({ ok: false, error: extractErr.message, snapshot: tabState.lastSnapshot || null });
-    }
+    // Read-only: collectPageData clicks, types and changes nothing on the page.
+    const raw = await withTimeout(tabState.page.evaluate(collectPageData), 15000, 'extract');
+    const data = buildExtraction(raw, requested);
+    log('info', 'page extracted', {
+      reqId: req.reqId,
+      tabId: req.params.tabId,
+      kinds: requested,
+      tables: data.tables?.length,
+      prices: data.prices?.length,
+      listings: data.listings?.length,
+    });
+    return res.json({ ok: true, ...data });
   } catch (err) {
     failuresTotal.labels(classifyError(err), 'extract').inc();
     log('error', 'extract error', { reqId: req.reqId, error: err.message });
