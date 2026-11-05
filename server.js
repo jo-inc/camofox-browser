@@ -6268,6 +6268,7 @@ app.post('/tabs/:tabId/handoff/release', (req, res) => {
 
     setAgent(req.params.tabId);
     log('info', 'handoff released', { reqId: req.reqId, tabId: req.params.tabId, userId });
+    pluginEvents.emit('handoff:ended', { userId: normalizeUserId(userId), tabId: req.params.tabId, reason: 'released' });
     res.json({ ok: true, mode: 'agent' });
   } catch (err) {
     log('error', 'handoff release failed', { reqId: req.reqId, error: err.message });

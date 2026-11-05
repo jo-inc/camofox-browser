@@ -1,9 +1,14 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { jest } from '@jest/globals';
 import { createPluginEvents } from '../../lib/plugins.js';
 import { register } from './index.js';
+import { decryptJson, encryptJson } from '../../lib/storage-crypto.js';
+
+const KEY = crypto.randomBytes(32);
+const STORAGE_KEY_B64 = KEY.toString('base64');
 
 describe('persistence plugin', () => {
   let tmpDir, events, ctx, mockApp;
@@ -14,7 +19,7 @@ describe('persistence plugin', () => {
     mockApp = { delete: jest.fn() };
     ctx = {
       events,
-      config: { cookiesDir: path.join(tmpDir, 'cookies') },
+      config: { cookiesDir: path.join(tmpDir, 'cookies'), storageKey: STORAGE_KEY_B64 },
       log: jest.fn(),
       auth: () => (req, res, next) => next(),
       normalizeUserId: (u) => String(u),
@@ -31,49 +36,68 @@ describe('persistence plugin', () => {
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  async function readSaved(userId) {
+    const { getUserPersistencePaths } = await import('../../lib/persistence.js');
+    const { storageStatePath } = getUserPersistencePaths(tmpDir, userId);
+    return decryptJson(KEY, await fs.readFile(storageStatePath));
+  }
+
   test('skips registration when no profileDir configured', async () => {
+    ctx.config.storageKey = STORAGE_KEY_B64;
     await register(mockApp, ctx, {});
     expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('no profileDir'));
   });
 
-  test('restores persisted state on session:creating', async () => {
+  test('stays disabled without CAMOFOX_STORAGE_KEY, and nothing is written', async () => {
+    ctx.config.storageKey = '';
+    await register(mockApp, ctx, { profileDir: tmpDir });
+    expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('CAMOFOX_STORAGE_KEY is not set'));
+
+    const mockContext = { storageState: jest.fn(async () => ({ cookies: [], origins: [] })) };
+    await events.emitAsync('session:created', { userId: 'user-nokey', context: mockContext });
+    await events.emitAsync('session:cookies:import', { userId: 'user-nokey' });
+    await expect(fs.readdir(tmpDir)).resolves.toEqual([]);
+  });
+
+  test('a malformed storage key disables the plugin and logs an error', async () => {
+    ctx.config.storageKey = Buffer.from('too short').toString('base64');
+    await register(mockApp, ctx, { profileDir: tmpDir });
+    expect(ctx.log).toHaveBeenCalledWith('error', expect.stringContaining('invalid CAMOFOX_STORAGE_KEY'), expect.any(Object));
+  });
+
+  test('restores persisted state on session:creating as an object, not a file path', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
 
-    // Simulate a prior persisted state
     const { getUserPersistencePaths } = await import('../../lib/persistence.js');
     const { userDir, storageStatePath } = getUserPersistencePaths(tmpDir, 'user-1');
-    await fs.mkdir(userDir, { recursive: true });
-    await fs.writeFile(storageStatePath, JSON.stringify({
+    const saved = {
       cookies: [{ name: 'sid', value: 'abc', domain: '.example.com', path: '/' }],
       origins: [],
-    }));
+    };
+    await fs.mkdir(userDir, { recursive: true });
+    await fs.writeFile(storageStatePath, encryptJson(KEY, saved));
 
     const contextOptions = { viewport: { width: 1280, height: 720 } };
     await events.emitAsync('session:creating', { userId: 'user-1', contextOptions });
 
-    expect(contextOptions.storageState).toBe(storageStatePath);
+    expect(contextOptions.storageState).toEqual(saved);
   });
 
-  test('checkpoints on session:cookies:import', async () => {
+  test('checkpoints on session:cookies:import, encrypted on disk', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
 
-    const mockContext = {
-      storageState: jest.fn(async ({ path: p }) => {
-        await fs.writeFile(p, JSON.stringify({ cookies: [{ name: 'x', value: 'y', domain: '.test.com', path: '/' }] }));
-      }),
-    };
+    const state = { cookies: [{ name: 'x', value: 'SECRET-VALUE', domain: '.test.com', path: '/' }] };
+    const mockContext = { storageState: jest.fn(async () => state) };
 
-    // Simulate session created then cookie import
     await events.emitAsync('session:created', { userId: 'user-2', context: mockContext });
     await events.emitAsync('session:cookies:import', { userId: 'user-2' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
+    expect((await readSaved('user-2')).cookies[0].name).toBe('x');
 
-    // Verify file was written
     const { getUserPersistencePaths } = await import('../../lib/persistence.js');
     const { storageStatePath } = getUserPersistencePaths(tmpDir, 'user-2');
-    const saved = JSON.parse(await fs.readFile(storageStatePath, 'utf8'));
-    expect(saved.cookies[0].name).toBe('x');
+    expect((await fs.readFile(storageStatePath)).toString('utf8')).not.toContain('SECRET-VALUE');
   });
 
   test('persists the exact state supplied by session:storage:export', async () => {
@@ -89,24 +113,31 @@ describe('persistence plugin', () => {
     };
     await events.emitAsync('session:storage:export', { userId: 'user-export', storageState });
 
-    const { getUserPersistencePaths } = await import('../../lib/persistence.js');
-    const { storageStatePath } = getUserPersistencePaths(tmpDir, 'user-export');
-    expect(JSON.parse(await fs.readFile(storageStatePath, 'utf8'))).toEqual(storageState);
+    expect(await readSaved('user-export')).toEqual(storageState);
   });
 
   test('checkpoints on session:destroying', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
 
-    const mockContext = {
-      storageState: jest.fn(async ({ path: p }) => {
-        await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
-      }),
-    };
+    const mockContext = { storageState: jest.fn(async () => ({ cookies: [], origins: [] })) };
 
     await events.emitAsync('session:created', { userId: 'user-3', context: mockContext });
     await events.emitAsync('session:destroying', { userId: 'user-3', reason: 'test' });
 
     expect(mockContext.storageState).toHaveBeenCalled();
+  });
+
+  test('checkpoints when a handoff ends, so the next task starts signed in', async () => {
+    await register(mockApp, ctx, { profileDir: tmpDir });
+
+    const state = { cookies: [{ name: 'auth', value: 'after-login', domain: '.bank.test', path: '/' }] };
+    const mockContext = { storageState: jest.fn(async () => state) };
+    await events.emitAsync('session:created', { userId: 'user-handoff', context: mockContext });
+
+    await events.emitAsync('handoff:ended', { userId: 'user-handoff', tabId: 't1', reason: 'done' });
+
+    expect(mockContext.storageState).toHaveBeenCalled();
+    expect((await readSaved('user-handoff')).cookies[0].value).toBe('after-login');
   });
 
   test('DELETE storage_state destroys the live session without checkpointing and removes persisted state', async () => {
@@ -119,13 +150,9 @@ describe('persistence plugin', () => {
     const { getUserPersistencePaths } = await import('../../lib/persistence.js');
     const { userDir, storageStatePath, metaPath } = getUserPersistencePaths(tmpDir, 'user-4');
     await fs.mkdir(userDir, { recursive: true });
-    await fs.writeFile(storageStatePath, JSON.stringify({
+    await fs.writeFile(storageStatePath, encryptJson(KEY, {
       cookies: [{ name: 'sid', value: 'a', domain: '.x.com', path: '/' }],
-      origins: [{
-        origin: 'https://x.com',
-        localStorage: [{ name: 'token', value: 'secret' }],
-        indexedDB: [{ name: 'auth', version: 1, stores: [] }],
-      }],
+      origins: [],
     }));
     await fs.writeFile(metaPath, JSON.stringify({ userId: 'user-4' }));
 
@@ -158,10 +185,10 @@ describe('persistence plugin', () => {
     const checkpointBlocked = new Promise(resolve => { finishCheckpoint = resolve; });
     const checkpointStarted = new Promise(resolve => { markCheckpointStarted = resolve; });
     const mockContext = {
-      storageState: jest.fn(async ({ path: targetPath }) => {
+      storageState: jest.fn(async () => {
         markCheckpointStarted();
         await checkpointBlocked;
-        await fs.writeFile(targetPath, JSON.stringify({ cookies: [], origins: [] }));
+        return { cookies: [], origins: [] };
       }),
     };
     await events.emitAsync('session:created', { userId: 'user-race', context: mockContext });
@@ -218,11 +245,7 @@ describe('persistence plugin', () => {
   test('does not persist IndexedDB by default', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir });
 
-    const mockContext = {
-      storageState: jest.fn(async ({ path: p }) => {
-        await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
-      }),
-    };
+    const mockContext = { storageState: jest.fn(async () => ({ cookies: [], origins: [] })) };
     await events.emitAsync('session:created', { userId: 'user-no-idb', context: mockContext });
     await events.emitAsync('session:destroying', { userId: 'user-no-idb', reason: 'test' });
 
@@ -233,18 +256,14 @@ describe('persistence plugin', () => {
     );
     expect(mockContext.storageState).toHaveBeenCalled();
     for (const [arg] of mockContext.storageState.mock.calls) {
-      expect(arg.indexedDB).toBeUndefined();
+      expect(arg?.indexedDB).toBeUndefined();
     }
   });
 
   test('indexedDB: true opts in to IndexedDB persistence', async () => {
     await register(mockApp, ctx, { profileDir: tmpDir, indexedDB: true });
 
-    const mockContext = {
-      storageState: jest.fn(async ({ path: p }) => {
-        await fs.writeFile(p, JSON.stringify({ cookies: [], origins: [] }));
-      }),
-    };
+    const mockContext = { storageState: jest.fn(async () => ({ cookies: [], origins: [] })) };
     await events.emitAsync('session:created', { userId: 'user-idb', context: mockContext });
     await events.emitAsync('session:destroying', { userId: 'user-idb', reason: 'test' });
 

@@ -171,7 +171,7 @@ async function performInput(page, input) {
 }
 
 export async function register(app, ctx) {
-  const { auth, sessions, config, log } = ctx;
+  const { auth, sessions, config, log, events } = ctx;
   const secret = config.accessKey;
 
   // Inputs for one tab run strictly in order, one at a time.
@@ -329,6 +329,7 @@ export async function register(app, ctx) {
     if (activeHandoff(claims)) {
       setAgent(claims.t);
       log('info', 'live-viewer handoff returned to agent', { userId: claims.u, tabId: claims.t });
+      events?.emit('handoff:ended', { userId: claims.u, tabId: claims.t, reason: 'done' });
     }
     res.set('Cache-Control', 'no-store').json({ ok: true, status: 'agent' });
   });

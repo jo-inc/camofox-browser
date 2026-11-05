@@ -35,6 +35,7 @@ import {
   persistStorageState,
 } from '../../lib/persistence.js';
 import { importBootstrapCookies } from '../../lib/cookies.js';
+import { parseStorageKey } from '../../lib/storage-crypto.js';
 
 async function removeIfExists(p) {
   try {
@@ -53,6 +54,20 @@ export async function register(app, ctx, pluginConfig = {}) {
   const profileDir = process.env.CAMOFOX_PROFILE_DIR || pluginConfig.profileDir || config.profileDir;
   if (!profileDir) {
     log('warn', 'persistence plugin: no profileDir configured, plugin disabled');
+    return;
+  }
+
+  // Saved sessions are encrypted with CAMOFOX_STORAGE_KEY. Without a valid key
+  // the plugin stays off, so no session is ever written in plain text.
+  let storageKey;
+  try {
+    storageKey = parseStorageKey(config.storageKey);
+  } catch (err) {
+    log('error', 'persistence plugin disabled: invalid CAMOFOX_STORAGE_KEY', { error: err.message });
+    return;
+  }
+  if (!storageKey) {
+    log('warn', 'persistence plugin disabled: CAMOFOX_STORAGE_KEY is not set, sessions will not be saved');
     return;
   }
 
@@ -89,6 +104,7 @@ export async function register(app, ctx, pluginConfig = {}) {
         storageState,
         logger,
         indexedDB,
+        storageKey,
       });
       if (result.persisted) {
         log('info', 'storage state persisted', { userId, reason, path: result.storageStatePath });
@@ -108,10 +124,10 @@ export async function register(app, ctx, pluginConfig = {}) {
   // Before session context is created: inject storageState if we have one saved
   events.on('session:creating', async ({ userId, contextOptions }) => {
     if (resettingUsers.has(userId)) return;
-    const storageStatePath = await loadPersistedStorageState(profileDir, userId, logger);
-    if (storageStatePath) {
-      contextOptions.storageState = storageStatePath;
-      log('info', 'restoring persisted storage state', { userId, storageStatePath });
+    const savedState = await loadPersistedStorageState(profileDir, userId, logger, storageKey);
+    if (savedState) {
+      contextOptions.storageState = savedState;
+      log('info', 'restoring persisted storage state', { userId });
     }
   });
 
@@ -121,7 +137,7 @@ export async function register(app, ctx, pluginConfig = {}) {
     activeSessions.set(userId, context);
 
     // If no persisted state was restored, try bootstrap cookies
-    const existingState = await loadPersistedStorageState(profileDir, userId, logger);
+    const existingState = await loadPersistedStorageState(profileDir, userId, logger, storageKey);
     if (!existingState) {
       const result = await importBootstrapCookies({
         cookiesDir: config.cookiesDir,
@@ -132,6 +148,16 @@ export async function register(app, ctx, pluginConfig = {}) {
         log('info', 'bootstrap cookies imported', { userId, count: result.imported, source: result.source });
         await checkpoint(userId, context, 'bootstrap_cookies');
       }
+    }
+  });
+
+  // A handoff ended, for example after the user logged in and pressed Done.
+  // Save now, so the next task starts signed in. Emitted by the live viewer
+  // (Done) and by the handoff release route.
+  events.on('handoff:ended', async ({ userId }) => {
+    const context = activeSessions.get(userId);
+    if (context) {
+      await checkpoint(userId, context, 'handoff_ended').catch(() => {});
     }
   });
 
