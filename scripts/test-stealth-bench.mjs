@@ -60,12 +60,13 @@ const PROBE = `(() => {
     languages: navigator.languages,
     webglRenderer: webgl,
     hardwareConcurrency: navigator.hardwareConcurrency,
-    bodyText: document.body ? document.body.innerText.slice(0, 400) : '',
+    bodyText: document.body ? document.body.innerText.slice(0, 1200) : '',
   });
 })()`;
 
 const SOFTWARE_RENDERERS = /swiftshader|llvmpipe|software/i;
-const BLOCKED_TEXT = /access denied|verify you are human|checking your browser|unusual traffic|are you a robot/i;
+const BLOCKED_TEXT = /access denied|verify you are human|checking your browser|unusual traffic|are you a robot|just a moment|additional verification required|troubleshooting cloudflare|attention required|ray id for this request/i;
+const BLOCKED_TITLE = /just a moment|attention required|access denied|forbidden/i;
 const report = makeReporter();
 const results = [];
 
@@ -90,6 +91,7 @@ async function runOnce(target) {
     return {
       target: target.id,
       loaded: state.status === 200,
+      error: state.status === 200 ? undefined : `state HTTP ${state.status}: ${state.data?.error ?? 'no detail'}`,
       kind,
       title: state.data?.title ?? '',
       elapsedMs,
@@ -113,7 +115,7 @@ for (const target of targets) {
     let detail = r.error
       ? r.error
       : `kind=${r.kind}, ${r.elapsedMs}ms${r.softwareGpu ? ', software GPU' : ''}${r.webdriverExposed ? ', webdriver exposed' : ''}`;
-    const blockedText = BLOCKED_TEXT.test(r.visibleText ?? '');
+    const blockedText = BLOCKED_TEXT.test(r.visibleText ?? '') || BLOCKED_TITLE.test(r.title ?? '');
     if (blockedText) detail += ', block text on page';
     report.check(`${target.id} run ${i}`, !!r.loaded && r.kind === 'ok' && !blockedText && !r.softwareGpu && !r.webdriverExposed, detail);
   }
