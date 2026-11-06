@@ -60,10 +60,12 @@ const PROBE = `(() => {
     languages: navigator.languages,
     webglRenderer: webgl,
     hardwareConcurrency: navigator.hardwareConcurrency,
+    bodyText: document.body ? document.body.innerText.slice(0, 400) : '',
   });
 })()`;
 
 const SOFTWARE_RENDERERS = /swiftshader|llvmpipe|software/i;
+const BLOCKED_TEXT = /access denied|verify you are human|checking your browser|unusual traffic|are you a robot/i;
 const report = makeReporter();
 const results = [];
 
@@ -94,6 +96,7 @@ async function runOnce(target) {
       probe,
       softwareGpu,
       webdriverExposed: probe?.webdriver === true,
+      visibleText: probe?.bodyText ?? '',
     };
   } catch (err) {
     return { target: target.id, loaded: false, error: err.message };
@@ -107,10 +110,12 @@ for (const target of targets) {
   for (let i = 1; i <= runs; i += 1) {
     const r = await runOnce(target);
     results.push({ ...r, run: i });
-    const detail = r.error
+    let detail = r.error
       ? r.error
       : `kind=${r.kind}, ${r.elapsedMs}ms${r.softwareGpu ? ', software GPU' : ''}${r.webdriverExposed ? ', webdriver exposed' : ''}`;
-    report.check(`${target.id} run ${i}`, !!r.loaded && r.kind === 'ok' && !r.softwareGpu && !r.webdriverExposed, detail);
+    const blockedText = BLOCKED_TEXT.test(r.visibleText ?? '');
+    if (blockedText) detail += ', block text on page';
+    report.check(`${target.id} run ${i}`, !!r.loaded && r.kind === 'ok' && !blockedText && !r.softwareGpu && !r.webdriverExposed, detail);
   }
 }
 
