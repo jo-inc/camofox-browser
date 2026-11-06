@@ -79,14 +79,25 @@ async function main() {
       return countingFetch(...a);
     },
   });
-  try {
-    await spyApi.listVaultCards('usr_token_probe');
-    await spyApi.listVaultCards('usr_token_probe');
-    check('token exchange works and is reused', tokenFetches === 1, `token requests: ${tokenFetches}`);
-  } catch (err) {
-    stop('token exchange works and is reused', err);
-    return;
-  }
+  // Probe with a lookup that needs no user: a made-up session id must return 404
+  // (authenticated, not found), never 401 (bad token). Two probes, one token exchange.
+  const probe = async () => {
+    try {
+      await spyApi.getVaultSession('vs_token_probe_0000');
+      return 'unexpected-success';
+    } catch (err) {
+      return err instanceof AgentCardError ? err.status : `error:${err.message}`;
+    }
+  };
+  const first = await probe();
+  const second = await probe();
+  const authenticated = first === 404 && second === 404;
+  check(
+    'token exchange works and is reused',
+    authenticated && tokenFetches === 1,
+    authenticated ? `token requests: ${tokenFetches}` : `probe statuses: ${first}, ${second}`,
+  );
+  if (!authenticated) return;
 
   // 3. open an enrolment session
   let session;
