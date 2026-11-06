@@ -61,14 +61,23 @@ Stripe's published test cards work.
 Keep secrets in the environment or a secret store. Never commit them or print
 them.
 
-## Live check (first step, sandbox only)
+## Live check (sandbox only)
+
+The keys are read from the repo's `.env` (git-ignored), or from the environment.
+Values are never printed.
 
 ```
-AGENTCARD_CLIENT_ID=... AGENTCARD_CLIENT_SECRET=... node agentcard/scripts/sandbox-check.mjs
+node agentcard/scripts/sandbox-check.mjs                          # token, enrolment session, poll, error handling
+node agentcard/scripts/sandbox-check.mjs --user usr_...           # + approval-gated purchase: create, read, cancel
+node agentcard/scripts/sandbox-check.mjs --register-url https://your.app/agentcard/webhooks   # + webhook endpoint
 ```
 
-It exchanges a token, opens an enrolment session, and polls it once. It prints the
-enrolment URL for you to open yourself.
+- Core checks open a sandbox enrolment session and print its URL. Open it yourself
+  and use connect code `111111` and Stripe's test card.
+- `--user` needs an AgentCard user id that has a sandbox card on file.
+- `--register-url` writes the endpoint secret to `.env` as `AGENTCARD_WEBHOOK_SECRET`.
+  The secret is shown only once, so it is never printed.
+- The script exits non-zero if any check that ran fails.
 
 ## Mounting (after review)
 
