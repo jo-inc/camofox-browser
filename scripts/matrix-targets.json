@@ -20,6 +20,14 @@
       { "action": "scroll", "direction": "down", "amount": 800 }
     ] },
 
+  { "id": "booking-search", "category": "hotels", "url": "https://www.booking.com/", "waitMs": 6000,
+    "steps": [
+      { "action": "type", "selector": "input[name=ss]", "text": "Lisbon", "pressEnter": true },
+      { "action": "wait", "ms": 6000 },
+      { "action": "expectUrl", "contains": "Lisbon" },
+      { "action": "scroll", "direction": "down", "amount": 800 }
+    ] },
+
   { "id": "indeed-search", "category": "jobs", "url": "https://www.indeed.com/", "waitMs": 6000,
     "steps": [
       { "action": "type", "selector": "#text-input-what", "text": "accountant", "pressEnter": true },
