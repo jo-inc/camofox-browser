@@ -63,6 +63,7 @@ const SEARCH_MACROS = [
   '@twitch_search',
   '@bestbuy_search',
   '@indeed_search',
+  '@booking_search',
   '@pubmed_search',
   '@zillow_search',
   '@npm_search',

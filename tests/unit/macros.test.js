@@ -20,6 +20,7 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@reddit_subreddit');
     expect(macros).toContain('@bestbuy_search');
     expect(macros).toContain('@indeed_search');
+    expect(macros).toContain('@booking_search');
     expect(macros).toContain('@pubmed_search');
     expect(macros).toContain('@zillow_search');
     expect(macros).toContain('@npm_search');
@@ -30,7 +31,7 @@ describe('Macro URL Expansion (unit)', () => {
     expect(macros).toContain('@huggingface_search');
     expect(macros).toContain('@jsr_search');
     expect(macros).toContain('@bing_news_search');
-    expect(macros.length).toBe(26);
+    expect(macros.length).toBe(27);
   });
 
   test('AI, package and news macros expand to their search pages', () => {
@@ -50,6 +51,13 @@ describe('Macro URL Expansion (unit)', () => {
   test('@bestbuy_search expands correctly', () => {
     expect(expandMacro('@bestbuy_search', 'usb c hub'))
       .toBe('https://www.bestbuy.com/site/searchpage.jsp?st=usb%20c%20hub');
+  });
+
+  test('@booking_search expands correctly', () => {
+    expect(expandMacro('@booking_search', 'Lisbon'))
+      .toBe('https://www.booking.com/searchresults.html?ss=Lisbon');
+    expect(expandMacro('@booking_search', 'New York'))
+      .toBe('https://www.booking.com/searchresults.html?ss=New%20York');
   });
 
   test('@indeed_search expands correctly', () => {
