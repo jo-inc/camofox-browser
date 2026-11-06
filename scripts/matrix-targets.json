@@ -1,0 +1,30 @@
+[
+  { "id": "nowsecure", "category": "cloudflare-challenge", "url": "https://nowsecure.nl/", "waitMs": 6000,
+    "expectText": ["NOWSECURE"] },
+
+  { "id": "incolumitas", "category": "bot-detection", "url": "https://bot.incolumitas.com/", "waitMs": 20000,
+    "expectText": ["Behavioral Classification"] },
+
+  { "id": "browserleaks", "category": "fingerprint", "url": "https://browserleaks.com/javascript", "waitMs": 6000,
+    "expectText": ["JavaScript Browser Information"] },
+
+  { "id": "sannysoft", "category": "bot-detection", "url": "https://bot.sannysoft.com/", "waitMs": 8000 },
+
+  { "id": "creepjs", "category": "fingerprint", "url": "https://abrahamjuliot.github.io/creepjs/", "waitMs": 15000 },
+
+  { "id": "bestbuy-search", "category": "retail", "url": "https://www.bestbuy.com/", "waitMs": 6000,
+    "steps": [
+      { "action": "type", "selector": "input[type=search]", "text": "headphones", "pressEnter": true },
+      { "action": "wait", "ms": 6000 },
+      { "action": "expectUrl", "contains": "headphones" },
+      { "action": "scroll", "direction": "down", "amount": 800 }
+    ] },
+
+  { "id": "indeed-search", "category": "jobs", "url": "https://www.indeed.com/", "waitMs": 6000,
+    "steps": [
+      { "action": "type", "selector": "#text-input-what", "text": "accountant", "pressEnter": true },
+      { "action": "wait", "ms": 6000 },
+      { "action": "expectUrl", "contains": "accountant" },
+      { "action": "scroll", "direction": "down", "amount": 800 }
+    ] }
+]
