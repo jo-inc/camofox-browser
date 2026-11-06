@@ -1,4 +1,10 @@
 export { loadConfig, describeConfig } from './config.js';
 export { verifyWebhookSignature, DEFAULT_TOLERANCE_SECONDS } from './webhook.js';
-export { createLedger } from './ledger.js';
+export { createAgentCardApi, AgentCardError, DEFAULT_BASE_URL } from './api.js';
+export { createMemoryStore } from './store.js';
+export { createEnrolment } from './enrolment.js';
+export { createPurchases } from './purchases.js';
+export { createWebhookHandler, createNodeRoute } from './webhooks.js';
 export { createVault, attachCheckout, loadCheckoutSdk } from './vault.js';
+export { createAgentCard, SUBSCRIBED_EVENTS } from './service.js';
+export { createAgentCardRouter } from './routes.js';
