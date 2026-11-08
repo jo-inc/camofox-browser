@@ -3532,7 +3532,10 @@ app.post('/tabs', async (req, res) => {
     } catch (cleanupErr) {
       log('warn', 'tab create cleanup failed', { reqId: req.reqId, tabId: createdTabId, error: cleanupErr?.message ?? String(cleanupErr) });
     }
-    const mem = isTimeoutError(err) ? cgroupMemory() : null;
+    // A responsive new-page timeout (#14668) must stay on this machine with its
+    // live session and win over the near-cap bounce (#14624): do not remap it to
+    // memory_cap_reached.
+    const mem = isTimeoutError(err) && err.code !== 'new_page_timeout' ? cgroupMemory() : null;
     if (mem?.nearCap) return memoryCapResponse(res, mem);
     // SSL certificate errors on initial navigation — non-retriable
     const isSslError = err.message && (
