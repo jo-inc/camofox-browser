@@ -1179,6 +1179,7 @@ async function launchBrowserInstance() {
         locale: launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity }),
         virtual_display: vdDisplay,
         exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
+        addons: CONFIG.extraAddons.length ? [...CONFIG.extraAddons] : undefined,
       }, {
         attempt,
         proxyServer: launchProxy?.server || null,
