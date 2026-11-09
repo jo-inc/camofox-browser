@@ -6820,11 +6820,10 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
       return tabState.page.evaluate(expression).finally(() => tabState.evaluating.delete(running));
     };
     // A slow script is the caller's, not a stuck tab: on timeout the tab and its page stay up.
-    // Past the handler timeout the tab lock is skipped, since a call queued behind a long
-    // evaluate would hit the lock-queue timeout, which destroys the tab.
-    const result = await withUserLimit(userId, () => timeoutMs > requestTimeoutMs()
-      ? withTimeout(evaluate(), timeoutMs, 'action')
-      : withTabLock(req.params.tabId, evaluate, timeoutMs));
+    // Evaluate never takes the per-tab lock: a stuck script must not block other evaluates on the
+    // same tab. Playwright tolerates concurrent page.evaluate; the lock hardening still serializes
+    // the mutating operations (click/type/navigate) where overlapping CDP calls corrupt state.
+    const result = await withUserLimit(userId, () => withTimeout(evaluate(), timeoutMs, 'action'));
     pluginEvents.emit('tab:evaluated', { userId, tabId: req.params.tabId, result });
     log('info', 'evaluate', { reqId: req.reqId, tabId: req.params.tabId, userId, resultType: typeof result });
     res.json({ ok: true, result });
