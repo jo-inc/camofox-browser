@@ -657,6 +657,10 @@ const NEW_PAGE_TIMEOUT_MS = CONFIG.newPageTimeoutMs;
 const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
 const PAGE_FORCE_CLOSE_TIMEOUT_MS = 1000;
+// Upper bound on BrowserContext.close() during session teardown. getSession()
+// awaits any in-flight teardown for a user, so an unbounded close could wedge
+// every future request for that user. 10s comfortably exceeds a healthy close.
+const CONTEXT_CLOSE_TIMEOUT_MS = 10000;
 const NAVIGATE_TIMEOUT_MS = CONFIG.navigateTimeoutMs;
 const BUILDREFS_TIMEOUT_MS = CONFIG.buildrefsTimeoutMs;
 const NATIVE_MEM_RESTART_THRESHOLD_MB = CONFIG.nativeMemRestartThresholdMb;
@@ -1505,7 +1509,13 @@ async function closeSessionImpl(userId, session, {
     }
   }
 
-  await session.context.close().catch(() => {});
+  // Bound the close: a hung context.close() would otherwise leave this teardown
+  // promise unresolved forever, and because getSession() awaits any in-flight
+  // teardown for a user, every future request for that user would block behind
+  // it. On timeout we abandon the close (the context is being discarded anyway)
+  // and let teardown finish so a fresh session can be built.
+  await withTimeout(session.context.close(), CONTEXT_CLOSE_TIMEOUT_MS, 'context close')
+    .catch((err) => { log('warn', 'context close did not settle', { userId: key, error: err.message }); });
   sessions.delete(key);
   await pluginEvents.emitAsync('session:destroyed', { userId: key, reason });
 
@@ -1728,7 +1738,42 @@ function handleRouteError(err, req, res, extraFields = {}) {
     return res.status(410).json({ error: 'Page crashed. Open a new tab.', code: 'page_crashed', retryable: true, recovery: 'create_new_tab', ...extraFields });
   }
   if (userId && isDeadContextError(err)) {
-    destroySession(userId).catch(() => {});
+    // "Target page, context or browser has been closed" is raised both when the
+    // whole BrowserContext dies AND when a single page closed itself (an OAuth
+    // popup calling window.close(), a site-initiated close). Destroying the
+    // session on the second case wipes every tab across ALL sessionKey groups
+    // for this user. Before tearing anything down, probe the context: if it is
+    // still alive, this is a closed-page error, so drop only the offending tab
+    // (if the self-close handler has not already deregistered it) and return a
+    // recoverable per-tab error.
+    const key = normalizeUserId(userId);
+    const session = sessions.get(key);
+    let contextAlive = false;
+    if (session && !session._closing) {
+      try { session.context.pages(); contextAlive = true; } catch { contextAlive = false; }
+    }
+    const found = contextAlive && tabId ? findTab(session, tabId) : null;
+    // Attribute to a closed page when the tab is gone (already deregistered) or
+    // its page reports closed. If the tab's page is somehow still open on a live
+    // context, we do not know what happened — leave the session intact and let
+    // the generic error response below handle it rather than destroy everything.
+    const pageOnlyClosed = contextAlive && Boolean(tabId) &&
+      (!found || Boolean(found.tabState.page?.isClosed?.()));
+    if (contextAlive) {
+      if (found && found.tabState.page?.isClosed?.()) {
+        destroyTab(session, tabId, 'page_self_closed', userId);
+      }
+      if (pageOnlyClosed) {
+        return res.status(404).json({
+          error: 'Tab not found (its page was closed). Open a new tab.',
+          code: 'tab_closed', retryable: true, recovery: 'create_new_tab', ...extraFields,
+        });
+      }
+      // Live context but not attributable to a tab close: do not destroy the
+      // session. Fall through to the generic error response.
+    } else {
+      destroySession(userId).catch(() => {});
+    }
   }
   // Proxy errors mean the session is dead -- rotate at context level.
   // Destroy the user's session so the next request gets a fresh context with a new proxy.
@@ -1978,6 +2023,39 @@ function tabNotFoundResponse(res, tabId) {
   return res.status(404).json({ error: 'Tab not found' });
 }
 
+// Deregister a tab whose page closed itself (e.g. an OAuth popup calling
+// window.close()). Without this, a self-closed popup stays in tabGroups and
+// GET /tabs keeps returning its tabId, and a later op on it raises the generic
+// "Target page, context or browser has been closed" error that handleRouteError
+// used to misread as a dead BrowserContext.
+//
+// We locate the tab by tabState identity rather than a captured tabId/userId so
+// a single chokepoint in createTabState covers every registration path (initial
+// create, proxy retry, dead-page replacement, google rotate, popups). The
+// `ts.page !== page` guard is the important part: the dead-page recovery path
+// swaps a live replacement page into the same tabId under a NEW tabState, so a
+// late close event from the old page must not wipe the replacement tab.
+function deregisterClosedTab(tabState, page) {
+  for (const [userId, session] of sessions) {
+    if (session._closing) continue;
+    for (const [listItemId, group] of session.tabGroups) {
+      for (const [tabId, entry] of group) {
+        if (entry !== tabState) continue;
+        if (entry.page !== page) return; // replaced by a live page under same id
+        group.delete(tabId);
+        dropEmptyTabGroup(session, listItemId, group);
+        const lock = tabLocks.get(tabId);
+        if (lock) { lock.drain(); tabLocks.delete(tabId); refreshTabLockQueueDepth(); }
+        refreshActiveTabsGauge();
+        tabsDestroyedTotal.labels('page_self_closed').inc();
+        pluginEvents.emit('tab:destroyed', { userId, tabId, reason: 'page_self_closed' });
+        log('info', 'tab deregistered on page self-close', { userId, tabId });
+        return;
+      }
+    }
+  }
+}
+
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
   const tabState = {
@@ -2003,6 +2081,9 @@ function createTabState(page) {
     lastMainFrameResponse: null,
   };
   page?.on?.('crash', () => { tabState.crashed = true; });
+  // A page that closes itself (popup window.close(), site-initiated close)
+  // deregisters its own tab so GET /tabs stops advertising a dead tabId.
+  page?.on?.('close', () => { deregisterClosedTab(tabState, page); });
   attachNavigationResponseTracker(tabState);
   return tabState;
 }
