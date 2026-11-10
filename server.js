@@ -60,6 +60,7 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { resolveHostOs } from './lib/fingerprint-os.js';
 import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
@@ -902,11 +903,7 @@ async function safePageClose(page) {
 
 // Detect host OS for fingerprint generation (CAMOFOX_OS overrides it)
 function getHostOS() {
-  if (CONFIG.fingerprintOs) return CONFIG.fingerprintOs;
-  const platform = os.platform();
-  if (platform === 'darwin') return 'macos';
-  if (platform === 'win32') return 'windows';
-  return 'linux';
+  return resolveHostOs(CONFIG.fingerprintOs, os.platform());
 }
 
 // Proxy strategy for outbound browsing.
