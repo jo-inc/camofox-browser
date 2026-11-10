@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build a UEFI-readable FAT32 Windows PE bootstrap from a UDF Windows ISO."""
-import argparse, binascii, math, os, struct
+import argparse, math, struct
 from pathlib import Path, PurePosixPath
 
 BLOCK = 2048

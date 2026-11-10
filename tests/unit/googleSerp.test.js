@@ -1,5 +1,60 @@
-import { describe, expect, jest, test } from '@jest/globals';
-import { hasGoogleOrganicResults } from '../../lib/google-serp.js';
+import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { hasGoogleOrganicResults, pageHasGoogleOrganicResult } from '../../lib/google-serp.js';
+
+describe('pageHasGoogleOrganicResult', () => {
+  afterEach(() => {
+    delete globalThis.document;
+  });
+
+  function runDetector(linkHref, baseURI = 'https://www.google.com/search?q=test') {
+    const heading = { closest: () => ({ href: linkHref }) };
+    globalThis.document = {
+      querySelector: () => ({ querySelectorAll: () => [heading] }),
+      baseURI,
+    };
+    return pageHasGoogleOrganicResult();
+  }
+
+  test('accepts direct external links', () => {
+    expect(runDetector('https://example.com/article')).toBe(true);
+  });
+
+  test('accepts google-hosted goto and url wrappers', () => {
+    expect(runDetector('/goto?url=https://example.com/article')).toBe(true);
+    expect(runDetector('/url?q=https://example.com/article')).toBe(true);
+  });
+
+  test('rejects ad links and other google paths', () => {
+    expect(runDetector('/aclk?sa=L')).toBe(false);
+    expect(runDetector('/search?q=test')).toBe(false);
+  });
+
+  test('rejects non-http links', () => {
+    expect(runDetector('javascript:void(0)')).toBe(false);
+  });
+
+  test('accepts wrappers on the SERP host of a regional Google domain', () => {
+    expect(runDetector('/goto?url=https://example.com/article', 'https://www.google.ca/search?q=test')).toBe(true);
+    expect(runDetector('https://www.google.ca/goto?url=https://example.com/article', 'https://www.google.ca/search?q=test')).toBe(true);
+  });
+
+  test('rejects wrapper-shaped links on other google hosts', () => {
+    expect(runDetector('https://accounts.google.com/url?q=https://example.com/article')).toBe(false);
+    expect(runDetector('https://www.google.com/goto?url=https://example.com/article', 'https://www.google.ca/search?q=test')).toBe(false);
+  });
+
+  test('returns false without a result container or a linked heading', () => {
+    globalThis.document = { querySelector: () => null, baseURI: 'https://www.google.com/search?q=test' };
+    expect(pageHasGoogleOrganicResult()).toBe(false);
+
+    const heading = { closest: () => null };
+    globalThis.document = {
+      querySelector: () => ({ querySelectorAll: () => [heading] }),
+      baseURI: 'https://www.google.com/search?q=test',
+    };
+    expect(pageHasGoogleOrganicResult()).toBe(false);
+  });
+});
 
 describe('hasGoogleOrganicResults', () => {
   test('returns immediately when an organic card is present', async () => {

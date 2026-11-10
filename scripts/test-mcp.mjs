@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Self-contained smoke test for mcp/server.mjs — no Jest, no REST server.
-// Verifies: handshake completes, all 11 tools are listed with valid schemas,
+// Verifies: handshake completes, all 31 tools are listed with valid schemas,
 // and an unknown tool call returns isError. Tool *execution* (which needs the
 // camofox REST server) is out of scope here.
 //
@@ -19,12 +19,32 @@ const EXPECTED_TOOLS = [
   "camofox_snapshot",
   "camofox_click",
   "camofox_type",
+  "camofox_upload",
   "camofox_navigate",
   "camofox_scroll",
   "camofox_screenshot",
   "camofox_close_tab",
   "camofox_evaluate",
   "camofox_list_tabs",
+  "camofox_activate",
+  "camofox_ax",
+  "camofox_actionables",
+  "camofox_table_rows",
+  "camofox_mouse_wheel",
+  "camofox_drag",
+  "camofox_init_script",
+  "camofox_export_storage_state",
+  "camofox_import_local_storage",
+  "camofox_back",
+  "camofox_forward",
+  "camofox_refresh",
+  "camofox_press",
+  "camofox_select",
+  "camofox_viewport",
+  "camofox_wait",
+  "camofox_extract",
+  "camofox_links",
+  "camofox_images",
   "camofox_import_cookies",
 ];
 
@@ -110,7 +130,7 @@ async function main() {
   const list = await call("tools/list", {});
   const tools = list.result.tools;
   const names = tools.map((t) => t.name).sort();
-  check("lists exactly 11 tools", tools.length === 11, `got ${tools.length}`);
+  check("lists exactly 31 tools", tools.length === 31, `got ${tools.length}`);
   check("tool names match expected", names.join(",") === [...EXPECTED_TOOLS].sort().join(","), `got: ${names.join(",")}`);
 
   for (const t of tools) {

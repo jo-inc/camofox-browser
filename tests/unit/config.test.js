@@ -73,6 +73,19 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow('CAMOFOX_TIMEZONE must be a valid IANA timezone');
   });
 
+  test('configures an optional fingerprint OS and forwards it to subprocesses', () => {
+    delete process.env.CAMOFOX_OS;
+    expect(loadConfig().fingerprintOs).toBeNull();
+
+    process.env.CAMOFOX_OS = 'Windows';
+    const config = loadConfig();
+    expect(config.fingerprintOs).toBe('windows');
+    expect(config.serverEnv.CAMOFOX_OS).toBe('Windows');
+
+    process.env.CAMOFOX_OS = 'android';
+    expect(() => loadConfig()).toThrow('CAMOFOX_OS must be windows, macos, or linux');
+  });
+
   test('configures and forwards the upload directory', () => {
     process.env.CAMOFOX_UPLOADS_DIR = '/mounted/uploads';
 
@@ -130,6 +143,24 @@ describe('loadConfig', () => {
     const config = loadConfig();
     expect(config.navigateTimeoutMs).toBe(60000);
     expect(config.serverEnv.NAVIGATE_TIMEOUT_MS).toBe('60000');
+  });
+
+  test('uses a positive shutdown watchdog timeout and forwards it to server subprocesses', () => {
+    delete process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS;
+    expect(loadConfig().shutdownTimeoutMs).toBe(45000);
+
+    process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS = '60000';
+    const configured = loadConfig();
+    expect(configured.shutdownTimeoutMs).toBe(60000);
+    expect(configured.serverEnv.CAMOFOX_SHUTDOWN_TIMEOUT_MS).toBe('60000');
+
+    for (const value of ['0', '-1', 'not-a-number', 'Infinity', '2147483648', '9007199254740992']) {
+      process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS = value;
+      expect(loadConfig().shutdownTimeoutMs).toBe(45000);
+    }
+
+    process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS = '2147483647';
+    expect(loadConfig().shutdownTimeoutMs).toBe(2147483647);
   });
 
   test('reads newPageTimeoutMs from camofox.config.json with a 10s fallback', () => {

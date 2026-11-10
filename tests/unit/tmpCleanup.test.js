@@ -116,6 +116,38 @@ describe('cleanupOrphanedTempFiles', () => {
 });
 
 describe('cleanupStaleFirefoxProfiles', () => {
+  it('preserves another server profile and defaults to no deletion', () => {
+    const dir = makeTmpDir();
+    const owned = path.join(dir, 'camoufox-owned');
+    const other = path.join(dir, 'camoufox-other');
+    try {
+      fs.mkdirSync(owned);
+      fs.mkdirSync(other);
+      expect(cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 0 }).removed).toBe(0);
+      expect(cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 0, ownedPaths: [owned] }).removed).toBe(1);
+      expect(fs.existsSync(other)).toBe(true);
+      expect(fs.existsSync(owned)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a candidate outside the temporary root or redirected by a link', () => {
+    const dir = makeTmpDir();
+    const other = makeTmpDir();
+    const outside = path.join(other, 'camoufox-outside');
+    const link = path.join(dir, 'camoufox-link');
+    try {
+      fs.mkdirSync(outside);
+      fs.symlinkSync(outside, link, 'junction');
+      const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 0, ownedPaths: [outside, link] });
+      expect(result.removed).toBe(0);
+      expect(fs.existsSync(outside)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
   it('removes old playwright_firefoxdev_profile- directories', () => {
     const dir = makeTmpDir();
     const profileDir = path.join(dir, 'playwright_firefoxdev_profile-abc123');
@@ -126,7 +158,7 @@ describe('cleanupStaleFirefoxProfiles', () => {
     const oldTime = new Date(Date.now() - 5 * 60 * 1000);
     fs.utimesSync(profileDir, oldTime, oldTime);
 
-    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000, ownedPaths: [profileDir] });
     expect(result.removed).toBe(1);
     expect(result.bytes).toBeGreaterThan(0);
     expect(fs.existsSync(profileDir)).toBe(false);
@@ -141,23 +173,22 @@ describe('cleanupStaleFirefoxProfiles', () => {
     const oldTime = new Date(Date.now() - 5 * 60 * 1000);
     fs.utimesSync(profileDir, oldTime, oldTime);
 
-    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, protectedPaths: [profileDir] });
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, protectedPaths: [profileDir], ownedPaths: [profileDir] });
     expect(result.removed).toBe(0);
     expect(result.skipped).toBe(1);
     expect(fs.existsSync(profileDir)).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  it('skips recent profile directories', () => {
+  it('removes completed owned profiles even when their timestamps are recent', () => {
     const dir = makeTmpDir();
     const profileDir = path.join(dir, 'playwright_firefoxdev_profile-recent');
     fs.mkdirSync(profileDir);
     fs.writeFileSync(path.join(profileDir, 'data.db'), 'data');
     // mtime is now (recent)
 
-    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
-    expect(result.removed).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(fs.existsSync(profileDir)).toBe(true);
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000, ownedPaths: [profileDir] });
+    expect(result.removed).toBe(1);
+    expect(fs.existsSync(profileDir)).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -169,7 +200,7 @@ describe('cleanupStaleFirefoxProfiles', () => {
     const oldTime = new Date(Date.now() - 5 * 60 * 1000);
     fs.utimesSync(camoDir, oldTime, oldTime);
 
-    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000, ownedPaths: [camoDir] });
     expect(result.removed).toBe(1);
     expect(fs.existsSync(camoDir)).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -186,7 +217,7 @@ describe('cleanupStaleFirefoxProfiles', () => {
     const oldTime = new Date(Date.now() - 5 * 60 * 1000);
     fs.utimesSync(profileDir, oldTime, oldTime);
 
-    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000 });
+    const result = cleanupStaleFirefoxProfiles({ tmpDir: dir, minAgeMs: 2 * 60 * 1000, ownedPaths: [profileDir] });
     expect(result.removed).toBe(1);
     expect(result.bytes).toBe(5100);
     fs.rmSync(dir, { recursive: true, force: true });

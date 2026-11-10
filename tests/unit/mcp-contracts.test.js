@@ -88,8 +88,37 @@ afterEach(() => {
 
 // --- Schema sanity ----------------------------------------------------------
 describe('TOOL_DEFS', () => {
-  test('exposes exactly 11 tools', () => {
-    expect(TOOL_DEFS).toHaveLength(11);
+  test('exposes exactly 31 tools', () => {
+    expect(TOOL_DEFS).toHaveLength(31);
+  });
+
+  test('click accepts coordinates and semantic preconditions', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_click').inputSchema;
+    expect(schema.required).toEqual(['tabId']);
+    expect(schema.properties.coordinates.required).toEqual(['x', 'y']);
+    expect(schema.properties.expected_role.type).toBe('string');
+    expect(schema.properties.expected_accessible_name.type).toBe('string');
+  });
+
+  test('snapshot exposes an optional annotateScreenshot boolean', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_snapshot').inputSchema;
+    expect(schema.properties.annotateScreenshot.type).toBe('boolean');
+  });
+
+  test('upload requires tabId + path and accepts a string or an array of paths', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_upload').inputSchema;
+    expect(schema.required).toEqual(['tabId', 'path']);
+    expect(schema.properties.path.anyOf).toEqual([
+      { type: 'string' },
+      { type: 'array', items: { type: 'string' }, minItems: 1 },
+    ]);
+    expect(Object.keys(schema.properties)).toEqual(['tabId', 'path', 'ref', 'selector', 'timeout', 'userId', 'sessionKey']);
+  });
+
+  test('screenshot exposes an optional fullPage boolean', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_screenshot').inputSchema;
+    expect(schema.properties.fullPage.type).toBe('boolean');
+    expect(schema.required).toEqual(['tabId']);
   });
 
   test('every def has a unique name and a valid JSON-Schema object', () => {
@@ -112,10 +141,37 @@ describe('buildRequest', () => {
     ['camofox_type', { tabId: 't1', text: 'hi', pressEnter: true }, { method: 'POST', path: '/tabs/t1/type', auth: 'accessKey', kind: 'json' }],
     ['camofox_navigate', { tabId: 't1', url: 'https://y.com' }, { method: 'POST', path: '/tabs/t1/navigate', auth: 'accessKey', kind: 'json' }],
     ['camofox_scroll', { tabId: 't1', direction: 'down', amount: 200 }, { method: 'POST', path: '/tabs/t1/scroll', auth: 'accessKey', kind: 'json' }],
+    ['camofox_upload', { tabId: 't1', path: '/uploads/a.pdf', ref: 'e3' }, { method: 'POST', path: '/tabs/t1/upload', auth: 'accessKey', kind: 'json' }],
     ['camofox_screenshot', { tabId: 't1' }, { method: 'GET', path: '/tabs/t1/screenshot?userId=u1', auth: 'accessKey', kind: 'image' }],
+    ['camofox_screenshot', { tabId: 't1', fullPage: true }, { method: 'GET', path: '/tabs/t1/screenshot?userId=u1&fullPage=true', auth: 'accessKey', kind: 'image' }],
+    ['camofox_screenshot', { tabId: 't1', fullPage: false }, { method: 'GET', path: '/tabs/t1/screenshot?userId=u1', auth: 'accessKey', kind: 'image' }],
     ['camofox_close_tab', { tabId: 't1' }, { method: 'DELETE', path: '/tabs/t1?userId=u1', auth: 'accessKey', kind: 'json' }],
     ['camofox_evaluate', { tabId: 't1', expression: '1+1' }, { method: 'POST', path: '/tabs/t1/evaluate', auth: 'accessKey', kind: 'json' }],
     ['camofox_list_tabs', {}, { method: 'GET', path: '/tabs?userId=u1', auth: 'accessKey', kind: 'json' }],
+    ['camofox_activate', { tabId: 't1' }, { method: 'POST', path: '/tabs/t1/activate', auth: 'accessKey', kind: 'json' }],
+    ['camofox_ax', { tabId: 't1' }, { method: 'GET', path: '/tabs/t1/ax?userId=u1', auth: 'accessKey', kind: 'json' }],
+    ['camofox_actionables', { tabId: 't1' }, { method: 'GET', path: '/tabs/t1/actionables?userId=u1', auth: 'accessKey', kind: 'json' }],
+    ['camofox_actionables', { tabId: 't1', limit: 50 }, { method: 'GET', path: '/tabs/t1/actionables?userId=u1&limit=50', auth: 'accessKey', kind: 'json' }],
+    ['camofox_table_rows', { tabId: 't1', tableId: 'table-0' }, { method: 'GET', path: '/tabs/t1/tables/table-0/rows?userId=u1', auth: 'accessKey', kind: 'json' }],
+    ['camofox_table_rows', { tabId: 't1', tableId: 'table-0', offset: 20, limit: 10 }, { method: 'GET', path: '/tabs/t1/tables/table-0/rows?userId=u1&offset=20&limit=10', auth: 'accessKey', kind: 'json' }],
+    ['camofox_mouse_wheel', { tabId: 't1', ref: 'e1', deltaY: 300 }, { method: 'POST', path: '/tabs/t1/mouse-wheel', auth: 'accessKey', kind: 'json' }],
+    ['camofox_drag', { tabId: 't1', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }, { method: 'POST', path: '/tabs/t1/drag', auth: 'accessKey', kind: 'json' }],
+    ['camofox_init_script', { tabId: 't1', script: 'window.x=1' }, { method: 'POST', path: '/tabs/t1/init-script', auth: 'accessKey', kind: 'json' }],
+    ['camofox_export_storage_state', {}, { method: 'GET', path: '/sessions/u1/storage_state', auth: 'accessKey', kind: 'json' }],
+    ['camofox_import_local_storage', { origins: [{ origin: 'https://x.com', localStorage: [{ name: 'a', value: 'b' }] }] }, { method: 'POST', path: '/sessions/u1/local-storage', auth: 'accessKey', kind: 'json' }],
+    ['camofox_back', { tabId: 't1' }, { method: 'POST', path: '/tabs/t1/back', auth: 'accessKey', kind: 'json' }],
+    ['camofox_forward', { tabId: 't1' }, { method: 'POST', path: '/tabs/t1/forward', auth: 'accessKey', kind: 'json' }],
+    ['camofox_refresh', { tabId: 't1' }, { method: 'POST', path: '/tabs/t1/refresh', auth: 'accessKey', kind: 'json' }],
+    ['camofox_press', { tabId: 't1', key: 'Enter' }, { method: 'POST', path: '/tabs/t1/press', auth: 'accessKey', kind: 'json' }],
+    ['camofox_select', { tabId: 't1', ref: 'e1', option: 'US' }, { method: 'POST', path: '/tabs/t1/select', auth: 'accessKey', kind: 'json' }],
+    ['camofox_viewport', { tabId: 't1', width: 800, height: 600 }, { method: 'POST', path: '/tabs/t1/viewport', auth: 'accessKey', kind: 'json' }],
+    ['camofox_wait', { tabId: 't1', timeout: 5000 }, { method: 'POST', path: '/tabs/t1/wait', auth: 'accessKey', kind: 'json' }],
+    ['camofox_extract', { tabId: 't1', schema: { type: 'object' } }, { method: 'POST', path: '/tabs/t1/extract', auth: 'accessKey', kind: 'json' }],
+    ['camofox_links', { tabId: 't1' }, { method: 'GET', path: '/tabs/t1/links?userId=u1', auth: 'accessKey', kind: 'json' }],
+    ['camofox_links', { tabId: 't1', limit: 10, offset: 20 }, { method: 'GET', path: '/tabs/t1/links?userId=u1&limit=10&offset=20', auth: 'accessKey', kind: 'json' }],
+    ['camofox_images', { tabId: 't1' }, { method: 'GET', path: '/tabs/t1/images?userId=u1', auth: 'accessKey', kind: 'json' }],
+    ['camofox_images', { tabId: 't1', includeData: true, maxBytes: 1000, limit: 5 }, { method: 'GET', path: '/tabs/t1/images?userId=u1&limit=5&includeData=true&maxBytes=1000', auth: 'accessKey', kind: 'json' }],
+    ['camofox_snapshot', { tabId: 't1', annotateScreenshot: true }, { method: 'GET', path: '/tabs/t1/snapshot?userId=u1&includeScreenshot=true&annotateScreenshot=true', auth: 'accessKey', kind: 'snapshot' }],
   ])('%s → %s %s (auth=%s)', (name, args, expected) => {
     const spec = buildRequest(name, args, CTX);
     expect(spec.method).toBe(expected.method);
@@ -135,9 +191,34 @@ describe('buildRequest', () => {
     expect(spec.body.tabId).toBeUndefined();
   });
 
+  test('upload forwards path/ref/selector/timeout + userId in body', () => {
+    const spec = buildRequest(
+      'camofox_upload',
+      { tabId: 't1', path: ['/uploads/a.pdf', '/uploads/b.png'], selector: 'button.attach', timeout: 5000 },
+      CTX
+    );
+    expect(spec.body).toEqual({
+      path: ['/uploads/a.pdf', '/uploads/b.png'],
+      selector: 'button.attach',
+      timeout: 5000,
+      userId: 'u1',
+    });
+    expect(spec.body.tabId).toBeUndefined();
+  });
+
+  test('upload body userId comes from the session context, not tool args', () => {
+    const spec = buildRequest('camofox_upload', { tabId: 't1', path: '/uploads/a.pdf', userId: 'other' }, CTX);
+    expect(spec.body.userId).toBe('u1');
+  });
+
   test('evaluate body is exactly { userId, expression }', () => {
     const spec = buildRequest('camofox_evaluate', { tabId: 't1', expression: 'document.title' }, CTX);
     expect(spec.body).toEqual({ userId: 'u1', expression: 'document.title' });
+  });
+
+  test('evaluate forwards timeoutMs when given', () => {
+    const spec = buildRequest('camofox_evaluate', { tabId: 't1', expression: '1', timeoutMs: 60000 }, CTX);
+    expect(spec.body).toEqual({ userId: 'u1', expression: '1', timeoutMs: 60000 });
   });
 
   test('import_cookies is NOT synchronous (must use buildCookieRequest)', () => {
@@ -236,6 +317,20 @@ describe('fetchSpec (mock REST)', () => {
     expect(out.data).toBe(pngBytes.toString('base64'));
   });
 
+  test('full-page screenshot sends fullPage=true and decodes the image', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    let seen;
+    installFetch([
+      {
+        match: (r) => r.method === 'GET' && r.path === '/tabs/t1/screenshot?userId=u1&fullPage=true',
+        respond: (r) => { seen = r; return { headers: { 'content-type': 'image/png' }, buffer: pngBytes }; },
+      },
+    ]);
+    const out = await fetchSpec(BASE, buildRequest('camofox_screenshot', { tabId: 't1', fullPage: true }, CTX), cfg());
+    expect(seen.headers.Authorization).toBe('Bearer ACCESS-KEY');
+    expect(out).toEqual({ type: 'image', data: pngBytes.toString('base64'), mimeType: 'image/png' });
+  });
+
   test('screenshot that returns JSON (error with 200) is not base64-encoded', async () => {
     installFetch([
       { match: () => true, respond: () => ({ headers: { 'content-type': 'application/json' }, body: { error: 'tab closed' } }) },
@@ -246,6 +341,71 @@ describe('fetchSpec (mock REST)', () => {
 
 // --- runTool end-to-end: a few representative tools -------------------------
 describe('runTool (end-to-end)', () => {
+  test('a per-call userId and sessionKey replace the host defaults and stay out of the body', async () => {
+    let seen;
+    installFetch([{ match: (r) => r.method === 'POST' && r.path === '/tabs/t1/evaluate', respond: (r) => { seen = r; return { body: { ok: true } }; } }]);
+    const allowed = cfg({ allowedUserIds: ['shared'] });
+    await runTool('camofox_evaluate', { tabId: 't1', expression: '1', userId: 'shared' }, CTX, BASE, allowed);
+    expect(JSON.parse(seen.body)).toEqual({ userId: 'shared', expression: '1' });
+    installFetch([{ match: (r) => r.method === 'POST' && r.path === '/tabs', respond: (r) => { seen = r; return { body: { tabId: 't2' } }; } }]);
+    await runTool('camofox_create_tab', { url: 'https://x.com', userId: 'shared', sessionKey: 's2' }, CTX, BASE, allowed);
+    expect(JSON.parse(seen.body)).toEqual({ url: 'https://x.com', userId: 'shared', sessionKey: 's2' });
+    expect(TOOL_DEFS.every((t) => t.inputSchema.properties.userId && !t.inputSchema.required.includes('userId'))).toBe(true);
+  });
+
+  test('a long evaluate starts a server job and waits for it in short polls', async () => {
+    const seen = [];
+    let polls = 0;
+    installFetch([
+      { match: (r) => r.method === 'POST' && r.path === '/tabs/t1/evaluate', respond: (r) => { seen.push(JSON.parse(r.body)); return { status: 202, body: { jobId: 'j1', state: 'running' } }; } },
+      { match: (r) => r.method === 'GET' && r.path === '/tabs/t1/evaluate/j1?userId=u1&waitMs=60000',
+        respond: () => (++polls < 2 ? { body: { jobId: 'j1', state: 'running' } } : { body: { ok: true, jobId: 'j1', state: 'done', result: 7 } }) },
+    ]);
+    const { payload } = await runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 600000 }, CTX, BASE, cfg());
+    expect(seen[0]).toEqual({ userId: 'u1', expression: 'x', timeoutMs: 600000, async: true });
+    expect(payload.result).toBe(7);
+    expect(polls).toBe(2);
+  });
+
+  test('a long evaluate that times out on the server throws 504 evaluate_timeout', async () => {
+    installFetch([
+      { match: (r) => r.method === 'POST', respond: () => ({ status: 202, body: { jobId: 'j1', state: 'running' } }) },
+      { match: (r) => r.method === 'GET', respond: () => ({ body: { jobId: 'j1', state: 'timeout', code: 'evaluate_timeout', tabKept: true } }) },
+    ]);
+    await expect(runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg()))
+      .rejects.toThrow(/^504: .*evaluate_timeout/);
+  });
+
+  test('a job still running past timeoutMs plus grace stops waiting with 504', async () => {
+    let now = 1_000_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      installFetch([
+        { match: (r) => r.method === 'POST', respond: () => ({ status: 202, body: { jobId: 'j1', state: 'running' } }) },
+        { match: (r) => r.method === 'GET', respond: () => { now += 60000; return { body: { jobId: 'j1', state: 'running' } }; } },
+      ]);
+      await expect(runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg()))
+        .rejects.toThrow(/^504: .*evaluate_timeout.*past its deadline/);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test('a server without jobs answers the start request directly', async () => {
+    installFetch([{ match: (r) => r.method === 'POST', respond: () => ({ body: { ok: true, result: 3 } }) }]);
+    const { payload } = await runTool('camofox_evaluate', { tabId: 't1', expression: 'x', timeoutMs: 60000 }, CTX, BASE, cfg());
+    expect(payload).toEqual({ ok: true, result: 3 });
+  });
+
+  test('a per-call userId outside CAMOFOX_MCP_USER_IDS is refused before any request', async () => {
+    installFetch([]);
+    await expect(runTool('camofox_evaluate', { tabId: 't1', expression: '1', userId: 'shared' }, CTX, BASE, cfg()))
+      .rejects.toThrow(/not in CAMOFOX_MCP_USER_IDS/);
+    installFetch([{ match: () => true, respond: () => ({ body: { ok: true } }) }]);
+    await expect(runTool('camofox_evaluate', { tabId: 't1', expression: '1', userId: 'u1' }, CTX, BASE, cfg())).resolves.toBeTruthy();
+  });
+
   test('create_tab round-trips through the real REST shape', async () => {
     installFetch([{ match: (r) => r.method === 'POST' && r.path === '/tabs', respond: () => ({ body: { tabId: 't9', url: 'https://x.com' } }) }]);
     const { spec, payload } = await runTool('camofox_create_tab', { url: 'https://x.com' }, CTX, BASE, cfg());
@@ -262,6 +422,29 @@ describe('runTool (end-to-end)', () => {
     const content = adaptResponse(spec, payload);
     expect(content).toHaveLength(2);
     expect(content[1]).toMatchObject({ type: 'image', data: 'IMG' });
+  });
+
+  test('upload POSTs the REST upload body with accessKey bearer', async () => {
+    let seen;
+    installFetch([
+      {
+        match: (r) => r.method === 'POST' && r.path === '/tabs/t1/upload',
+        respond: (r) => { seen = r; return { body: { ok: true, attached: ['/uploads/a.pdf'], via: 'input' } }; },
+      },
+    ]);
+    const { spec, payload } = await runTool('camofox_upload', { tabId: 't1', path: '/uploads/a.pdf', ref: 'e3' }, CTX, BASE, cfg());
+    expect(seen.headers.Authorization).toBe('Bearer ACCESS-KEY');
+    expect(JSON.parse(seen.body)).toEqual({ path: '/uploads/a.pdf', ref: 'e3', userId: 'u1' });
+    expect(JSON.parse(adaptResponse(spec, payload)[0].text)).toEqual({ ok: true, attached: ['/uploads/a.pdf'], via: 'input' });
+  });
+
+  test('upload surfaces REST validation errors', async () => {
+    installFetch([
+      { match: (r) => r.path === '/tabs/t1/upload', respond: () => ({ status: 400, body: { error: 'path resolves outside the upload directory' } }) },
+    ]);
+    await expect(
+      runTool('camofox_upload', { tabId: 't1', path: '/etc/passwd' }, CTX, BASE, cfg())
+    ).rejects.toThrow(/400: .*outside the upload directory/);
   });
 });
 

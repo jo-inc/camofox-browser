@@ -35,25 +35,27 @@ describe('launch compatibility source contract', () => {
   });
 
   test('does not configure a fixed default browser context viewport', () => {
-    const googleProbeOptions = sourceBetween(
-      'context = await candidateBrowser.newContext({',
-      'const page = await context.newPage();'
-    );
     const sessionContextOptions = sourceBetween(
       'const contextOptions = {',
       'let sessionProxy = null;'
     );
 
-    expect(googleProbeOptions).toContain('viewport: null');
     expect(sessionContextOptions).toContain('viewport: null');
-    expect(`${googleProbeOptions}\n${sessionContextOptions}`).not.toMatch(/viewport\s*:\s*\{\s*width\s*:/);
+    expect(sessionContextOptions).not.toMatch(/viewport\s*:\s*\{\s*width\s*:/);
+  });
+
+  test('does not gate browser launch on a Google probe', () => {
+    const launchBrowser = sourceBetween(
+      'async function launchBrowserInstance()',
+      'async function ensureBrowser()'
+    );
+
+    expect(launchBrowser).not.toContain('probeGoogleSearch');
+    expect(launchBrowser).not.toContain('google.com');
+    expect(serverSource).not.toContain('async function probeGoogleSearch');
   });
 
   test('does not fake a direct-session location and applies an explicit identity only when configured', () => {
-    const probeOptions = sourceBetween(
-      'async function probeGoogleSearch(candidateBrowser) {',
-      'const page = await context.newPage();'
-    );
     const sessionContextOptions = sourceBetween(
       'const contextOptions = {',
       'let sessionProxy = null;'
@@ -63,9 +65,9 @@ describe('launch compatibility source contract', () => {
       'async function ensureBrowser()'
     );
 
-    expect(`${probeOptions}\n${sessionContextOptions}`).toContain('contextIdentityOptions({');
-    expect(`${probeOptions}\n${sessionContextOptions}`).not.toContain('geolocation:');
-    expect(`${probeOptions}\n${sessionContextOptions}`).not.toContain('37.7749');
+    expect(sessionContextOptions).toContain('contextIdentityOptions({');
+    expect(sessionContextOptions).not.toContain('geolocation:');
+    expect(sessionContextOptions).not.toContain('37.7749');
     expect(launchBrowser).toContain('locale: launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity })');
   });
 
@@ -100,11 +102,11 @@ describe('launch compatibility source contract', () => {
 
   test('health probe context also uses a null viewport', () => {
     const healthProbeOptions = sourceBetween(
-      'testContext = await browser.newContext(',
-      'const page = await testContext.newPage();'
+      'const healthProbe = createHealthProbe({',
+      'function getUserNavHealth(userId)'
     );
 
-    expect(healthProbeOptions).toContain('viewport: null');
+    expect(healthProbeOptions).toContain('browser.newContext({ viewport: null })');
   });
 
   test('uses the configured navigation timeout without racing its request deadline', () => {
