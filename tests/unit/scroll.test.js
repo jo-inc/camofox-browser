@@ -29,7 +29,7 @@ describe('scrollDeltas', () => {
 describe('scrollPage', () => {
   test('a wheel that settles is the whole scroll', async () => {
     const page = fakePage({ wheel: () => Promise.resolve() });
-    await expect(scrollPage(page, 'down', 300)).resolves.toBe('wheel');
+    await expect(scrollPage(page, 'down', 300, { wheelTimeoutMs: 1000 })).resolves.toBe('wheel');
     expect(page.mouse.wheel).toHaveBeenCalledWith(0, 300);
     expect(page.evaluate).not.toHaveBeenCalled();
   });
@@ -53,7 +53,7 @@ describe('scrollPage', () => {
 
   test('a wheel that fails quickly is an error, not a fallback', async () => {
     const page = fakePage({ wheel: () => Promise.reject(new Error('Target closed')) });
-    await expect(scrollPage(page, 'down', 100)).rejects.toThrow('Target closed');
+    await expect(scrollPage(page, 'down', 100, { wheelTimeoutMs: 1000 })).rejects.toThrow('Target closed');
     expect(page.evaluate).not.toHaveBeenCalled();
   });
 });

@@ -667,7 +667,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `SESSION_TIMEOUT_MS` | Session inactivity timeout (0 = never) | `600000` (10min) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle (0 = never) | `300000` (5min) |
 | `CAMOFOX_INTERACTIVE` | Interactive browser mode: `desktop` opens a real local Camoufox window; `off` keeps normal headless behavior | `off` |
-| `CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS` | How long `POST /tabs/:tabId/scroll` waits for the mouse wheel to settle before scrolling the window with `scrollBy` instead | `2500` |
+| `CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS` | How long `POST /tabs/:tabId/scroll` and the `scroll` action of `/act` wait for the mouse wheel to settle before scrolling the window with `scrollBy` instead | `2500` |
 | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
 | `CAMOFOX_SHUTDOWN_TIMEOUT_MS` | Maximum time graceful shutdown waits for persistence checkpoints and browser/session cleanup before forcing exit. Must be a positive integer. | `45000` (45s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
