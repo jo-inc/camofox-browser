@@ -79,6 +79,20 @@ describe('evaluate expression syntax errors', () => {
     ['unterminated string',     "page.evaluate: '' literal not terminated before end of script"],
     ['unterminated regex',      'page.evaluate: unterminated regular expression literal'],
     ['const redeclaration',     'page.evaluate: redeclaration of const a'],
+    ['unclosed block',          'page.evaluate: missing } in compound statement'],
+    ['unclosed parenthesis',    'page.evaluate: missing ) in parenthetical'],
+    ['unclosed array',          'page.evaluate: missing ] after element list'],
+    ['dangling member access',  'page.evaluate: missing name after . operator'],
+    ['const without value',     'page.evaluate: missing = in const declaration'],
+    ['bare hex prefix',         "page.evaluate: missing hexadecimal digits after '0x'"],
+    ['unnamed class statement', 'page.evaluate: class statement requires a name'],
+    ['let as a binding name',   "page.evaluate: a lexical declaration can't define a 'let' binding"],
+    ['empty object member',     "page.evaluate: expected property name, got ','"],
+    ['assignment to a literal', 'page.evaluate: invalid assignment left-hand side'],
+    ['stray character',         'page.evaluate: illegal character U+0040'],
+    ['bare hash',               "page.evaluate: '#' not followed by identifier"],
+    ['yield outside generator', 'page.evaluate: yield expression is only valid in generators'],
+    ['import in expression',    'page.evaluate: import declarations may only appear at top level of a module'],
   ];
 
   test.each(syntaxErrors)('%s is a 400 invalid_expression', (_label, message) => {
@@ -105,6 +119,8 @@ describe('evaluate expression syntax errors', () => {
   const runtimeErrors = [
     ['ReferenceError', 'page.evaluate: someUndefinedGlobal is not defined'],
     ['TypeError',      'page.evaluate: can\'t access property "foo" of null'],
+    ['JSON.parse of bad data', "page.evaluate: JSON.parse: expected property name or '}' at line 1 column 2 of the JSON data"],
+    ['RegExp built from data', 'page.evaluate: unterminated parenthetical'],
   ];
 
   test.each(runtimeErrors)('%s is not reclassified as invalid_expression', (_label, message) => {
