@@ -43,9 +43,12 @@ describe('Tab create cleanup', () => {
       const { tabId: sentinel } = await client.createTab(`${testSiteUrl}/pageA`);
 
       // The route deadline (30 s by default) fires before the navigation's own
-      // 30 s timeout, which starts later; the message names the deadline.
+      // 30 s timeout. The route can't tell a slow-but-finishing cold build from a
+      // stuck navigation, so after its one bounded extension it returns a
+      // retriable 503 (tab_create_warming) rather than a terminal 500 — see the
+      // #15183 cold-start contract. The point of THIS test is that no tab leaks.
       await expect(createTabRequest(client, `${testSiteUrl}/slow-navigation`, { timeout: 45000 }))
-        .rejects.toMatchObject({ status: 500, message: expect.stringContaining('tab create timed out') });
+        .rejects.toMatchObject({ status: 503, data: { code: 'tab_create_warming', retryable: true } });
 
       expect(await listTabIds(client)).toEqual([sentinel]);
 
