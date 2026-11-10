@@ -158,26 +158,21 @@
     "typescript": "^5.7.0"
   },
   "overrides": {
-    "@jest/reporters": {
-      "glob": "13.0.6"
-    },
     "babel-plugin-istanbul": {
       "test-exclude": "8.0.0"
     },
-    "jest-config": {
-      "glob": "13.0.6"
-    },
-    "jest-runtime": {
-      "glob": "13.0.6"
-    },
-    "swagger-jsdoc": {
-      "glob": "13.0.6"
-    },
-    "qs": "6.16.0",
-    "fast-uri": "3.1.8",
+    "qs": "6.16.1",
+    "fast-uri": "3.1.9",
     "ip-address": "10.7.4",
     "hono": "4.13.13",
-    "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+    "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk",
+    "proxy-addr": "2.0.8",
+    "body-parser": "2.4.0",
+    "undici": "8.12.4",
+    "zod": "4.6.7",
+    "glob": "14.0.4",
+    "minimatch": "11.0.5",
+    "@hono/node-server": "2.1.6"
   },
   "bin": {
     "camofox-browser": "./bin/camofox-browser.js",
