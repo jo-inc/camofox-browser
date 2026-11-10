@@ -324,6 +324,7 @@ export function register(app, ctx) {
 | `auth` | `function` | `auth()` returns Express middleware enforcing API key / loopback |
 | `ensureBrowser` | `async function` | Launch browser if not running, return browser instance |
 | `getSession` | `async function` | `getSession(userId)` -- get or create a session |
+| `findTab` | `function` | `findTab(session, tabId)` -- look up a live tab; returns `{ tabState, listItemId, group }` or `null` |
 | `destroySession` | `async function` | `destroySession(userId, { reason })` -- tear down and await a session close |
 | `withUserLimit` | `async function` | `withUserLimit(userId, fn)` -- run `fn` within per-user concurrency limit |
 | `safePageClose` | `async function` | `safePageClose(page)` -- close a page with timeout guard |
@@ -490,11 +491,12 @@ Plugin sources can be:
 
 ### Default Plugins
 
-Three plugins ship by default:
+Four plugins ship by default:
 
 - **youtube** -- YouTube transcript extraction (enabled by default)
 - **persistence** -- Per-user session state persistence to `~/.camofox/profiles/` (enabled by default)
 - **vnc** -- Interactive browser login via noVNC (disabled by default, requires `ENABLE_VNC=1`)
+- **network-capture** -- Browser-level request/response capture on a tab (disabled by default, requires `ENABLE_NETWORK_CAPTURE=1`)
 
 The `youtube` plugin ships as a default plugin -- it's listed in `camofox.config.json` and included in the base Docker image with its deps pre-installed. The base image runs `scripts/install-plugin-deps.sh` which reads the config and installs `apt.txt` packages + `post-install.sh` hooks for listed plugins.
 

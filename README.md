@@ -600,6 +600,15 @@ curl -X POST http://localhost:9377/youtube/transcript \
 
 Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser needed). Falls back to a browser-based intercept method if yt-dlp is not installed -- this is slower and less reliable due to YouTube ad pre-rolls.
 
+### Network Capture (opt-in plugin)
+
+Disabled by default. Enable with `ENABLE_NETWORK_CAPTURE=1` or `"network-capture": { "enabled": true }` in `camofox.config.json`. See [plugins/network-capture](plugins/network-capture/).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/tabs/:id/capture-network` | Capture responses (URL, status, body) matching `urlPattern` for `durationMs` |
+| `POST` | `/tabs/:id/capture-requests` | Capture outgoing requests (URL, method, post data, headers) matching `urlPattern` for `durationMs` |
+
 ### Server
 
 | Method | Endpoint | Description |
@@ -694,6 +703,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `VNC_BIND` | noVNC listen address; set `0.0.0.0` to reach noVNC through a published container port | `127.0.0.1` |
 | `VNC_RFB_BIND` | Native VNC listen address; non-loopback requires `VNC_PASSWORD` and does not change with `VNC_BIND` | `127.0.0.1` |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
+| `ENABLE_NETWORK_CAPTURE` | Enable the network-capture plugin (`1`) | - |
 
 ## Interactive desktop browser
 
