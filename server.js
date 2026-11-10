@@ -15,6 +15,7 @@ import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins, typeEventPayload } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { createStorageStateExportHandler } from './lib/storage-state.js';
+import { MIN_USABLE_POPUP, POPUP_RESIZE_TARGET, shouldResizePopup } from './lib/popup-sizing.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import { extractPageStructure, extractTableRows, attachStructureRefs } from './lib/page-structure.js';
 import {
@@ -644,6 +645,16 @@ let browser = null;
 // deviceScaleFactor features are only safe to advertise & accept while this is
 // true; otherwise Camoufox rejects the protocol calls with a raw error.
 let viewportShimInstalled = false;
+// True only when the browser was launched HEADED (virtual display / VNC, or a
+// real desktop window). Used to decide whether a window.open() popup that came
+// up with a tiny native window should be nudged to a usable size. Headless
+// popups are never resized -- they have no native chrome to be cramped by, and
+// resizing them would only add a fingerprint tell. Set in the launch path right
+// next to viewportShimInstalled.
+let browserLaunchedHeaded = false;
+// Popup sizing policy (constants + pure predicate) lives in lib/popup-sizing.js
+// so it can be unit-tested in isolation: MIN_USABLE_POPUP, POPUP_RESIZE_TARGET,
+// shouldResizePopup.
 let _lastBrowserPid = null; // Track PID independently for force-kill after close
 let _browserClosePromise = null; // Shared promise for concurrent close serialization
 let _lastBrowserRestartAt = 0; // Timestamp of last browser relaunch (for stale tab detection)
@@ -1413,6 +1424,12 @@ async function launchBrowserInstance() {
       // isMobile/screenSize fields are stripped before Camoufox 152 sees them.
       // Only when this succeeds do we advertise/accept viewport features.
       viewportShimInstalled = installViewportTransportShim(browser, log);
+      // Record whether this launch is headed. headless was set above to
+      // (useVirtualDisplay ? false : !useDesktopWindow), so the browser is
+      // headed exactly when a virtual display (Xvfb/VNC) or a desktop window is
+      // in use. attachPopupHandler consults this to decide if a cramped popup
+      // should be nudged to a usable size.
+      browserLaunchedHeaded = useVirtualDisplay || useDesktopWindow;
       _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
@@ -2121,6 +2138,43 @@ function createTabState(page) {
 }
 
 /**
+ * Best-effort: measure a popup's current size and, if it came up implausibly
+ * small in headed mode, nudge it to a usable size so Google popup OAuth works.
+ *
+ * Stealth note: main browser contexts stay viewport:null (an anti-detection
+ * choice -- a fixed round viewport is a fingerprint tell). This only touches
+ * popups that are both headed AND measurably too small; usable-size popups are
+ * left on their natural size. Fully wrapped so any failure is swallowed and
+ * never disrupts popup registration or the parent flow.
+ */
+async function maybeResizeSmallPopup(popupPage) {
+  try {
+    // With viewport:null, viewportSize() may return the real window size or
+    // null. Fall back to the in-page innerWidth/innerHeight when it's null.
+    let size = null;
+    try { size = popupPage.viewportSize(); } catch { size = null; }
+    if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) {
+      try {
+        size = await popupPage.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+      } catch { size = null; }
+    }
+    const width = size && Number.isFinite(size.width) ? size.width : NaN;
+    const height = size && Number.isFinite(size.height) ? size.height : NaN;
+    if (!shouldResizePopup({ headed: browserLaunchedHeaded, shimInstalled: viewportShimInstalled, width, height })) {
+      return;
+    }
+    log('info', 'nudging implausibly-small popup to usable size', {
+      fromWidth: width, fromHeight: height,
+      toWidth: POPUP_RESIZE_TARGET.width, toHeight: POPUP_RESIZE_TARGET.height,
+    });
+    await popupPage.setViewportSize({ width: POPUP_RESIZE_TARGET.width, height: POPUP_RESIZE_TARGET.height });
+  } catch (err) {
+    // Never let a resize failure break popup tracking.
+    log('debug', 'popup resize skipped (best-effort)', { error: err?.message });
+  }
+}
+
+/**
  * Attach a popup handler to a managed page so that popups (target=_blank,
  * window.open) become tracked tabs rather than orphaned pages. (JO-2456)
  *
@@ -2142,6 +2196,10 @@ function attachPopupHandler(page, userId, sessionKey) {
     refreshActiveTabsGauge();
     log('info', 'popup registered as managed tab', { userId: key, tabId: popupTabId, url: safePageUrl(popupPage) });
     pluginEvents.emit('tab:created', { userId: key, tabId: popupTabId, page: popupPage, url: safePageUrl(popupPage) });
+    // Best-effort, post-registration: nudge an implausibly-small headed popup to
+    // a usable size so Google ux_mode=popup OAuth is operable. Fire-and-forget so
+    // it never delays tab readiness; failures are swallowed inside the helper.
+    maybeResizeSmallPopup(popupPage);
     // Recursively handle popups from the popup
     attachPopupHandler(popupPage, userId, sessionKey);
   });
