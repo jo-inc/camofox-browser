@@ -640,6 +640,24 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The browser is still cold-starting (coalesced context build warming up) and the route deadline fired before it finished. Retriable — honor the Retry-After header. Also returned for memory-cap and Fly admission bounces.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait before retrying (present for the warming-up case)."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       },

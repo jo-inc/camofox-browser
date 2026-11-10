@@ -34,7 +34,9 @@ describe('timed-out tab operations', () => {
 
     expect(source).toContain('function tabCreateRequestTimeoutMs()');
     expect(source).toContain('return Math.max(requestTimeoutMs(), (NEW_PAGE_TIMEOUT_MS * 2) + 5000);');
-    expect(createRoute).toContain("})(), tabCreateRequestTimeoutMs(), 'tab create');");
+    // The build work runs under the base tab-create deadline (it may be extended
+    // once for an in-flight cold build; see tabCreateWarming.test.js).
+    expect(createRoute).toContain("withTimeout(tabCreateWork, tabCreateRequestTimeoutMs(), 'tab create')");
   });
 
   test('returns a stable recoverable error after timeout cleanup', () => {

@@ -782,6 +782,28 @@ function tabCreateRequestTimeoutMs() {
   return Math.max(requestTimeoutMs(), (NEW_PAGE_TIMEOUT_MS * 2) + 5000);
 }
 
+// One-time extra budget granted to the first POST /tabs after an idle shutdown
+// when a cold context build is still coalescing for this user. The base budget
+// (~30s by default) covers a quiet-host cold start (~8.2s) and a single heavy
+// storage-state restore, but two concurrent first-hits that coalesce onto one
+// build can push the restore to ~25-30s and overshoot the base deadline by a
+// hair even though the build finishes microseconds later. We grant one extra
+// budget on the order of the base (another ~30s) so that heavier restore lands
+// instead of returning a lying 500/503. Worst case the route waits ~60s total;
+// if even that is exceeded (a true pile-up) we fall back to a retriable 503.
+const TAB_CREATE_BUILD_EXTENSION_MS = 30000;
+
+// True only for the outer `withTimeout(..., 'tab create')` deadline firing — the
+// message shape produced by withTimeout() with the 'tab create' label. Inner
+// operation timeouts (new_page_timeout, 'context close', etc.) carry other
+// labels/codes and must NOT be treated as the route deadline.
+function isTabCreateDeadlineTimeout(err) {
+  return isTimeoutError(err) &&
+    typeof err?.message === 'string' &&
+    err.message.startsWith('tab create timed out after') &&
+    err.code !== 'new_page_timeout';
+}
+
 // The service cgroup's memory against its systemd MemoryHigh (else MemoryMax); null off cgroup v2.
 // Sitting near the cap is normal (cache fills it, swap absorbs anon); stalling there is what
 // makes new pages time out, so atCap also needs the kernel's memory pressure (PSI).
@@ -3459,6 +3481,20 @@ app.post('/pressure/cleanup', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       503:
+ *         description: >-
+ *           The browser is still cold-starting (coalesced context build warming up)
+ *           and the route deadline fired before it finished. Retriable — honor the
+ *           Retry-After header. Also returned for memory-cap and Fly admission bounces.
+ *         headers:
+ *           Retry-After:
+ *             schema:
+ *               type: integer
+ *             description: Seconds to wait before retrying (present for the warming-up case).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs', async (req, res) => {
   // The tab is registered before it navigates, and the route deadline can pass
@@ -3501,7 +3537,10 @@ app.post('/tabs', async (req, res) => {
     const mem = cgroupMemory();
     if (mem?.atCap) return memoryCapResponse(res, mem);
 
-    const result = await withTimeout((async () => {
+    // Keep a handle on the build work so the deadline can be extended once (see
+    // below) without starting a second, racing build.
+    const tabCreateKey = normalizeUserId(userId);
+    const tabCreateWork = (async () => {
       const existing = sessions.get(normalizeUserId(userId));
       if (trace && existing && !existing.tracePath) {
         throw Object.assign(
@@ -3603,7 +3642,38 @@ app.post('/tabs', async (req, res) => {
         httpStatus: tabState.lastNavigationHttpStatus,
         navigationOk: tabState.lastNavigationHttpStatus === null || tabState.lastNavigationHttpStatus < 400,
       };
-    })(), tabCreateRequestTimeoutMs(), 'tab create');
+    })();
+
+    let result;
+    try {
+      result = await withTimeout(tabCreateWork, tabCreateRequestTimeoutMs(), 'tab create');
+    } catch (deadlineErr) {
+      // PART B — bounded one-time deadline extension.
+      // The base deadline fired. If a cold CONTEXT BUILD is genuinely still in
+      // flight for this user (its entry is present in the sessionCreations
+      // coalescing map), the slow part is a heavy storage-state restore that is
+      // about to finish, not a stuck navigation. Give the SAME build one extra
+      // bounded budget to land instead of forcing a blind client retry.
+      //
+      // Race-safety: sessionCreations is a plain Map mutated only inside
+      // getSession()/coalesceInflight() on this single-threaded event loop. The
+      // entry is set synchronously before the build's first await and deleted in
+      // the factory's finally. Reading .has() here is an atomic snapshot between
+      // awaits — no interleaving can tear it. We extend by awaiting the existing
+      // tabCreateWork promise (never a new build), so coalescing is untouched and
+      // we cannot double-build. We extend at most ONCE; if no build is in flight
+      // (a genuinely stuck navigation), or the extended deadline is also
+      // exceeded, the error propagates to the catch below and Part A turns the
+      // tab-create deadline timeout into a retriable 503.
+      if (isTabCreateDeadlineTimeout(deadlineErr) && sessionCreations.has(tabCreateKey)) {
+        log('info', 'tab create deadline extended: cold build in flight', {
+          reqId: req.reqId, userId: tabCreateKey, extensionMs: TAB_CREATE_BUILD_EXTENSION_MS,
+        });
+        result = await withTimeout(tabCreateWork, TAB_CREATE_BUILD_EXTENSION_MS, 'tab create');
+      } else {
+        throw deadlineErr;
+      }
+    }
 
     res.json(result);
   } catch (err) {
@@ -3619,6 +3689,24 @@ app.post('/tabs', async (req, res) => {
     // memory_cap_reached.
     const mem = isTimeoutError(err) && err.code !== 'new_page_timeout' ? cgroupMemory() : null;
     if (mem?.nearCap) return memoryCapResponse(res, mem);
+    // PART A — the tab-create route deadline fired on a cold start that is still
+    // warming up (and, per Part B, already got its one extension). The build is
+    // coalesced and typically completes microseconds later, so a generic 500
+    // would be a lie: the work is succeeding. Return a retriable 503 that clients
+    // can detect by field, not prose. This sits AFTER the near-cap bounce so the
+    // memory-cap path still wins, and only matches the outer 'tab create'
+    // deadline timeout (never err.code === 'new_page_timeout'); the Fly 503
+    // fly-replay path below is keyed on err.statusCode === 503, which this
+    // timeout error does not carry, so that precedence is preserved too.
+    if (isTabCreateDeadlineTimeout(err)) {
+      res.set('Retry-After', '5');
+      return res.status(503).json({
+        error: 'Browser is warming up, retry shortly',
+        code: 'tab_create_warming',
+        retryable: true,
+        recovery: 'retry',
+      });
+    }
     // SSL certificate errors on initial navigation — non-retriable
     const isSslError = err.message && (
       err.message.includes('SEC_ERROR') ||
