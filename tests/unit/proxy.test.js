@@ -4,6 +4,7 @@ import {
   buildDecodoBackconnectUsername,
   buildProxyUrl,
   decodoProvider,
+  nodemavenProvider,
   genericBackconnectProvider,
   getProvider,
   registerProvider,
@@ -77,6 +78,50 @@ describe('decodoProvider', () => {
   });
 });
 
+describe('nodemavenProvider', () => {
+  test('builds sticky residential username with targeting', () => {
+    expect(nodemavenProvider.buildSessionUsername('acct_user', {
+      country: 'us',
+      state: 'California',
+      city: 'Los Angeles',
+      sessionId: 'browser-abc123',
+      sessionDurationMinutes: 10,
+    })).toBe('acct_user-country-us-region-california-city-los_angeles-sid-browserabc123-ttl-10m');
+  });
+
+  test('keeps the base username as given', () => {
+    expect(nodemavenProvider.buildSessionUsername(' Acct_User ', {
+      sessionId: 'ctx-1',
+    })).toBe('Acct_User-sid-ctx1');
+  });
+
+  test('writes whole hours as hours and clamps to a day', () => {
+    expect(nodemavenProvider.buildSessionUsername('u', { sessionId: 's', sessionDurationMinutes: 60 })).toBe('u-sid-s-ttl-1h');
+    expect(nodemavenProvider.buildSessionUsername('u', { sessionId: 's', sessionDurationMinutes: 90 })).toBe('u-sid-s-ttl-90m');
+    expect(nodemavenProvider.buildSessionUsername('u', { sessionId: 's', sessionDurationMinutes: 5000 })).toBe('u-sid-s-ttl-24h');
+    expect(nodemavenProvider.buildSessionUsername('u', { sessionId: 's', sessionDurationMinutes: 0 })).toBe('u-sid-s-ttl-1m');
+  });
+
+  test('sends no ttl without a session and no zip at all', () => {
+    expect(nodemavenProvider.buildSessionUsername('u', {
+      country: 'de',
+      zip: '10115',
+      sessionDurationMinutes: 10,
+    })).toBe('u-country-de');
+  });
+
+  test('returns empty string without a base username', () => {
+    expect(nodemavenProvider.buildSessionUsername('', { sessionId: 's' })).toBe('');
+  });
+
+  test('declares capabilities', () => {
+    expect(nodemavenProvider.canRotateSessions).toBe(true);
+    expect(nodemavenProvider.launchRetries).toBe(5);
+    expect(nodemavenProvider.launchTimeoutMs).toBe(120000);
+    expect(nodemavenProvider.name).toBe('nodemaven');
+  });
+});
+
 describe('genericBackconnectProvider', () => {
   test('passes through username with session suffix', () => {
     expect(genericBackconnectProvider.buildSessionUsername('myuser', {
@@ -108,6 +153,7 @@ describe('buildDecodoBackconnectUsername (legacy alias)', () => {
 describe('getProvider / registerProvider', () => {
   test('returns built-in providers', () => {
     expect(getProvider('decodo')).toBe(decodoProvider);
+    expect(getProvider('nodemaven')).toBe(nodemavenProvider);
     expect(getProvider('generic')).toBe(genericBackconnectProvider);
   });
 
@@ -213,6 +259,29 @@ describe('createProxyPool', () => {
     const launch = pool.getLaunchProxy('browser-1');
     expect(launch.server).toBe('http://proxy.brightdata.com:22225');
     expect(launch.username).toBe('brd-customer-123-browser-1');
+  });
+
+  test('backconnect pool with nodemaven provider', () => {
+    const config = {
+      strategy: 'backconnect',
+      providerName: 'nodemaven',
+      backconnectHost: 'gate.nodemaven.com',
+      backconnectPort: 8080,
+      username: 'acct_user',
+      password: 'p@ss',
+      country: 'us',
+      sessionDurationMinutes: 10,
+    };
+    const pool = createProxyPool(config);
+
+    expect(pool.provider).toBe(nodemavenProvider);
+    expect(pool.launchRetries).toBe(5);
+
+    const launch = pool.getLaunchProxy('browser-1');
+    expect(launch.server).toBe('http://gate.nodemaven.com:8080');
+    expect(launch.username).toBe('acct_user-country-us-sid-browser1-ttl-10m');
+    expect(pool.getNext('ctx-2').username).toBe('acct_user-country-us-sid-ctx2-ttl-10m');
+    expect(buildProxyUrl(pool, config)).toMatch(/^http:\/\/acct_user-country-us-sid-ytdlp[a-f0-9]+-ttl-10m:p%40ss@gate\.nodemaven\.com:8080$/);
   });
 
   test('uses SOCKS protocol for backconnect providers', () => {
