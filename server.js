@@ -55,6 +55,7 @@ import { createPageWithSessionRecovery } from './lib/new-page-recovery.js';
 import { resolveUploadPaths } from './lib/upload-paths.js';
 import { runTrustedDrag, trustedDragTimeoutMs, validateTrustedDragRequest } from './lib/trusted-drag.js';
 import { parseWheelParams, resolveViewportCenter } from './lib/interaction-params.js';
+import { scrollPage } from './lib/scroll.js';
 import { acquirePageLease, hasActivePageLeases, isPageLeased, releasePageLease, setLeasedPage } from './lib/page-lease.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb, browserProcessNameRssMb } from './lib/reporter.js';
 import { mountDocs } from './lib/openapi.js';
@@ -671,6 +672,7 @@ const MAX_SESSIONS = CONFIG.maxSessions;
 const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
 const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
 const HANDLER_TIMEOUT_MS = CONFIG.handlerTimeoutMs;
+const SCROLL_WHEEL_TIMEOUT_MS = CONFIG.scrollWheelTimeoutMs;
 const NEW_PAGE_TIMEOUT_MS = CONFIG.newPageTimeoutMs;
 const MAX_CONCURRENT_PER_USER = CONFIG.maxConcurrentPerUser;
 const PAGE_CLOSE_TIMEOUT_MS = 5000;
@@ -5778,9 +5780,7 @@ app.post('/tabs/:tabId/scroll', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     await withTabLock(req.params.tabId, async () => {
-      const isVertical = direction === 'up' || direction === 'down';
-      const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
-      await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
+      await scrollPage(tabState.page, direction, amount, { wheelTimeoutMs: SCROLL_WHEEL_TIMEOUT_MS, log });
       await tabState.page.waitForTimeout(300);
     });
     
@@ -8620,9 +8620,7 @@ app.post('/act', async (req, res) => {
             if (!locator) { const maxRef = tabState.refs.size > 0 ? `e${tabState.refs.size}` : 'none'; throw new StaleRefsError(ref, maxRef, tabState.refs.size); }
             await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
           } else {
-            const isVertical = direction === 'up' || direction === 'down';
-            const delta = (direction === 'up' || direction === 'left') ? -amount : amount;
-            await tabState.page.mouse.wheel(isVertical ? 0 : delta, isVertical ? delta : 0);
+            await scrollPage(tabState.page, direction, amount, { wheelTimeoutMs: SCROLL_WHEEL_TIMEOUT_MS, log });
           }
           await tabState.page.waitForTimeout(300);
           return { ok: true, targetId };

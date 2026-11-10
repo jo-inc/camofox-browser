@@ -145,6 +145,22 @@ describe('loadConfig', () => {
     expect(config.serverEnv.NAVIGATE_TIMEOUT_MS).toBe('60000');
   });
 
+  test('uses a positive scroll wheel timeout and forwards it to server subprocesses', () => {
+    delete process.env.CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS;
+    expect(loadConfig().scrollWheelTimeoutMs).toBe(2500);
+
+    process.env.CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS = '4000';
+    const configured = loadConfig();
+    expect(configured.scrollWheelTimeoutMs).toBe(4000);
+    expect(configured.serverEnv.CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS).toBe('4000');
+
+    for (const value of ['0', '-1', 'not-a-number', 'Infinity']) {
+      process.env.CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS = value;
+      expect(loadConfig().scrollWheelTimeoutMs).toBe(2500);
+    }
+    delete process.env.CAMOFOX_SCROLL_WHEEL_TIMEOUT_MS;
+  });
+
   test('uses a positive shutdown watchdog timeout and forwards it to server subprocesses', () => {
     delete process.env.CAMOFOX_SHUTDOWN_TIMEOUT_MS;
     expect(loadConfig().shutdownTimeoutMs).toBe(45000);
