@@ -2269,6 +2269,16 @@
                 }
               }
             }
+          },
+          "501": {
+            "description": "Viewport control is unsupported on this browser build because the Juggler transport shim could not be installed. Returned with code `viewport_unsupported`.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }

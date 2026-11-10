@@ -59,6 +59,7 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
@@ -638,6 +639,11 @@ app.post('/sessions/:userId/local-storage', authMiddleware(), express.json({ lim
 });
 
 let browser = null;
+// True only when the viewport transport shim (lib/viewport-transport-shim.js)
+// successfully wrapped the live Juggler transport at launch. viewport /
+// deviceScaleFactor features are only safe to advertise & accept while this is
+// true; otherwise Camoufox rejects the protocol calls with a raw error.
+let viewportShimInstalled = false;
 let _lastBrowserPid = null; // Track PID independently for force-kill after close
 let _browserClosePromise = null; // Shared promise for concurrent close serialization
 let _lastBrowserRestartAt = 0; // Timestamp of last browser relaunch (for stale tab detection)
@@ -1403,6 +1409,10 @@ async function launchBrowserInstance() {
       browserLaunchProxy = launchProxy;
       _lastBrowserPid = candidateBrowser.process?.()?.pid ?? null;
       browser = candidateBrowser; // publish AFTER PID is captured
+      // Wrap the live Juggler transport exactly once so Playwright 1.62's extra
+      // isMobile/screenSize fields are stripped before Camoufox 152 sees them.
+      // Only when this succeeds do we advertise/accept viewport features.
+      viewportShimInstalled = installViewportTransportShim(browser, log);
       _lastBrowserStopReason = null; // clear — browser is healthy
       _lastBrowserRestartAt = Date.now();
       attachBrowserCleanup(browser, localVirtualDisplay);
@@ -6118,9 +6128,24 @@ app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '25
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *       501:
+ *         description: >
+ *           Viewport control is unsupported on this browser build because the
+ *           Juggler transport shim could not be installed. Returned with code
+ *           `viewport_unsupported`.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 app.post('/tabs/:tabId/viewport', async (req, res) => {
   try {
+    if (!viewportShimInstalled) {
+      return res.status(501).json({
+        error: 'viewport control unsupported on this browser build',
+        code: 'viewport_unsupported',
+      });
+    }
     const { userId, width, height } = req.body;
     if (!Number.isFinite(width) || !Number.isFinite(height) || width < 100 || height < 100 || width > 4000 || height > 4000) {
       return res.status(400).json({ error: 'width and height required (100..4000 px)' });
