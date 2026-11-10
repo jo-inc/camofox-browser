@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import {
   anonymize, stackSignature, createReporter, sendToRelay, createUrlAnonymizer,
   createTabHealthTracker, collectResourceSnapshot, detectBotProtection,
-  classifyProxyError,
+  classifyProxyError, shouldReportNativeMemLeak,
 } from '../../lib/reporter.js';
 
 // ============================================================================
@@ -1011,9 +1011,9 @@ describe('native memory leak detection', () => {
     jest.useRealTimers();
   });
 
-  function createTestReporter() {
+  function createTestReporter(getContext = () => ({ resourceOpts: { sessionCount: 1 } })) {
     const reporter = createReporter({ crashReportEnabled: true, crashReportRateLimit: 50 });
-    reporter.startWatchdog(5000);
+    reporter.startWatchdog(5000, getContext);
     started.push(reporter);
     return reporter;
   }
@@ -1026,42 +1026,48 @@ describe('native memory leak detection', () => {
     }
   }
   const sample = (rssMb, heapUsedMb, checks) => sampleBytes(rssMb * MB, heapUsedMb * MB, checks);
+  // Feed a climbing sequence: the policy only reports growth that is still
+  // rising across the window, so each check steps native memory up a little.
+  async function climb(startRssMb, heapUsedMb, stepMb, checks) {
+    for (let i = 0; i < checks; i++) await sample(startRssMb + i * stepMb, heapUsedMb);
+  }
 
   function leakReports() {
     return fetchCalls.filter(c => c.body?.type === 'leak:native-memory').map(c => c.body);
   }
   const leakTitles = () => leakReports().map(report => report.title);
 
-  // Growth above 600 MB reports even with no sessions and no browser RSS, so the
-  // idle self-healing rule does not hide these results.
-  test('reports sustained growth above a valid baseline after three consecutive checks', async () => {
+  // With an active session (self-heal can't fire), a large AND still-climbing
+  // growth sustained across five checks (~150s) reports.
+  test('reports sustained growth above a valid baseline after five consecutive checks', async () => {
     const reporter = createTestReporter();
-    await sample(150, 50);      // baseline: 100 MB native
-    await sample(800, 50, 2);   // 750 MB native: two checks above the threshold
+    await sample(150, 50);        // baseline: 100 MB native
+    await climb(900, 50, 20, 4);  // native 850,870,890,910 -- above 700 growth, still climbing
     expect(leakTitles()).toEqual([]);
-    await sample(800, 50);      // the third consecutive check reports
+    await sample(980, 50);        // fifth consecutive check (native 930) reports
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
-    expect(leakTitles()[0]).toContain('grew by 650MB (baseline: 100MB, current: 750MB, high-water: 750MB)');
+    expect(leakTitles()[0]).toContain('grew by 830MB (baseline: 100MB, current: 930MB, high-water: 930MB)');
   });
 
   test('the report carries the native memory details', async () => {
     const reporter = createTestReporter();
     await sample(150, 50);
-    await sample(800, 50, 3);
+    await climb(900, 50, 20, 5);
     await reporter.stop();
     const [report] = leakReports();
     expect(report.labels).toEqual(['auto-report', 'memory-leak']);
     expect(report.body).toContain('## Native Memory Details');
     expect(report.body).toContain('- **baseline:** 100 MB');
-    expect(report.body).toContain('- **growth:** 650 MB');
-    expect(report.body).toContain('- **browser RSS (last seen):** not captured (browser already dead)');
+    expect(report.body).toContain('- **growth:** 830 MB');
+    expect(report.body).toContain('- **still climbing:** +80 MB during the alert window');
+    expect(report.body).toContain('- **active sessions:** 1');
   });
 
   test('reports once until the baseline is reset', async () => {
     const reporter = createTestReporter();
     await sample(150, 50);
-    await sample(800, 50, 6);
+    await climb(900, 50, 20, 8);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
   });
@@ -1070,24 +1076,32 @@ describe('native memory leak detection', () => {
     const reporter = createTestReporter();
     uptimeSeconds = 119;
     await sample(150, 50);
-    await sample(800, 50, 3);   // not measured, so no baseline and no report
+    await climb(900, 50, 20, 5);  // not measured, so no baseline and no report
     expect(leakTitles()).toEqual([]);
     uptimeSeconds = 121;
-    await sample(150, 50);      // first measured sample: baseline 100 MB
-    await sample(800, 50, 3);
+    await sample(150, 50);        // first measured sample: baseline 100 MB
+    await climb(900, 50, 20, 5);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
     expect(leakTitles()[0]).toContain('baseline: 100MB');
   });
 
+  test('a plateau above the threshold does not report (working set, not a leak)', async () => {
+    const reporter = createTestReporter();
+    await sample(150, 50);        // baseline 100 MB
+    await sample(900, 50, 8);     // jumps to 850 MB native and holds -- never reports
+    await reporter.stop();
+    expect(leakTitles()).toEqual([]);
+  });
+
   test('a drop below the threshold restarts the streak', async () => {
     const reporter = createTestReporter();
     await sample(150, 50);
-    await sample(800, 50, 2);
-    await sample(150, 50);      // back at the baseline: the streak restarts
-    await sample(800, 50, 2);
+    await climb(900, 50, 20, 4);
+    await sample(150, 50);        // back at the baseline: the streak restarts
+    await climb(900, 50, 20, 4);
     expect(leakTitles()).toEqual([]);
-    await sample(800, 50);
+    await sample(980, 50);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
   });
@@ -1095,10 +1109,10 @@ describe('native memory leak detection', () => {
   test('resetNativeMemBaseline re-baselines after two grace checks', async () => {
     const reporter = createTestReporter();
     await sample(150, 50);
-    await sample(800, 50, 2);   // two checks above the old baseline
+    await climb(900, 50, 20, 2);  // two checks above the old baseline
     reporter.resetNativeMemBaseline();
-    await sample(800, 50, 2);   // grace: not measured
-    await sample(800, 50, 4);   // new baseline 750 MB, then no growth
+    await sample(930, 50, 2);     // grace: not measured
+    await sample(930, 50, 6);     // new baseline 880 MB, then no growth
     await reporter.stop();
     expect(leakTitles()).toEqual([]);
   });
@@ -1109,10 +1123,10 @@ describe('native memory leak detection', () => {
   // a leak (the negative baselines in auto-filed reports).
   test('a first sample with RSS below the heap does not seed the baseline', async () => {
     const reporter = createTestReporter();
-    await sample(20, 300);      // skipped instead of a -280 MB baseline
-    await sample(104, 50, 3);   // the first valid sample (54 MB) becomes the baseline
+    await sample(20, 300);        // skipped instead of a -280 MB baseline
+    await sample(104, 50);        // the first valid sample (54 MB) becomes the baseline
     expect(leakTitles()).toEqual([]);
-    await sample(800, 50, 3);
+    await climb(900, 50, 20, 5);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
     expect(leakTitles()[0]).toContain('baseline: 54MB');
@@ -1121,11 +1135,11 @@ describe('native memory leak detection', () => {
   test('a swapped-out sample breaks the streak but keeps the baseline', async () => {
     const reporter = createTestReporter();
     await sample(150, 50);
-    await sample(800, 50, 2);
-    await sample(20, 300);      // skipped: the streak restarts
-    await sample(800, 50, 2);
+    await climb(900, 50, 20, 2);
+    await sample(20, 300);        // skipped: the streak restarts
+    await climb(900, 50, 20, 4);
     expect(leakTitles()).toEqual([]);
-    await sample(800, 50);
+    await sample(980, 50);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
     expect(leakTitles()[0]).toContain('baseline: 100MB');
@@ -1135,9 +1149,9 @@ describe('native memory leak detection', () => {
     const reporter = createTestReporter();
     await sample(150, 50);
     reporter.resetNativeMemBaseline();
-    await sample(20, 300, 3);   // two grace checks, then the swapped-out sample
+    await sample(20, 300, 3);     // two grace checks, then the swapped-out sample
     await sample(104, 50);
-    await sample(800, 50, 3);
+    await climb(900, 50, 20, 5);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
     expect(leakTitles()[0]).toContain('baseline: 54MB');
@@ -1147,17 +1161,64 @@ describe('native memory leak detection', () => {
     const reporter = createTestReporter();
     await sampleBytes(300 * MB - 1, 300 * MB);   // rounds to 0 MB but is skipped
     await sample(104, 50);
-    await sample(800, 50, 3);
+    await climb(900, 50, 20, 5);
     await reporter.stop();
     expect(leakTitles()).toHaveLength(1);
     expect(leakTitles()[0]).toContain('baseline: 54MB');
 
     fetchCalls.length = 0;
     const second = createTestReporter();
-    await sample(300, 300);     // a zero estimate is a valid baseline
-    await sample(800, 50, 3);
+    await sample(300, 300);       // a zero estimate is a valid baseline
+    await climb(900, 50, 20, 5);
     await second.stop();
     expect(leakTitles()).toHaveLength(1);
     expect(leakTitles()[0]).toContain('baseline: 0MB');
+  });
+});
+
+// ============================================================================
+// Native-memory leak reporting policy
+// ============================================================================
+
+describe('shouldReportNativeMemLeak', () => {
+  const base = {
+    growthMb: 900, climbedOverWindowMb: 120, consecutiveAbove: 5,
+    sessionCount: 2, browserAlive: true,
+  };
+
+  test('fires on large, sustained, still-climbing growth with active sessions', () => {
+    expect(shouldReportNativeMemLeak(base).fire).toBe(true);
+  });
+
+  test('does not fire below the threshold (benign working set)', () => {
+    const d = shouldReportNativeMemLeak({ ...base, growthMb: 500 });
+    expect(d.fire).toBe(false);
+    expect(d.skipReason).toBe('below_threshold');
+  });
+
+  test('does not fire until sustained across the window', () => {
+    const d = shouldReportNativeMemLeak({ ...base, consecutiveAbove: 2 });
+    expect(d.fire).toBe(false);
+    expect(d.skipReason).toBe('not_sustained');
+  });
+
+  test('does not fire when it has plateaued above the threshold', () => {
+    // High growth but it stopped climbing during the window -> one-time allocation.
+    const d = shouldReportNativeMemLeak({ ...base, climbedOverWindowMb: 10 });
+    expect(d.fire).toBe(false);
+    expect(d.skipReason).toBe('plateaued');
+  });
+
+  test('stays quiet when idle and the browser is gone (self-healed)', () => {
+    const d = shouldReportNativeMemLeak({ ...base, sessionCount: 0, browserAlive: false });
+    expect(d.fire).toBe(false);
+    expect(d.skipReason).toBe('self_healed');
+  });
+
+  test('reports extreme growth even when idle+dead (restart likely failed)', () => {
+    const d = shouldReportNativeMemLeak({
+      ...base, sessionCount: 0, browserAlive: false, growthMb: 1400,
+    });
+    expect(d.fire).toBe(true);
   });
 });
