@@ -62,10 +62,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!serverProcess) return;
+  const proc = serverProcess;
   await new Promise((resolve) => {
-    serverProcess.on('close', resolve);
-    serverProcess.kill('SIGTERM');
-    setTimeout(() => { serverProcess.kill('SIGKILL'); resolve(); }, 5000);
+    const killTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } resolve(); }, 5000);
+    proc.on('close', () => { clearTimeout(killTimer); resolve(); });
+    proc.kill('SIGTERM');
   });
   serverProcess = null;
 }, 30000);
