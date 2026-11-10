@@ -20,6 +20,21 @@ describe('loadConfig', () => {
     expect(config.serverEnv.CAMOFOX_BIND_HOST).toBe('127.0.0.1');
   });
 
+  test('reads extra addon folders from CAMOFOX_ADDONS and forwards it to server subprocesses', () => {
+    process.env.CAMOFOX_ADDONS = '/addons/one::/addons/two';
+
+    const config = loadConfig();
+
+    expect(config.extraAddons).toEqual(['/addons/one', '/addons/two']);
+    expect(config.serverEnv.CAMOFOX_ADDONS).toBe('/addons/one::/addons/two');
+  });
+
+  test('loads no extra addons when CAMOFOX_ADDONS is unset', () => {
+    delete process.env.CAMOFOX_ADDONS;
+
+    expect(loadConfig().extraAddons).toEqual([]);
+  });
+
   test('prefers CAMOUFOX_EXECUTABLE for external Camoufox executable', () => {
     process.env.CAMOUFOX_EXECUTABLE = '/nix/store/camoufox/bin/camoufox';
     process.env.CAMOUFOX_EXECUTABLE_PATH = '/ignored/camoufox';
