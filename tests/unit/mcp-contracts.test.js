@@ -112,7 +112,7 @@ describe('TOOL_DEFS', () => {
       { type: 'string' },
       { type: 'array', items: { type: 'string' }, minItems: 1 },
     ]);
-    expect(Object.keys(schema.properties)).toEqual(['tabId', 'path', 'ref', 'selector', 'timeout']);
+    expect(Object.keys(schema.properties)).toEqual(['tabId', 'path', 'ref', 'selector', 'timeout', 'userId', 'sessionKey']);
   });
 
   test('screenshot exposes an optional fullPage boolean', () => {
