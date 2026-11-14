@@ -140,15 +140,17 @@ EXPOSE 9377
 # read-only browser binary discoverable no matter the home dir.
 ENV HOME=/home/camofox
 # The node base image ships a "node" user at uid 1000; remove it so we can claim
-# uid 1000 for the camofox runtime user (primary group 0).
+# uid 1000 for the camofox runtime user (primary group 0). The Camoufox cache is
+# included because camoufox-js downloads the default addons (uBlock Origin) into
+# it at launch; read-only, that fails with EACCES and the browser runs without it.
 RUN userdel -r node 2>/dev/null || true \
     && useradd -u 1000 -g 0 -m -d /home/camofox -s /usr/sbin/nologin camofox \
     && mkdir -p /home/camofox/.camofox/cookies \
                /home/camofox/.camofox/uploads \
                /home/camofox/.camofox/profiles \
                /home/camofox/.camofox/traces \
-    && chgrp -R 0 /home/camofox /app \
-    && chmod -R g=u /home/camofox /app
+    && chgrp -R 0 /home/camofox /app ${XDG_CACHE_HOME} \
+    && chmod -R g=u /home/camofox /app ${XDG_CACHE_HOME}
 
 USER 1000
 
