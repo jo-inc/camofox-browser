@@ -47,20 +47,25 @@ RUN apt-get update && apt-get install -y \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install Camoufox
+# Download and install Camoufox to a fixed, non-home path so any runtime user
+# finds it. XDG_CACHE_HOME is read by lib/config.js and postinstall.js;
+# CAMOUFOX_INSTALL_DIR is read by camoufox-js when it launches the browser.
+ENV XDG_CACHE_HOME=/opt/camoufox-cache
+ENV CAMOUFOX_INSTALL_DIR=/opt/camoufox-cache/camoufox
+
 RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) CAMOUFOX_ARCH="x86_64" ;; \
       arm64) CAMOUFOX_ARCH="arm64" ;; \
       *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac; \
-    mkdir -p /root/.cache/camoufox; \
+    mkdir -p ${XDG_CACHE_HOME}/camoufox; \
     curl -fSL "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
       -o /tmp/camoufox.zip; \
-    (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true); \
-    chmod -R 755 /root/.cache/camoufox; \
-    echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json; \
-    test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"; \
+    (unzip -q /tmp/camoufox.zip -d ${XDG_CACHE_HOME}/camoufox || true); \
+    chmod -R a+rX ${XDG_CACHE_HOME}; \
+    echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > ${XDG_CACHE_HOME}/camoufox/version.json; \
+    test -f ${XDG_CACHE_HOME}/camoufox/camoufox-bin && echo "Camoufox installed successfully"; \
     rm /tmp/camoufox.zip
 
 WORKDIR /app
@@ -99,5 +104,21 @@ ENV NODE_ENV=production
 ENV CAMOFOX_PORT=9377
 
 EXPOSE 9377
+
+# Run as uid 1000 with primary group 0 (same as the default Dockerfile), so an
+# arbitrary UID with GID 0 also works. HOME holds the writable runtime dirs;
+# the Camoufox cache stays writable because addons (uBlock Origin) are fetched
+# into it at launch.
+ENV HOME=/home/camofox
+RUN userdel -r node 2>/dev/null || true \
+    && useradd -u 1000 -g 0 -m -d /home/camofox -s /usr/sbin/nologin camofox \
+    && mkdir -p /home/camofox/.camofox/cookies \
+               /home/camofox/.camofox/uploads \
+               /home/camofox/.camofox/profiles \
+               /home/camofox/.camofox/traces \
+    && chgrp -R 0 /home/camofox /app ${XDG_CACHE_HOME} \
+    && chmod -R g=u /home/camofox /app ${XDG_CACHE_HOME}
+
+USER 1000
 
 CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
