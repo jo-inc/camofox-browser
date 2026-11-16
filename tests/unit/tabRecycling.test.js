@@ -108,6 +108,61 @@ describe('Tab Recycling', () => {
     }
   }, 120000);
 
+  test.each(['/tabs', '/tabs/open'])(
+    '%s recycles only a tab from the requesting session key',
+    async (endpoint) => {
+      const client = createClient(serverUrl);
+      try {
+        client.sessionKey = 'other-session';
+        const otherTabs = [];
+        for (let i = 0; i < 4; i++) {
+          const result = await client.createTab(`${testSiteUrl}/other-${i}`);
+          otherTabs.push(result.tabId);
+        }
+
+        client.sessionKey = 'requesting-session';
+        const requestingTab = await client.createTab(`${testSiteUrl}/requesting`);
+        const createAnotherTab = endpoint === '/tabs'
+          ? () => client.createTab(`${testSiteUrl}/next`)
+          : () => client.request('POST', endpoint, {
+            userId: client.userId,
+            listItemId: client.sessionKey,
+            url: `${testSiteUrl}/next`,
+          });
+
+        const result = await createAnotherTab();
+        expect(result.tabId).toBeDefined();
+        for (const tabId of otherTabs) {
+          await expect(client.getSnapshot(tabId)).resolves.toBeDefined();
+        }
+        await expect(client.getSnapshot(requestingTab.tabId)).rejects.toMatchObject({ status: 410 });
+      } finally {
+        await client.cleanup();
+      }
+    },
+    120000,
+  );
+
+  test('does not recycle another session key when the requesting key has no tabs', async () => {
+    const client = createClient(serverUrl);
+    try {
+      client.sessionKey = 'other-session';
+      const otherTabs = [];
+      for (let i = 0; i < 5; i++) {
+        const result = await client.createTab(`${testSiteUrl}/other-${i}`);
+        otherTabs.push(result.tabId);
+      }
+
+      client.sessionKey = 'empty-session';
+      await expect(client.createTab(`${testSiteUrl}/requesting`)).rejects.toMatchObject({ status: 429 });
+      for (const tabId of otherTabs) {
+        await expect(client.getSnapshot(tabId)).resolves.toBeDefined();
+      }
+    } finally {
+      await client.cleanup();
+    }
+  }, 120000);
+
   test('navigate returns 404 for unknown tab (no auto-create)', async () => {
     const client = createClient(serverUrl);
     try {

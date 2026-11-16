@@ -12,6 +12,7 @@
 
 import assert from "node:assert/strict";
 import { apply } from "../index.js";
+import { TOOL_DEFS } from "../../mcp/lib/tool-contracts.mjs";
 
 let passed = 0;
 function check(name, fn) {
@@ -40,25 +41,28 @@ console.log("registration");
 const { ctx, tools } = fakeHost();
 apply(ctx, { baseUrl: "http://localhost:9377", userId: "smoke-user" });
 
-check("registers all 11 canonical tools", () => {
-  assert.equal(tools.length, 11);
+check("registers one tool per canonical definition", () => {
+  // Deliberately not a hardcoded count: the contract grew from 11 to 31 tools in
+  // v1.19.0 and the adapter follows `TOOL_DEFS`, so the test must follow it too.
+  assert.equal(tools.length, TOOL_DEFS.length);
 });
 
-check("tool names match the shared contract", () => {
-  const names = tools.map((t) => t.name).sort();
-  assert.deepEqual(names, [
-    "camofox_click",
-    "camofox_close_tab",
-    "camofox_create_tab",
-    "camofox_evaluate",
-    "camofox_import_cookies",
-    "camofox_list_tabs",
-    "camofox_navigate",
-    "camofox_screenshot",
-    "camofox_scroll",
-    "camofox_snapshot",
-    "camofox_type",
-  ]);
+check("tool names match the shared contract exactly", () => {
+  assert.deepEqual(
+    tools.map((t) => t.name).sort(),
+    TOOL_DEFS.map((t) => t.name).sort()
+  );
+});
+
+check("the original core tools are still registered", () => {
+  const registered = new Set(tools.map((t) => t.name));
+  for (const core of [
+    "camofox_create_tab", "camofox_snapshot", "camofox_click", "camofox_type",
+    "camofox_navigate", "camofox_scroll", "camofox_screenshot", "camofox_close_tab",
+    "camofox_evaluate", "camofox_list_tabs", "camofox_import_cookies",
+  ]) {
+    assert.ok(registered.has(core), `missing ${core}`);
+  }
 });
 
 check("parameters are the contract's JSON Schema, untouched", () => {

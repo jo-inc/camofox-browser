@@ -86,3 +86,28 @@ describe('viewport validation', () => {
     expect(validateViewport(1280.5, 720.9)).toBeNull();
   });
 });
+
+// ============================================================================
+// Capability gating (mirrors the shim-flag guard at the top of the route)
+// ============================================================================
+
+// Mirror of the first guard inside POST /tabs/:tabId/viewport.
+function viewportRouteGate(viewportShimInstalled) {
+  if (!viewportShimInstalled) {
+    return { status: 501, body: { error: 'viewport control unsupported on this browser build', code: 'viewport_unsupported' } };
+  }
+  return null; // route proceeds to validation / setViewportSize
+}
+
+describe('viewport route capability gating', () => {
+  test('returns 501 viewport_unsupported when the shim did not install', () => {
+    const res = viewportRouteGate(false);
+    expect(res).not.toBeNull();
+    expect(res.status).toBe(501);
+    expect(res.body.code).toBe('viewport_unsupported');
+  });
+
+  test('proceeds (no gate response) when the shim installed', () => {
+    expect(viewportRouteGate(true)).toBeNull();
+  });
+});

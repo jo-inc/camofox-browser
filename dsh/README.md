@@ -2,7 +2,7 @@
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/dsh) (DSH) host adapter that exposes camofox-browser as **native DSH tools**.
 
-It mirrors the MCP server and the OpenClaw plugin **1:1**: same 11 tool names, identical JSON-Schema parameters, same REST routes, same auth, same response shaping — all imported from the canonical [`mcp/lib/tool-contracts.mjs`](../mcp/lib/tool-contracts.mjs). Adding a host does not fork the contract, so all three clients emit identical traffic to the REST server.
+It mirrors the MCP server and the OpenClaw plugin **1:1**: the same tool names, identical JSON-Schema parameters, same REST routes, same auth, same response shaping — all imported from the canonical [`mcp/lib/tool-contracts.mjs`](../mcp/lib/tool-contracts.mjs). Adding a host does not fork the contract, so all three clients emit identical traffic to the REST server.
 
 ## Architecture
 
@@ -56,9 +56,11 @@ The default `dsh-<uuid>` userId keeps a DSH install from sharing a cookie/storag
 
 ## Tools
 
-The same 11 as every other host:
+The same set as every other host — registered straight from `TOOL_DEFS`, so this adapter cannot fall behind when the contract grows. At the time of writing that is **31 tools**:
 
-`camofox_create_tab` · `camofox_snapshot` · `camofox_click` · `camofox_type` · `camofox_navigate` · `camofox_scroll` · `camofox_screenshot` · `camofox_close_tab` · `camofox_list_tabs` · `camofox_evaluate` · `camofox_import_cookies`
+`camofox_create_tab` · `camofox_snapshot` · `camofox_click` · `camofox_type` · `camofox_upload` · `camofox_navigate` · `camofox_scroll` · `camofox_screenshot` · `camofox_close_tab` · `camofox_evaluate` · `camofox_list_tabs` · … (31 total)
+
+The adapter registers whatever the contract defines; see [`mcp/lib/tool-contracts.mjs`](../mcp/lib/tool-contracts.mjs) for the current list.
 
 `camofox_snapshot` and `camofox_screenshot` return image content blocks (a base64 PNG). Hosts that keep images out of the model context should persist them instead — see the `dsh-camofox-browser` community plugin for one approach.
 

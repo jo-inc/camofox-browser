@@ -83,7 +83,15 @@ The Docker image includes yt-dlp. For local dev, install it for the `/youtube/tr
 openclaw plugins install @askjo/camofox-browser
 ```
 
-**Tools:** `camofox_create_tab`  |  `camofox_snapshot`  |  `camofox_click`  |  `camofox_type`  |  `camofox_navigate`  |  `camofox_scroll`  |  `camofox_screenshot`  |  `camofox_close_tab`  |  `camofox_list_tabs`  |  `camofox_import_cookies`
+**Full HTTP ↔ agent-tool parity.** Every browser action Camofox exposes over HTTP is also a first-class MCP / OpenClaw tool, defined once in a single shared contract (`mcp/lib/tool-contracts.mjs`) so the two front doors can never drift. A build-time parity gate (`tests/unit/mcpHttpParity.test.js`) fails if a new browser action is added to the HTTP API without a matching tool. There are **31 tools**:
+
+**Tabs & navigation:** `camofox_create_tab` | `camofox_list_tabs` | `camofox_close_tab` | `camofox_activate` | `camofox_navigate` | `camofox_back` | `camofox_forward` | `camofox_refresh` | `camofox_wait`
+
+**Reading the page:** `camofox_snapshot` | `camofox_ax` | `camofox_actionables` | `camofox_table_rows` | `camofox_links` | `camofox_images` | `camofox_extract` | `camofox_screenshot`
+
+**Interacting:** `camofox_click` | `camofox_type` | `camofox_press` | `camofox_select` | `camofox_scroll` | `camofox_mouse_wheel` | `camofox_drag` | `camofox_upload` | `camofox_viewport`
+
+**Scripting & state:** `camofox_evaluate` | `camofox_init_script` | `camofox_import_cookies` | `camofox_export_storage_state` | `camofox_import_local_storage`
 
 ### Standalone
 
@@ -562,7 +570,9 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 |--------|----------|-------------|
 | `GET` | `/tabs/:id/snapshot` | Accessibility snapshot with element refs. Query params: `includeScreenshot=true` (add base64 PNG), `offset=N` (paginate large snapshots) |
 | `POST` | `/tabs/:id/click` | Click element by ref or CSS selector |
+| `POST` | `/tabs/:id/drag` | Perform an atomic trusted mouse drag from `{start:{x,y}}` to `{end:{x,y}}`; optional `steps`, `durationMs`, and `button` |
 | `POST` | `/tabs/:id/type` | Type text into element |
+| `POST` | `/tabs/:id/upload` | Attach files from `CAMOFOX_UPLOADS_DIR` to an upload control (`path`, optional `ref`/`selector`, `timeout`) |
 | `POST` | `/tabs/:id/press` | Press a keyboard key |
 | `POST` | `/tabs/:id/scroll` | Scroll page (up/down/left/right) |
 | `POST` | `/tabs/:id/navigate` | Navigate to URL or search macro |
@@ -570,7 +580,7 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `GET` | `/tabs/:id/links` | Extract all links on page |
 | `GET` | `/tabs/:id/images` | List `<img>` elements. Query params: `includeData=true` (return inline data URLs), `maxBytes=N`, `limit=N` |
 | `GET` | `/tabs/:id/downloads` | List captured downloads. Query params: `includeData=true` (base64 file data), `consume=true` (clear after read), `maxBytes=N` |
-| `GET` | `/tabs/:id/screenshot` | Take screenshot |
+| `GET` | `/tabs/:id/screenshot` | Take screenshot. Query params: `fullPage=true` (capture the full scrollable page) |
 | `POST` | `/tabs/:id/back` | Go back |
 | `POST` | `/tabs/:id/forward` | Go forward |
 | `POST` | `/tabs/:id/refresh` | Refresh page |
@@ -605,6 +615,7 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser
 | `GET` | `/tabs/:tabId/downloads` | List captured browser downloads and saved current-resource PDFs |
 | `POST` | `/tabs/:tabId/fetch-current-resource` | Save the current inline PDF with its browser-session authentication as a download artifact |
 | `GET` | `/sessions/:userId/storage_state` | Export persisted browser storage ([VNC plugin](plugins/vnc/)) |
+| `POST` | `/sessions/:userId/front` | Raise the user's newest window on the shared display ([VNC plugin](plugins/vnc/)) |
 | `DELETE` | `/sessions/:userId/storage_state` | Reset the live session and delete its persisted browser storage ([persistence plugin](plugins/persistence/)) |
 
 ## Search Macros
@@ -640,6 +651,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `CAMOFOX_EVALUATE_MAX_BODY_SIZE` | Max JSON request body size for `POST /tabs/:tabId/evaluate`; other JSON routes remain limited to `100kb`. | `1mb` |
 | `CAMOFOX_LOCALE` | Locale for an explicitly configured direct-session identity. Must be set with `CAMOFOX_TIMEZONE`. | - |
 | `CAMOFOX_TIMEZONE` | IANA timezone for an explicitly configured direct-session identity. Must be set with `CAMOFOX_LOCALE`. | - |
+| `CAMOFOX_OS` | OS used for the browser fingerprint: `windows`, `macos` or `linux`. Some bot managers reject Linux fingerprints, so Linux containers may want `windows`. | host OS |
 | `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |
 | `CAMOUFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
 | `CAMOFOX_EXECUTABLE_PATH` | Compatibility alias for `CAMOUFOX_EXECUTABLE` | - |
@@ -656,8 +668,11 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle (0 = never) | `300000` (5min) |
 | `CAMOFOX_INTERACTIVE` | Interactive browser mode: `desktop` opens a real local Camoufox window; `off` keeps normal headless behavior | `off` |
 | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
+| `CAMOFOX_SHUTDOWN_TIMEOUT_MS` | Maximum time graceful shutdown waits for persistence checkpoints and browser/session cleanup before forcing exit. Must be a positive integer. | `45000` (45s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
-| `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
+| `MAX_OLD_SPACE_SIZE` | Node.js V8 JavaScript-heap limit (MB), passed to `node --max-old-space-size`. Raise it (e.g. `256`/`512`) if the Node process hits heap-allocation errors under heavy load. Note: this caps only the JS heap -- it does **not** bound the Camoufox/Firefox process tree or large external buffers (screenshots, download artifacts), which are the usual drivers of native-memory growth. For those, see `BROWSER_RSS_RESTART_THRESHOLD_MB` and `NATIVE_MEM_RESTART_THRESHOLD_MB`. | `128` |
+| `BROWSER_RSS_RESTART_THRESHOLD_MB` | Restart the browser when the Camoufox/Firefox process-tree RSS grows past this. Runs in both idle and active phases (active-phase restarts close live sessions first, so clients get a retryable `503`). | `1500` |
+| `NATIVE_MEM_RESTART_THRESHOLD_MB` | Restart the browser when Node's native (non-heap) memory grows past this above its idle baseline. Checked only while idle. | `300` |
 | `PROXY_STRATEGY` | Proxy mode: `backconnect` (rotating sticky sessions) or blank (single endpoint) | - |
 | `PROXY_PROTOCOL` | Proxy protocol: `http`, `https`, `socks4`, or `socks5`. | `http` |
 | `PROXY_PROVIDER` | Provider name for session format (e.g. `decodo`) | `decodo` |

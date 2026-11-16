@@ -11,17 +11,24 @@
 // ============================================================================
 
 /**
- * Evaluate whether the browser should be restarted due to native memory pressure.
+ * Evaluate whether the browser should be restarted due to memory pressure.
+ *
+ * Mirrors the setInterval logic in server.js (idle AND active phases):
+ *  - browser process tree RSS >= threshold  → 'browser_rss_restart' (idle or active)
+ *  - native (non-heap) growth >= threshold  → 'restart' (idle phase only; the
+ *    baseline is meaningful within one launch cycle and is reset on close)
  *
  * @param {object} state - Mutable state object: { baseline, sessionsSize, browserAlive }
  * @param {number} rssMb - Current RSS in MB
  * @param {number} heapUsedMb - Current JS heap used in MB
- * @param {number} thresholdMb - Growth threshold in MB
- * @returns {'skip'|'baseline_set'|'ok'|'restart'} action to take
+ * @param {number} thresholdMb - Native growth threshold in MB
+ * @returns {'skip'|'baseline_set'|'ok'|'restart'|'browser_rss_restart'} action to take
  */
 function evaluateMemoryPressure(state, rssMb, heapUsedMb, thresholdMb, browserRssMb = null, browserRssThresholdMb = 1500) {
-  if (state.sessionsSize > 0 || !state.browserAlive) return 'skip';
+  if (!state.browserAlive) return 'skip';
+  const idle = state.sessionsSize === 0;
   if (browserRssMb !== null && browserRssMb >= browserRssThresholdMb) return 'browser_rss_restart';
+  if (!idle) return 'ok'; // native baseline is only tracked while idle
   const nativeMemMb = Math.round(rssMb - heapUsedMb);
   if (state.baseline === null) {
     state.baseline = nativeMemMb;
@@ -81,10 +88,12 @@ describe('NATIVE_MEM_RESTART_THRESHOLD_MB config parsing', () => {
 // ============================================================================
 
 describe('evaluateMemoryPressure', () => {
-  test('skips when sessions are active', () => {
+  test('native baseline logic is idle-only: active sessions without RSS pressure do not restart', () => {
     const state = { baseline: null, sessionsSize: 3, browserAlive: true };
-    expect(evaluateMemoryPressure(state, 500, 100, 200)).toBe('skip');
-    expect(state.baseline).toBeNull(); // baseline not touched
+    // Sessions active, browser RSS below threshold → native baseline is not
+    // even tracked while active (it would be stale across a browser cycle).
+    expect(evaluateMemoryPressure(state, 500, 100, 200)).toBe('ok');
+    expect(state.baseline).toBeNull(); // baseline not touched while active
   });
 
   test('skips when browser is not alive', () => {
@@ -207,15 +216,17 @@ describe('baseline lifecycle', () => {
     expect(state.baseline).toBe(120);
   });
 
-  test('sessions becoming active prevents restart even at high memory', () => {
+  test('sessions becoming active prevents native-growth restart but not RSS restart', () => {
     const state = { baseline: 100, sessionsSize: 0, browserAlive: true };
 
-    // Memory is over threshold
+    // Memory is over threshold (native growth 250 >= 200)
     expect(evaluateMemoryPressure(state, 500, 50, 200)).toBe('restart');
 
-    // But if a session arrives before the interval fires, it skips
+    // If a session arrives before the interval fires, native-growth restart is
+    // deferred (sessions stay up), but a leaking browser tree still restarts.
     state.sessionsSize = 1;
-    expect(evaluateMemoryPressure(state, 500, 50, 200)).toBe('skip');
+    expect(evaluateMemoryPressure(state, 500, 50, 200)).toBe('ok');
+    expect(evaluateMemoryPressure(state, 500, 50, 200, 2300, 1500)).toBe('browser_rss_restart');
   });
 
   test('browser process tree RSS triggers idle restart before native baseline logic', () => {
@@ -230,8 +241,9 @@ describe('baseline lifecycle', () => {
     expect(state.baseline).toBe(400);
   });
 
-  test('browser process tree RSS is ignored while sessions are active', () => {
+  test('browser process tree RSS triggers restart even while sessions are active', () => {
     const state = { baseline: null, sessionsSize: 1, browserAlive: true };
-    expect(evaluateMemoryPressure(state, 500, 100, 300, 2300, 1500)).toBe('skip');
+    expect(evaluateMemoryPressure(state, 500, 100, 300, 2300, 1500)).toBe('browser_rss_restart');
+    expect(state.baseline).toBeNull();
   });
 });

@@ -2,7 +2,7 @@
 
 A standalone [Model Context Protocol](https://modelcontextprotocol.io) server that exposes camofox-browser to any MCP-compatible host — Claude Code, Cursor, etc. — without requiring OpenClaw.
 
-It mirrors the existing OpenClaw plugin **1:1**: same 11 tool names, identical JSON-Schema parameters, and the same REST routes. Whether an agent reaches camofox via OpenClaw or MCP, the behavior is identical.
+It mirrors the existing OpenClaw plugin **1:1**: same 12 tool names, identical JSON-Schema parameters, and the same REST routes. Whether an agent reaches camofox via OpenClaw or MCP, the behavior is identical.
 
 The initial MCP server implementation was contributed by [@epicsagas](https://github.com/epicsagas).
 
@@ -170,7 +170,7 @@ claude mcp add camofox-browser -- node /Users/you/src/camofox-browser/mcp/server
 | Cursor | Settings → MCP — server shows green |
 | opencode | `opencode mcp list` |
 
-You should see 11 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_click`, `camofox_type`, `camofox_navigate`, `camofox_scroll`, `camofox_screenshot`, `camofox_evaluate`, `camofox_list_tabs`, `camofox_close_tab`, `camofox_import_cookies`.
+You should see 12 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_click`, `camofox_type`, `camofox_upload`, `camofox_navigate`, `camofox_scroll`, `camofox_screenshot`, `camofox_evaluate`, `camofox_list_tabs`, `camofox_close_tab`, `camofox_import_cookies`.
 
 ## Tools
 
@@ -181,8 +181,9 @@ You should see 11 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_clic
 | `camofox_navigate` | Go to a URL **or** use a search macro (`@google_search`, `@reddit_search`, ...) |
 | `camofox_click` | Click by element ref (`e1`) or CSS selector |
 | `camofox_type` | Type text into a ref/selector, optional `pressEnter` |
+| `camofox_upload` | Attach files to an upload control; `path` (string or array) must be absolute and inside the REST server's `CAMOFOX_UPLOADS_DIR`, optional trigger `ref`/`selector` |
 | `camofox_scroll` | Scroll by pixels (unreliable on lazy-load pages — prefer `camofox_evaluate`) |
-| `camofox_screenshot` | Standalone screenshot |
+| `camofox_screenshot` | Standalone screenshot, optional `fullPage: true` for the full scrollable page |
 | `camofox_evaluate` | Run JS in page context — extract data, call page APIs, scroll via `window.scrollTo` |
 | `camofox_list_tabs` | List open tabs in this session |
 | `camofox_close_tab` | Close a tab |
@@ -207,6 +208,7 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 | `CAMOFOX_BASE_URL` | `http://localhost:9377` | REST server URL |
 | `CAMOFOX_USER_ID` | `mcp-<random>` | Session isolation (one MCP server = one camofox session) |
 | `CAMOFOX_SESSION_KEY` | `default` | Tab partition within the user |
+| `CAMOFOX_MCP_USER_IDS` | _(unset)_ | Comma-separated userIds a tool call may pass as its optional `userId` argument to reach tabs of another profile. Without it, a `userId` other than this server's own is refused. Calls may also pass `sessionKey` to choose the tab group when creating a tab. |
 | `CAMOFOX_ACCESS_KEY` | _(unset)_ | Global bearer token gating the REST server (superkey). If set, forwarded as `Authorization: Bearer <key>` on **every** tool call automatically — must match the REST server's own `CAMOFOX_ACCESS_KEY`. Without this, a globally-authenticated REST server rejects all tool calls except cookie import. |
 | `CAMOFOX_API_KEY` | _(unset)_ | Self-chosen secret gating cookie import. Optional on localhost; required on remote/production and must match the REST server's `CAMOFOX_API_KEY`. Only affects `camofox_import_cookies`. |
 
