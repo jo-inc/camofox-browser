@@ -1,0 +1,46 @@
+{
+  "name": "@askjo/camofox-browser-dsh",
+  "version": "1.18.1",
+  "description": "DeepSeek Harness (DSH) host adapter exposing the camofox-browser REST API as native DSH tools. Proxies to an already-running camofox-browser REST server — does not itself require the browser binary, Playwright, or the core server's dependencies.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "author": "Jo Inc <oss@askjo.ai>",
+  "homepage": "https://github.com/jo-inc/camofox-browser/tree/master/dsh#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jo-inc/camofox-browser.git",
+    "directory": "dsh"
+  },
+  "bugs": {
+    "url": "https://github.com/jo-inc/camofox-browser/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "camofox",
+    "camoufox",
+    "browser-automation",
+    "anti-detection"
+  ],
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

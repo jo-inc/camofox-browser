@@ -847,7 +847,7 @@ export function authHeaders(spec, config) {
  * @returns {Promise<unknown>} JSON value, or an image content block for image specs.
  * @throws {Error} on non-2xx, or when an image route returns non-image bytes.
  */
-export async function fetchSpec(baseUrl, spec, config) {
+export async function fetchSpec(baseUrl, spec, config, signal) {
   const headers = {
     'Content-Type': 'application/json',
     ...authHeaders(spec, config),
@@ -856,6 +856,7 @@ export async function fetchSpec(baseUrl, spec, config) {
     method: spec.method,
     headers,
     body: spec.body ? JSON.stringify(spec.body) : undefined,
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
@@ -887,7 +888,7 @@ export async function fetchSpec(baseUrl, spec, config) {
  * @param {{apiKey?: string, accessKey?: string, cookiesDir: string}} config - server config.
  * @returns {Promise<{spec: RequestSpec, payload: unknown}>}
  */
-export async function runTool(name, args, ctx, baseUrl, config) {
+export async function runTool(name, args, ctx, baseUrl, config, signal) {
   const { userId, sessionKey, ...rest } = args;
   // A profile is a signed-in identity, so a host reaches only the ones its operator listed.
   if (userId && userId !== ctx.userId && !(config.allowedUserIds || []).includes(userId)) {
@@ -900,7 +901,7 @@ export async function runTool(name, args, ctx, baseUrl, config) {
     name === 'camofox_import_cookies'
       ? await buildCookieRequest(args, ctx, config)
       : buildRequest(name, args, ctx);
-  const payload = await fetchSpec(baseUrl, spec, config);
+  const payload = await fetchSpec(baseUrl, spec, config, signal);
   return { spec, payload };
 }
 
