@@ -5,8 +5,8 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { downloadBundledCamoufox } from '../lib/camoufox-download.js';
-import { externalExecutableFromEnv } from '../postinstall.js';
+import { BUNDLED_CAMOUFOX_RELEASE, downloadBundledCamoufox } from '../lib/camoufox-download.js';
+import { cachedCamoufoxRelease, externalExecutableFromEnv, main } from '../postinstall.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const tempDirs = [];
@@ -90,5 +90,43 @@ describe('postinstall downloader', () => {
     expect(install).toHaveBeenCalledTimes(1);
     expect(downloadGeoIp).toHaveBeenCalledTimes(1);
     expect(downloadAddons).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('postinstall cached release', () => {
+  const [pinnedVersion, pinnedRelease] = BUNDLED_CAMOUFOX_RELEASE.split(/-(?=[^-]*$)/);
+
+  function cacheWith(contents) {
+    const dir = mkdtempSync(join(tmpdir(), 'camofox-postinstall-cache-'));
+    tempDirs.push(dir);
+    if (contents !== undefined) writeFileSync(join(dir, 'version.json'), contents);
+    return dir;
+  }
+
+  function quietly(fn) {
+    const out = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const err = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    return fn().finally(() => { out.mockRestore(); err.mockRestore(); });
+  }
+
+  test('reads the release a cache holds, and null for none or garbage', () => {
+    const dir = cacheWith(JSON.stringify({ version: '152.0.4', release: 'beta.28' }));
+    expect(cachedCamoufoxRelease(join(dir, 'version.json'))).toBe('152.0.4-beta.28');
+    expect(cachedCamoufoxRelease(join(cacheWith(), 'version.json'))).toBeNull();
+    expect(cachedCamoufoxRelease(join(cacheWith('not json'), 'version.json'))).toBeNull();
+  });
+
+  test('keeps a cache that holds the pinned release', async () => {
+    const download = jest.fn();
+    const cacheDir = cacheWith(JSON.stringify({ version: pinnedVersion, release: pinnedRelease }));
+    await quietly(() => main({ download, cacheDir }));
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  test('fetches the pinned release over a cache that holds another one', async () => {
+    const download = jest.fn().mockResolvedValue(undefined);
+    const cacheDir = cacheWith(JSON.stringify({ version: '135.0.1', release: 'beta.24' }));
+    await quietly(() => main({ download, cacheDir }));
+    expect(download).toHaveBeenCalledTimes(1);
   });
 });
