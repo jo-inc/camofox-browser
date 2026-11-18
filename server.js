@@ -8,6 +8,7 @@ import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { getSearchFallbacks } from './lib/search-fallbacks.js';
 import { hasGoogleOrganicResults } from './lib/google-serp.js';
+import { serpResultBlock, serpSnippet } from './lib/google-serp.js';
 import { loadConfig } from './lib/config.js';
 import { contextIdentityOptions, launchLocale } from './lib/browser-identity.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
@@ -2573,7 +2574,8 @@ async function extractGoogleSerp(page) {
     }
   }
   
-  const extracted = await page.evaluate(() => {
+  // Source, not a function: page.evaluate cannot take the lib helpers as arguments.
+  const extracted = await page.evaluate(`(${(serpResultBlock, serpSnippet) => {
     const snapshot = [];
     const elements = [];
     let refCounter = 1;
@@ -2619,28 +2621,15 @@ async function extractGoogleSerp(page) {
         seenResultUrls.add(mainLink.href);
 
         // Google's organic cards are nested several wrappers below #rso. Walk up
-        // to the nearest result-sized container instead of assuming direct children.
-        const block = h3.closest('.MjjYud, .g, [data-snhf], [data-content-feature]')
-          || mainLink.parentElement?.parentElement
-          || mainLink.parentElement
-          || resultContainer;
+        // to the result card instead of assuming direct children.
+        const block = serpResultBlock(h3, mainLink, resultContainer);
         const title = h3.textContent.trim().replace(/"/g, '\\"');
         if (!title) continue;
         const href = mainLink.href;
         const cite = block.querySelector('cite');
         const displayUrl = cite ? cite.textContent.trim() : '';
 
-        let snippet = '';
-        for (const sel of ['[data-sncf]', '[data-content-feature="1"]', '.VwiC3b', 'div[style*="-webkit-line-clamp"]', 'span.aCOpRe']) {
-          const el = block.querySelector(sel);
-          if (el && !h3.contains(el)) { snippet = el.textContent.trim().slice(0, 300); break; }
-        }
-        if (!snippet) {
-          const allText = block.textContent.trim().replace(/\s+/g, ' ');
-          const titleOffset = allText.indexOf(h3.textContent.trim());
-          const afterTitle = titleOffset >= 0 ? allText.slice(titleOffset + h3.textContent.trim().length) : allText;
-          if (afterTitle.length > 20) snippet = afterTitle.trim().slice(0, 300);
-        }
+        const snippet = serpSnippet(block, h3);
 
         const refId = addRef('link', title);
         snapshot.push('- link "' + title + '" [' + refId + ']:');
@@ -2670,7 +2659,7 @@ async function extractGoogleSerp(page) {
     }
     
     return { snapshot: snapshot.join('\n'), elements };
-  });
+  }})(${serpResultBlock}, ${serpSnippet})`);
   
   const seenCounts = new Map();
   for (const el of extracted.elements) {
