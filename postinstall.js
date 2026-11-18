@@ -3,11 +3,11 @@
 // Failures are warnings so restricted plugin-install environments can still
 // install the JavaScript package and fetch the browser later.
 
-import { accessSync, constants, existsSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { downloadBundledCamoufox } from './lib/camoufox-download.js';
+import { BUNDLED_CAMOUFOX_RELEASE, downloadBundledCamoufox } from './lib/camoufox-download.js';
 
 const EXTERNAL_EXECUTABLE_ENV_VARS = [
   'CAMOUFOX_EXECUTABLE',
@@ -58,7 +58,18 @@ function assertExternalExecutable(path) {
   }
 }
 
-export async function main() {
+// The release a Camoufox cache holds, as "<version>-<release>" like BUNDLED_CAMOUFOX_RELEASE,
+// or null when its version.json is missing or unreadable.
+export function cachedCamoufoxRelease(versionFile) {
+  try {
+    const { version, release } = JSON.parse(readFileSync(versionFile, 'utf8'));
+    return version && release ? `${version}-${release}` : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function main({ download = downloadBundledCamoufox, cacheDir = camoufoxCacheDir() } = {}) {
   if (process.env.CAMOFOX_SKIP_DOWNLOAD === '1' || process.env.CAMOFOX_SKIP_DOWNLOAD === 'true') {
     process.stderr.write('[camofox-browser] postinstall: skipping binary download (CAMOFOX_SKIP_DOWNLOAD=1)\n');
     return;
@@ -73,14 +84,22 @@ export async function main() {
     return;
   }
 
-  const versionFile = join(camoufoxCacheDir(), 'version.json');
-  if (existsSync(versionFile)) {
+  // Compare, not just look: a cache from an earlier install (or another tool sharing it) can
+  // hold a release other than the one this version pins, and nothing else replaces it.
+  const versionFile = join(cacheDir, 'version.json');
+  const cached = cachedCamoufoxRelease(versionFile);
+  if (cached === BUNDLED_CAMOUFOX_RELEASE) {
     process.stdout.write('[camofox-browser] postinstall: Camoufox binary already cached.\n');
     return;
   }
+  if (cached) {
+    process.stdout.write(
+      `[camofox-browser] postinstall: cached Camoufox ${cached} is not the pinned ${BUNDLED_CAMOUFOX_RELEASE}; fetching it.\n`
+    );
+  }
 
   try {
-    await downloadBundledCamoufox();
+    await download();
   } catch (error) {
     fail(`failed to download Camoufox: ${error instanceof Error ? error.message : String(error)}`);
   }
