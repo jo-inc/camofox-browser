@@ -43,6 +43,7 @@ const INFRA_HTTP_ONLY = new Set([
   'DELETE /sessions/{userId}/traces/{filename}',
   'GET /tabs/{tabId}/downloads',
   'GET /tabs/{tabId}/downloads/{downloadId}/content',
+  'HEAD /tabs/{tabId}/downloads/{downloadId}/content',
   'POST /tabs/{tabId}/fetch-current-resource',
   'GET /tabs/{tabId}/stats',
   'DELETE /tabs/group/{listItemId}',

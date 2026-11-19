@@ -28,12 +28,12 @@ const spec = swaggerJsdoc({
 });
 
 /**
- * Extract all app.get/post/delete routes from server.js source.
+ * Extract all app.get/head/post/delete routes from server.js source.
  * Returns Set of "METHOD /path" strings (Express format with :params).
  */
 function parseServerRoutes(source) {
   const routes = new Set();
-  const re = /app\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`]/g;
+  const re = /app\.(get|head|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`]/g;
   let m;
   while ((m = re.exec(source)) !== null) {
     routes.add(`${m[1].toUpperCase()} ${m[2]}`);

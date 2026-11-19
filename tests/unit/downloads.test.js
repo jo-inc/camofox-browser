@@ -9,6 +9,7 @@ import {
   captureFetchedResource,
   getDownloadsList,
   readDownloadContent,
+  openDownloadContent,
   cleanupExpiredDownloads,
   MAX_DOWNLOAD_ARTIFACT_BYTES,
   DOWNLOAD_ROOT,
@@ -180,7 +181,7 @@ describe('lib/downloads', () => {
         failure: 'download canceled',
         filePath: null,
       });
-      await expect(readDownloadContent(tabState, downloadId, '')).resolves.toBeNull();
+      await expect(openDownloadContent(tabState, downloadId, '')).resolves.toBeNull();
     });
   });
 
@@ -296,9 +297,22 @@ describe('lib/downloads', () => {
       await fs.mkdir(DOWNLOAD_ROOT, { recursive: true });
       await fs.writeFile(tmpFile, Buffer.from('raw bytes'));
       const tabState = { downloads: [{ id: downloadId, owner: 'alice', state: 'completed', filePath: tmpFile, createdAt: new Date().toISOString() }] };
-      await expect(readDownloadContent(tabState, downloadId, 'bob')).resolves.toBeNull();
+      await expect(openDownloadContent(tabState, downloadId, 'bob')).resolves.toBeNull();
+      const result = await openDownloadContent(tabState, downloadId, 'alice');
+      expect((await result.fileHandle.readFile()).toString()).toBe('raw bytes');
+      await result.fileHandle.close();
+      await fs.unlink(tmpFile);
+    });
+
+
+    test('keeps the buffered readDownloadContent helper compatible', async () => {
+      const downloadId = `compat-${Date.now()}-${Math.random()}`;
+      const tmpFile = path.join(DOWNLOAD_ROOT, `${downloadId}.bin`);
+      await fs.mkdir(DOWNLOAD_ROOT, { recursive: true, mode: 0o700 });
+      await fs.writeFile(tmpFile, Buffer.from('legacy bytes'));
+      const tabState = { downloads: [{ id: downloadId, owner: 'alice', state: 'completed', filePath: tmpFile, createdAt: new Date().toISOString() }] };
       const result = await readDownloadContent(tabState, downloadId, 'alice');
-      expect(result.data.toString()).toBe('raw bytes');
+      expect(result.data.toString()).toBe('legacy bytes');
       await fs.unlink(tmpFile);
     });
 
@@ -315,9 +329,10 @@ describe('lib/downloads', () => {
 
       expect(download.tabId).toBe('tab-1');
       expect(download.state).toBe('completed');
-      await expect(readDownloadContent(tabState, download.id, 'bob')).resolves.toBeNull();
-      const result = await readDownloadContent(tabState, download.id, 'alice');
-      expect(result.data.toString()).toBe('%PDF-test');
+      await expect(openDownloadContent(tabState, download.id, 'bob')).resolves.toBeNull();
+      const result = await openDownloadContent(tabState, download.id, 'alice');
+      expect((await result.fileHandle.readFile()).toString()).toBe('%PDF-test');
+      await result.fileHandle.close();
       await clearTabDownloads(tabState);
     });
 
