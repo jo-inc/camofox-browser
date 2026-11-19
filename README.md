@@ -638,6 +638,10 @@ Browser behavior can be tuned in `camofox.config.json`:
 
 `newPageTimeoutMs` controls how long tab creation waits for Firefox to create a page. If the context is unresponsive, Camofox replaces only that user's context and retries once. The default is 10 seconds.
 
+Unix-domain sockets are available only when launching the standalone REST server directly (for example, `CAMOFOX_SOCKET_PATH=/path/to/api.sock node server.js`). The socket's parent directory must already exist, be owned by the current user, and grant no permissions to group or others (`0700`). This prevents access during the brief interval between binding the pathname and applying `CAMOFOX_SOCKET_MODE`. When `CAMOFOX_SOCKET_PATH` is set, `CAMOFOX_PORT` and `CAMOFOX_BIND_HOST` are ignored and no TCP listener is opened. On startup, Camofox removes an inactive stale socket, but refuses to replace an active socket, regular file, or symlink. Cleanup uses socket identity checks so same-user replacement entries are preserved on a best-effort basis.
+
+The OpenClaw plugin and MCP adapter remain TCP-only HTTP clients. Socket variables are not forwarded to an OpenClaw auto-started server. To use either client, keep its REST server on TCP; `CAMOFOX_SOCKET_PATH` and `CAMOFOX_SOCKET_MODE` apply only to a directly launched `server.js`.
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -645,6 +649,8 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `CAMOFOX_PORT` | Server port | `9377` |
 | `PORT` | Server port (fallback, for platforms like Fly.io, Railway) | `9377` |
 | `CAMOFOX_BIND_HOST` | Optional server bind host. Set to `127.0.0.1` for loopback-only access or `0.0.0.0` for IPv4 on all interfaces. When unset, Node uses its default all-interface binding. | - |
+| `CAMOFOX_SOCKET_PATH` | Unix-domain socket path for a directly launched `server.js`. When set, listen only on this socket and do not open the TCP port. Linux/macOS only; the existing parent directory must be owned by the current user with mode `0700`. Not supported by the TCP-only OpenClaw plugin or MCP adapter. | - |
+| `CAMOFOX_SOCKET_MODE` | Octal permissions for the standalone server's Unix socket, such as `0600` or `0660`. | `0600` |
 | `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
@@ -763,7 +769,7 @@ The persistence plugin saves cookies and localStorage to `~/.camofox/profiles/<h
 
 ### Network access
 
-Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on port 9377, bound to all interfaces by default or to `CAMOFOX_BIND_HOST` when configured, optionally protected by `CAMOFOX_ACCESS_KEY`.
+Outbound connections are made to: (1) URLs the agent navigates to (core functionality), (2) the telemetry endpoint (anonymized, opt-out available). Inbound: the REST API on port 9377, bound to all interfaces by default or to `CAMOFOX_BIND_HOST` when configured, optionally protected by `CAMOFOX_ACCESS_KEY`. A directly launched `server.js` can instead listen only on a Unix-domain socket when `CAMOFOX_SOCKET_PATH` is set.
 
 ### Subprocess usage
 

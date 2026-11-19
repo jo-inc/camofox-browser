@@ -20,6 +20,33 @@ describe('loadConfig', () => {
     expect(config.serverEnv.CAMOFOX_BIND_HOST).toBe('127.0.0.1');
   });
 
+  test('configures a standalone Unix socket from the environment without forwarding it', () => {
+    process.env.CAMOFOX_SOCKET_PATH = ' /run/camofox/api.sock ';
+    process.env.CAMOFOX_SOCKET_MODE = '0660';
+
+    const config = loadConfig();
+
+    expect(config.unixSocket).toEqual({ path: '/run/camofox/api.sock', mode: 0o660 });
+    expect(config.serverEnv).not.toHaveProperty('CAMOFOX_SOCKET_PATH');
+    expect(config.serverEnv).not.toHaveProperty('CAMOFOX_SOCKET_MODE');
+  });
+
+  test('ignores Unix socket settings in camofox.config.json', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camofox-config-'));
+    const configPath = path.join(dir, 'camofox.config.json');
+
+    fs.writeFileSync(configPath, JSON.stringify({ unixSocket: { path: '/tmp/camofox.sock', mode: '0640' } }));
+    expect(loadConfig({ configPath }).unixSocket).toEqual({ path: '', mode: 0o600 });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('rejects unsafe or malformed Unix socket modes', () => {
+    for (const mode of ['888', '07777', 'not-octal', '06000']) {
+      process.env.CAMOFOX_SOCKET_MODE = mode;
+      expect(() => loadConfig()).toThrow('Unix socket mode must be an octal permission value');
+    }
+  });
+
   test('prefers CAMOUFOX_EXECUTABLE for external Camoufox executable', () => {
     process.env.CAMOUFOX_EXECUTABLE = '/nix/store/camoufox/bin/camoufox';
     process.env.CAMOUFOX_EXECUTABLE_PATH = '/ignored/camoufox';
