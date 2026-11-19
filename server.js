@@ -29,8 +29,8 @@ import {
   captureFetchedResource,
   MAX_FETCHED_RESOURCE_BYTES,
   getDownloadsList,
-  readDownloadContent,
-  sanitizeFilename,
+  openDownloadContent,
+  sendDownloadContent,
 } from './lib/downloads.js';
 import { extractPageImages } from './lib/images.js';
 import { extractDeterministic, validateSchema as validateExtractSchema } from './lib/extract.js';
@@ -6712,40 +6712,97 @@ app.get('/tabs/:tabId/downloads', async (req, res) => {
  *         in: query
  *         required: true
  *         schema: { type: string }
+ *       - name: Range
+ *         in: header
+ *         required: false
+ *         description: A single byte range (for example, `bytes=0-1023`).
+ *         schema: { type: string }
  *     responses:
  *       200:
- *         description: Raw download bytes.
+ *         description: Complete download bytes.
+ *         headers:
+ *           Accept-Ranges:
+ *             schema: { type: string, enum: [bytes] }
+ *           Content-Length:
+ *             schema: { type: integer }
+ *           Content-Disposition:
+ *             schema: { type: string }
  *         content:
  *           application/octet-stream:
  *             schema: { type: string, format: binary }
+ *       206:
+ *         description: Requested byte range.
+ *         headers:
+ *           Accept-Ranges:
+ *             schema: { type: string, enum: [bytes] }
+ *           Content-Range:
+ *             schema: { type: string }
+ *           Content-Length:
+ *             schema: { type: integer }
+ *         content:
+ *           application/octet-stream:
+ *             schema: { type: string, format: binary }
+ *       416:
+ *         description: Malformed, multiple, or unsatisfiable byte range.
+ *         headers:
+ *           Content-Range:
+ *             schema: { type: string }
  *       404:
  *         description: Download is unknown, expired, failed, or unavailable.
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Error' }
+ *   head:
+ *     tags: [Content]
+ *     summary: Fetch completed download headers
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *       - name: downloadId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Complete download headers.
+ *         headers:
+ *           Accept-Ranges:
+ *             schema: { type: string, enum: [bytes] }
+ *           Content-Length:
+ *             schema: { type: integer }
+ *           Content-Disposition:
+ *             schema: { type: string }
+ *       404:
+ *         description: Download is unknown, expired, failed, or unavailable.
  */
-app.get('/tabs/:tabId/downloads/:downloadId/content', async (req, res) => {
+async function downloadContentHandler(req, res) {
   try {
     const userId = req.query.userId;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId);
-    const result = await readDownloadContent(found.tabState, req.params.downloadId, userId);
+    const result = await openDownloadContent(found.tabState, req.params.downloadId, userId);
     if (!result) return res.status(404).json({ error: 'Download not found' });
-    const filename = sanitizeFilename(result.record.filename || result.record.suggestedFilename);
-    res.set({
-      'Content-Type': result.record.mimeType || 'application/octet-stream',
-      'Content-Length': String(result.data.length),
-      'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-      'Cache-Control': 'no-store',
-    });
-    return res.send(result.data);
+    return await sendDownloadContent(req, res, result);
   } catch (err) {
     failuresTotal.labels(classifyError(err), 'download_content').inc();
     log('error', 'download content failed', { reqId: req.reqId, error: err.message });
+    if (res.headersSent) {
+      if (!res.destroyed) res.destroy();
+      return;
+    }
     return res.status(404).json({ error: 'Download not found' });
   }
-});
+}
+
+app.head('/tabs/:tabId/downloads/:downloadId/content', downloadContentHandler);
+app.get('/tabs/:tabId/downloads/:downloadId/content', downloadContentHandler);
 
 // Get image elements from current page
 /**
