@@ -12,5 +12,6 @@ export function loadMcpConfig() {
     apiKey: process.env.CAMOFOX_API_KEY || '',
     accessKey: (process.env.CAMOFOX_ACCESS_KEY || '').trim(),
     cookiesDir: process.env.CAMOFOX_COOKIES_DIR || join(os.homedir(), '.camofox', 'cookies'),
+    allowedUserIds: (process.env.CAMOFOX_MCP_USER_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   };
 }

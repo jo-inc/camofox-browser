@@ -231,6 +231,20 @@ app.post('/tabs/:tabId/click', async (req, res) => {
 - Run `npx jest tests/unit/openapi.test.js` to verify coverage -- the test fails if any route is missing from the spec, if a stale route exists, or if `openapi.json` is out of date
 - Reusable schemas go in `components.schemas` in `lib/openapi.js` (the `swaggerDefinition`); reference them via `$ref: '#/components/schemas/Name'`
 
+## MCP / OpenClaw Tool Parity (REQUIRED for route changes)
+
+Camofox has two front doors: the HTTP API and the agent tool interface (an MCP server, wrapped by the OpenClaw plugin). **Every tool-like browser action must be reachable from both.** This is enforced by a build-time gate -- you cannot add a browser action to HTTP and quietly leave it out of the tool set.
+
+- **Single source of truth**: `mcp/lib/tool-contracts.mjs` defines every tool's name, input schema, and how it maps to an HTTP request (`buildRequest`). `lib/mcp-tool-contracts.mjs` just re-exports it, and `openclaw.plugin.json` lists the same tool names. Edit the contract once; MCP and OpenClaw both update.
+- **When you add or change an HTTP route that an agent would call** (anything tool-like -- navigation, reading the page, interacting, scripting/state), you MUST also:
+  1. Add or update the tool in `mcp/lib/tool-contracts.mjs` (schema + `buildRequest` case).
+  2. Add the tool name to `openclaw.plugin.json`'s `contracts.tools`.
+  3. Add contract cases in `tests/unit/mcp-contracts.test.js` and bump the tool count.
+  4. Update the tool list in `scripts/test-mcp.mjs` (smoke test) and `README.md`.
+- **The parity gate**: `tests/unit/mcpHttpParity.test.js` fails if any `openapi.json` route is not either (a) reachable by a tool, or (b) explicitly allowlisted. The allowlist has two buckets: `INFRA_HTTP_ONLY` (health, metrics, start/stop, session admin, traces, download streaming, deprecated aliases -- not agent tools) and `TOOL_BACKLOG_HTTP_ONLY` (browser actions still missing a tool). **The backlog is currently empty and must stay that way** -- a genuinely non-tool route goes in `INFRA_HTTP_ONLY` with a reason; a tool-like route gets a tool. Do not grow the backlog.
+- **Keep tool schemas matching the real route**, not the OpenAPI doc if the two disagree (e.g. `/tabs/:tabId/wait` accepts `timeout`/`waitForNetwork`/`dismissConsent`). Verify against the handler in `server.js`.
+- After changes, run: `node scripts/test-mcp.mjs` (stdio smoke test) and `NODE_OPTIONS='--experimental-vm-modules' npx jest tests/unit/mcp-contracts.test.js tests/unit/mcpHttpParity.test.js`.
+
 ## Telemetry
 
 **No credentials are embedded in this package.** `lib/reporter.js` is a stateless HTTP client that sends anonymized crash/hang telemetry to a Cloudflare Worker endpoint (`camofox-telemetry.askjo.workers.dev`). The endpoint holds the GitHub App credentials as environment secrets -- see `workers/crash-reporter/index.ts`. The source is in-repo and auditable.

@@ -59,6 +59,13 @@ describe('browser error normalization', () => {
     expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
   });
 
+  test('Playwright superseded navigations normalize to retryable navigation races', () => {
+    const err = new Error('page.goto: Navigation to "https://first.example" is interrupted by another navigation to "https://second.example"');
+    expect(browserErrorStatus(err)).toBe(409);
+    expect(browserErrorCode(err)).toBe('navigation_race');
+    expect(browserErrorRecovery(err)).toBe('snapshot_then_retry');
+  });
+
   test('Firefox interrupted navigations normalize to retryable navigation races', () => {
     for (const message of ['page.goto: NS_ERROR_NET_INTERRUPT', 'page.reload: NS_BINDING_ABORTED']) {
       const err = new Error(message);
@@ -121,5 +128,16 @@ describe('browser error normalization', () => {
     expect(browserErrorStatus(concurrency)).toBe(503);
     expect(browserErrorCode(concurrency)).toBe('concurrency_timeout');
     expect(browserErrorRecovery(concurrency)).toBe('retry');
+  });
+
+  test('responsive new-page timeouts normalize to a retryable 503', () => {
+    const err = Object.assign(new Error('new page timed out after 10000ms'), {
+      code: 'new_page_timeout',
+      statusCode: 503,
+    });
+    expect(browserErrorStatus(err)).toBe(503);
+    expect(browserErrorCode(err)).toBe('new_page_timeout');
+    expect(browserErrorRecovery(err)).toBe('retry');
+    expect(isRetryableBrowserError(err)).toBe(true);
   });
 });

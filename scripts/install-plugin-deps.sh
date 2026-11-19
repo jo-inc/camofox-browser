@@ -9,18 +9,37 @@ CONFIG="/app/camofox.config.json"
 PLUGINS_DIR="/app/plugins"
 
 # Read plugin list from camofox.config.json, or fall back to all plugin dirs
+PLUGIN_LIST=""
+USE_ALL_PLUGINS=1
 if [ -f "$CONFIG" ] && command -v node >/dev/null 2>&1; then
   PLUGIN_LIST=$(node -e "
     const c = JSON.parse(require('fs').readFileSync('$CONFIG','utf-8'));
     if (Array.isArray(c.plugins)) {
-      console.log(c.plugins.join(' '));
+      console.log('selected ' + c.plugins.join(' '));
     } else if (c.plugins && typeof c.plugins === 'object') {
-      console.log(Object.keys(c.plugins).join(' '));
+      console.log('selected ' + Object.entries(c.plugins)
+        .filter(([name, settings]) => {
+          if (settings !== false && settings?.enabled !== false) return true;
+          try {
+            const metadata = JSON.parse(require('fs').readFileSync(
+              require('path').join('$PLUGINS_DIR', name, 'plugin.json'), 'utf8'));
+            return typeof metadata.enableEnvVar === 'string' && metadata.enableEnvVar.length > 0;
+          } catch {
+            return false;
+          }
+        })
+        .map(([name]) => name).join(' '));
     }
-  " 2>/dev/null || echo "")
+  ")
+  case "$PLUGIN_LIST" in
+    selected*)
+      PLUGIN_LIST=${PLUGIN_LIST#selected }
+      USE_ALL_PLUGINS=0
+      ;;
+  esac
 fi
 
-if [ -z "$PLUGIN_LIST" ]; then
+if [ "$USE_ALL_PLUGINS" -eq 1 ]; then
   # No config or no plugins key -- use all plugin directories
   PLUGIN_LIST=""
   for d in "$PLUGINS_DIR"/*/; do
@@ -38,7 +57,8 @@ PKGS=""
 for name in $PLUGIN_LIST; do
   f="$PLUGINS_DIR/$name/apt.txt"
   [ -f "$f" ] || continue
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%"$(printf '\r')"}
     case "$line" in \#*|"") continue ;; esac
     PKGS="$PKGS $line"
   done < "$f"
@@ -46,7 +66,9 @@ done
 
 if [ -n "$PKGS" ]; then
   echo "[install-plugin-deps] Installing:$PKGS"
-  apt-get update && apt-get install -y $PKGS && rm -rf /var/lib/apt/lists/*
+  apt-get update
+  printf '%s\n' "$PKGS" | xargs apt-get install -y
+  rm -rf /var/lib/apt/lists/*
 else
   echo "[install-plugin-deps] No apt dependencies"
 fi

@@ -1,6 +1,6 @@
 {
   "name": "@askjo/camofox-browser-mcp",
-  "version": "1.18.1",
+  "version": "1.19.0",
   "description": "Standalone stdio MCP server exposing the camofox-browser REST API as MCP tools (Claude Code, Codex, agy, Cursor, opencode). Proxies to an already-running camofox-browser REST server — does not itself require the browser binary, Playwright, or the core server's dependencies. Initial MCP implementation contributed by @epicsagas.",
   "type": "module",
   "main": "server.mjs",
@@ -38,11 +38,16 @@
     "README.md"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.32.1"
   },
   "overrides": {
-    "fast-uri": "3.1.8",
-    "hono": "4.13.7",
-    "qs": "6.16.0"
+    "fast-uri": "3.1.9",
+    "ip-address": "10.7.4",
+    "hono": "4.13.13",
+    "qs": "6.16.1",
+    "zod": "4.6.7",
+    "proxy-addr": "2.0.8",
+    "body-parser": "2.4.0",
+    "@hono/node-server": "2.1.6"
   }
 }

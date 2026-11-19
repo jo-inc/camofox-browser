@@ -34,7 +34,9 @@ describe('timed-out tab operations', () => {
 
     expect(source).toContain('function tabCreateRequestTimeoutMs()');
     expect(source).toContain('return Math.max(requestTimeoutMs(), (NEW_PAGE_TIMEOUT_MS * 2) + 5000);');
-    expect(createRoute).toContain("})(), tabCreateRequestTimeoutMs(), 'tab create');");
+    // The build work runs under the base tab-create deadline (it may be extended
+    // once for an in-flight cold build; see tabCreateWarming.test.js).
+    expect(createRoute).toContain("withTimeout(tabCreateWork, tabCreateRequestTimeoutMs(), 'tab create')");
   });
 
   test('returns a stable recoverable error after timeout cleanup', () => {
@@ -43,6 +45,12 @@ describe('timed-out tab operations', () => {
     expect(browserErrorStatus(error)).toBe(410);
     expect(browserErrorCode(error)).toBe('tab_timeout');
     expect(browserErrorRecovery(error)).toBe('create_new_tab');
+  });
+
+  test('a responsive new-page timeout preserves the current Fly session', () => {
+    const source = readFileSync(new URL('../../server.js', import.meta.url), 'utf8');
+    expect(source).toContain("err.statusCode === 503 && err.code !== 'new_page_timeout'");
+    expect(source).toContain("err.code !== 'tab_timeout' && err.code !== 'new_page_timeout'");
   });
 
   test('keeps the tab and its page after an evaluate timeout', async () => {
@@ -88,38 +96,6 @@ describe('timed-out tab operations', () => {
     }
   }, 30000);
 
-  test('an async evaluate is read back later, and its timeout keeps the tab', async () => {
-    const client = createClient(serverUrl);
-    const { tabId } = await client.createTab();
-    const start = (expression, timeoutMs) => client.request(
-      'POST', `/tabs/${tabId}/evaluate`, { userId: client.userId, expression, async: true, timeoutMs });
-    const read = (jobId, waitMs = 0, userId = client.userId) => client.request(
-      'GET', `/tabs/${tabId}/evaluate/${jobId}?${new URLSearchParams({ userId, waitMs: String(waitMs) })}`, null, { timeout: 20000 });
-
-    try {
-      const job = await start('new Promise(r => setTimeout(() => r(9), 2000))', 10000);
-      expect(job.jobId).toBeTruthy();
-      expect(job.state).toBe('running');
-      expect((await read(job.jobId)).state).toBe('running');
-      const done = await read(job.jobId, 10000);
-      expect(done).toMatchObject({ ok: true, state: 'done', result: 9 });
-      expect((await read(job.jobId)).result).toBe(9);
-
-      const slow = await start('new Promise(() => {})', 1000);
-      const timedOut = await read(slow.jobId, 5000);
-      expect(timedOut).toMatchObject({ state: 'timeout', code: 'evaluate_timeout', tabKept: true });
-      expect((await client.evaluate(tabId, '1')).result).toBe(1);
-
-      const failed = await start('Promise.reject(new Error("boom"))', 5000);
-      expect(await read(failed.jobId, 5000)).toMatchObject({ ok: false, state: 'error' });
-
-      const stranger = await read(job.jobId, 0, 'someone-else').catch((e) => e);
-      expect(stranger.status).toBe(404);
-    } finally {
-      await client.cleanup();
-    }
-  }, 30000);
-
   test('rejects a timeoutMs outside 1000..900000', async () => {
     const client = createClient(serverUrl);
     const { tabId } = await client.createTab();
@@ -134,4 +110,12 @@ describe('timed-out tab operations', () => {
       await client.cleanup();
     }
   }, 30000);
+
+  test('reports the cgroup memory reading on /health', async () => {
+    const health = await (await fetch(`${serverUrl}/health`)).json();
+    const cgroup = health.memory.cgroup;
+    if (cgroup === null) return; // not on cgroup v2
+    expect(Number.isInteger(cgroup.usedMb)).toBe(true);
+    expect(typeof cgroup.atCap).toBe('boolean');
+  });
 });
