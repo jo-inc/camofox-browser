@@ -1,5 +1,6 @@
 import { Camoufox, launchOptions } from 'camoufox-js';
 import { VirtualDisplay } from 'camoufox-js/dist/virtdisplay.js';
+import { spawnXvfbTiedToServer } from './lib/xvfb-spawn.js';
 import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
@@ -1099,6 +1100,10 @@ function getTotalTabCount() {
 const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1280x720x24';
 
 class DefaultVirtualDisplay extends VirtualDisplay {
+  spawnXvfb() {
+    return spawnXvfbTiedToServer(this);
+  }
+
   get xvfb_args() {
     const args = super.xvfb_args;
     const idx = args.indexOf('0');

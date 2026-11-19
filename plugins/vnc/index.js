@@ -48,6 +48,7 @@
 import { resolveVncConfig, startWatcher } from './vnc-launcher.js';
 import { requireAuth } from '../../lib/auth.js';
 import { removeXvfbDisplayFiles } from '../../lib/tmp-cleanup.js';
+import { spawnXvfbTiedToServer } from '../../lib/xvfb-spawn.js';
 
 export async function register(app, ctx, pluginConfig = {}) {
   const { events, config, log, sessions, VirtualDisplay, safeError } = ctx;
@@ -65,6 +66,10 @@ export async function register(app, ctx, pluginConfig = {}) {
   const { resolution } = vncConfig;
 
   class VncVirtualDisplay extends VirtualDisplay {
+    spawnXvfb() {
+      return spawnXvfbTiedToServer(this);
+    }
+
     get xvfb_args() {
       const args = super.xvfb_args;
       const idx = args.indexOf('0');
