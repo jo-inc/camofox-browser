@@ -397,8 +397,8 @@ export function register(app, ctx) {
 #### Server
 | Event | Payload |
 |-------|---------|
-| `server:starting` | `{ port }` |
-| `server:started` | `{ port, pid }` |
+| `server:starting` | `{ port, socket }` |
+| `server:started` | `{ port, host, socket, pid, plugins }` |
 | `server:shutdown` | `{ signal }` |
 
 ### Mutating Hooks

@@ -54,6 +54,11 @@ async function startServer(
 ): Promise<ChildProcess> {
   const cfg = loadConfig();
   const env: Record<string, string> = { ...cfg.serverEnv };
+  // The OpenClaw client and readiness probe are TCP-only. Keep socket-only
+  // standalone settings out of the auto-started child even if a future config
+  // source adds them to serverEnv.
+  delete env.CAMOFOX_SOCKET_PATH;
+  delete env.CAMOFOX_SOCKET_MODE;
   if (pluginCfg?.maxSessions != null) env.MAX_SESSIONS = String(pluginCfg.maxSessions);
   if (pluginCfg?.maxTabsPerSession != null) env.MAX_TABS_PER_SESSION = String(pluginCfg.maxTabsPerSession);
   if (pluginCfg?.sessionTimeoutMs != null) env.SESSION_TIMEOUT_MS = String(pluginCfg.sessionTimeoutMs);

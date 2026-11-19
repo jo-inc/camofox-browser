@@ -4,11 +4,13 @@ import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import { expandMacro } from './lib/macros.js';
 import { getSearchFallbacks } from './lib/search-fallbacks.js';
 import { hasGoogleOrganicResults } from './lib/google-serp.js';
 import { loadConfig } from './lib/config.js';
+import { listenServer } from './lib/server-listener.js';
 import { contextIdentityOptions, launchLocale } from './lib/browser-identity.js';
 import { normalizePlaywrightProxy, createProxyPool, buildProxyUrl } from './lib/proxy.js';
 import { createFlyHelpers } from './lib/fly.js';
@@ -8741,23 +8743,29 @@ process.on('unhandledRejection', (reason) => {
 
 // Graceful shutdown
 let shuttingDown = false;
+let server = null;
+let listener = null;
 
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', 'shutting down', { signal });
 
-  // Arm the watchdog and stop accepting new connections before anything
-  // that can block or reject -- a hung or failing server:shutdown listener
-  // must not disable the force-exit safety net or widen the window where
-  // the server still accepts new sessions.
+  // Arm the watchdog before anything that can block or reject. For a Unix
+  // listener, identity-checked unlink must happen before server.close(), since
+  // Node otherwise unlinks the pathname without checking for a replacement.
   const forceTimeout = setTimeout(() => {
     log('error', 'shutdown timed out, forcing exit');
     process.exit(1);
   }, CONFIG.shutdownTimeoutMs);
   forceTimeout.unref();
 
-  server.close();
+  if (listener) {
+    await listener.cleanup().catch((err) => {
+      log('warn', 'listener cleanup failed', { error: err.message });
+    });
+  }
+  server?.close();
   stopMemoryReporter();
 
   await pluginEvents.emitAsync('server:shutdown', { signal }).catch((err) => {
@@ -8783,7 +8791,10 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
 
 const PORT = CONFIG.port;
-pluginEvents.emit('server:starting', { port: PORT });
+pluginEvents.emit('server:starting', {
+  port: CONFIG.unixSocket.path ? null : PORT,
+  socket: CONFIG.unixSocket.path || null,
+});
 
 // Load plugins before starting the server
 const pluginCtx = {
@@ -8820,55 +8831,86 @@ mountDocs(app);
 // --- Sentry Express error handler (after all routes, before app.listen) ---
 setupSentryErrorHandler(app);
 
-const server = app.listen(PORT, CONFIG.bindHost || undefined, async () => {
-  startMemoryReporter();
-  refreshActiveTabsGauge();
-  refreshTabLockQueueDepth();
-  const address = server.address();
-  const bindHost = typeof address === 'object' && address ? address.address : CONFIG.bindHost;
-  pluginEvents.emit('server:started', { port: PORT, host: bindHost, pid: process.pid, plugins: loadedPlugins });
-  if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, host: bindHost, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
-  } else {
-    log('info', 'server started', { port: PORT, host: bindHost, pid: process.pid, nodeVersion: process.version });
-  }
-  const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
-  if (tmpCleanup.removed > 0) {
-    log('info', 'cleaned up orphaned camoufox temp files', tmpCleanup);
-  }
-  const traceSweep = sweepOldTraces({
-    baseDir: CONFIG.tracesDir,
-    ttlMs: CONFIG.tracesTtlHours * 3600 * 1000,
-    maxBytesPerFile: CONFIG.tracesMaxBytes,
-  });
-  if (traceSweep.removedTtl > 0 || traceSweep.removedOversized > 0) {
-    log('info', 'swept old traces', traceSweep);
-  }
-  // Pre-warm browser so first request doesn't eat a 6-7s cold start
-  try {
-    const start = Date.now();
-    await ensureBrowser();
-    log('info', 'browser pre-warmed', { ms: Date.now() - start });
-    scheduleBrowserIdleShutdown();
-  } catch (err) {
-    if (isFatalInstallError(err)) {
-      log('error', 'browser pre-warm aborted: Camoufox binaries are not installed', {
-        error: err.message,
-        remediation: camoufoxInstallRemediation(),
-      });
-    } else {
-      log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });
-      scheduleBrowserWarmRetry();
-    }
-  }
-  // Idle self-shutdown removed -- Fly manages machine lifecycle via fly.toml.
-});
-
+server = http.createServer(app);
+let startupComplete = false;
 server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    log('error', 'port in use', { port: PORT });
-    process.exit(1);
-  }
-  log('error', 'server error', { error: err.message });
+  if (!startupComplete) return;
+  log('error', 'server error', {
+    error: err.message,
+    code: err.code,
+    ...(listener.kind === 'unix' ? { socket: listener.path } : { port: listener.port, host: listener.host }),
+  });
   process.exit(1);
 });
+try {
+  listener = await listenServer(server, {
+    port: PORT,
+    bindHost: CONFIG.bindHost,
+    unixSocket: CONFIG.unixSocket,
+  });
+} catch (err) {
+  if (CONFIG.unixSocket.path) {
+    log('error', 'Unix socket listen failed', {
+      socket: CONFIG.unixSocket.path,
+      error: err.message,
+      code: err.code,
+    });
+  } else if (err.code === 'EADDRINUSE') {
+    log('error', 'port in use', { port: PORT, host: CONFIG.bindHost || null });
+  } else {
+    log('error', 'server listen failed', { port: PORT, host: CONFIG.bindHost || null, error: err.message, code: err.code });
+  }
+  process.exit(1);
+  throw err;
+}
+
+startupComplete = true;
+
+startMemoryReporter();
+refreshActiveTabsGauge();
+refreshTabLockQueueDepth();
+pluginEvents.emit('server:started', {
+  port: listener.kind === 'tcp' ? listener.port : null,
+  host: listener.kind === 'tcp' ? listener.host : null,
+  socket: listener.kind === 'unix' ? listener.path : null,
+  pid: process.pid,
+  plugins: loadedPlugins,
+});
+const listenDetails = listener.kind === 'unix'
+  ? { socket: listener.path, mode: listener.mode.toString(8).padStart(4, '0') }
+  : { port: listener.port, host: listener.host };
+if (FLY_MACHINE_ID) {
+  log('info', 'server started (fly)', { ...listenDetails, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+} else {
+  log('info', 'server started', { ...listenDetails, pid: process.pid, nodeVersion: process.version });
+}
+const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
+if (tmpCleanup.removed > 0) {
+  log('info', 'cleaned up orphaned camoufox temp files', tmpCleanup);
+}
+const traceSweep = sweepOldTraces({
+  baseDir: CONFIG.tracesDir,
+  ttlMs: CONFIG.tracesTtlHours * 3600 * 1000,
+  maxBytesPerFile: CONFIG.tracesMaxBytes,
+});
+if (traceSweep.removedTtl > 0 || traceSweep.removedOversized > 0) {
+  log('info', 'swept old traces', traceSweep);
+}
+// Pre-warm browser so first request doesn't eat a 6-7s cold start
+try {
+  const start = Date.now();
+  await ensureBrowser();
+  log('info', 'browser pre-warmed', { ms: Date.now() - start });
+  scheduleBrowserIdleShutdown();
+} catch (err) {
+  if (isFatalInstallError(err)) {
+    log('error', 'browser pre-warm aborted: Camoufox binaries are not installed', {
+      error: err.message,
+      remediation: camoufoxInstallRemediation(),
+    });
+  } else {
+    log('error', 'browser pre-warm failed (will retry in background)', { error: err.message });
+    scheduleBrowserWarmRetry();
+  }
+}
+// Idle self-shutdown removed -- Fly manages machine lifecycle via fly.toml.

@@ -28,6 +28,10 @@ let serverProcess = null;
 async function startServer(pluginDir, port, log, pluginCfg) {
     const cfg = loadConfig();
     const env = { ...cfg.serverEnv };
+    // Socket listening is supported only when server.js is launched directly;
+    // the OpenClaw client and its readiness probe remain TCP-only.
+    delete env.CAMOFOX_SOCKET_PATH;
+    delete env.CAMOFOX_SOCKET_MODE;
     if (pluginCfg?.maxSessions != null)
         env.MAX_SESSIONS = String(pluginCfg.maxSessions);
     if (pluginCfg?.maxTabsPerSession != null)
