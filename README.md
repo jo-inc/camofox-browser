@@ -600,6 +600,15 @@ curl -X POST http://localhost:9377/youtube/transcript \
 
 Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) when available (fast, no browser needed). Falls back to a browser-based intercept method if yt-dlp is not installed -- this is slower and less reliable due to YouTube ad pre-rolls.
 
+### Evaluate Jobs (opt-in plugin)
+
+Disabled by default. Enable with `ENABLE_EVALUATE_JOBS=1` or `"evaluate-jobs": { "enabled": true }` in `camofox.config.json`. See [plugins/evaluate-jobs](plugins/evaluate-jobs/).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/tabs/:id/evaluate-async` | Start an evaluate as a job; answers 202 with its `jobId` |
+| `GET` | `/tabs/:id/evaluate-async/:jobId` | Read a job's state and result; `waitMs` long-polls until it settles |
+
 ### Server
 
 | Method | Endpoint | Description |
@@ -694,6 +703,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `VNC_BIND` | noVNC listen address; set `0.0.0.0` to reach noVNC through a published container port | `127.0.0.1` |
 | `VNC_RFB_BIND` | Native VNC listen address; non-loopback requires `VNC_PASSWORD` and does not change with `VNC_BIND` | `127.0.0.1` |
 | `NOVNC_PORT` | noVNC web UI port | `6080` |
+| `ENABLE_EVALUATE_JOBS` | Enable the evaluate-jobs plugin (`1`) | - |
 
 ## Interactive desktop browser
 
