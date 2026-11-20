@@ -685,6 +685,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
+| `CAMOFOX_KEEPALIVE_USERS` | Comma-separated userIds whose tabs and session never expire for idleness (see `PUT /sessions/:userId/keepalive` for a temporary keep-alive) | - |
 | `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang telemetry (`false` to disable) | `true` |
 | `CAMOFOX_CRASH_REPORT_URL` | Telemetry endpoint ([self-hosted endpoint](#self-hosted-telemetry-endpoint)) | `https://camofox-telemetry.askjo.workers.dev/report` |
 | `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for telemetry issues | `jo-inc/camofox-browser` |

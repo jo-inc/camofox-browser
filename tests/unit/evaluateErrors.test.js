@@ -42,7 +42,7 @@ describe('evaluate route error handling', () => {
 
   test('the idle reapers spare a tab while an evaluate runs', () => {
     const tabReaper = serverSource.slice(serverSource.indexOf('// Per-tab inactivity reaper'));
-    expect(tabReaper).toContain('if (!tabState._lastReaperCheck || isEvaluating(tabState, now)) {');
+    expect(tabReaper).toContain('if (!tabState._lastReaperCheck || isEvaluating(tabState, now) || keepAlive.isKeptAlive(userId, now)) {');
     const sessionReaper = serverSource.slice(serverSource.indexOf('// Cleanup stale sessions'));
     expect(sessionReaper.indexOf('if (evaluating) session.lastAccess = now;'))
       .toBeLessThan(sessionReaper.indexOf('SESSION_TIMEOUT_MS > 0 && now - session.lastAccess'));
