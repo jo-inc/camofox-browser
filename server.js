@@ -65,6 +65,7 @@ import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
+import { createKeepAlive, validKeepaliveMinutes, KEEPALIVE_DEFAULT_MINUTES, KEEPALIVE_MAX_MINUTES } from './lib/keepalive.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
@@ -667,6 +668,7 @@ const sessions = new Map();
 const SESSION_TIMEOUT_MS = CONFIG.sessionTimeoutMs;
 const MAX_SNAPSHOT_NODES = 500;
 const TAB_INACTIVITY_MS = CONFIG.tabInactivityMs;
+const keepAlive = createKeepAlive(CONFIG.keepaliveUsers);
 const MAX_SESSIONS = CONFIG.maxSessions;
 const MAX_TABS_PER_SESSION = CONFIG.maxTabsPerSession;
 const MAX_TABS_GLOBAL = CONFIG.maxTabsGlobal;
@@ -7633,6 +7635,99 @@ app.delete('/sessions/:userId', async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /sessions/{userId}/keepalive:
+ *   put:
+ *     tags: [Sessions]
+ *     summary: Keep a user's tabs and session from expiring for idleness
+ *     description: |
+ *       Until the deadline, the tab inactivity reaper and the session timeout skip this userId, for work that makes
+ *       no API calls, such as a person signing in over VNC. Memory pressure handling, crashed-tab reaping and
+ *       DELETE /sessions/{userId} are unchanged. userIds listed in CAMOFOX_KEEPALIVE_USERS are always kept.
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               minutes:
+ *                 type: number
+ *                 description: How long to keep the session, above 0 and at most 1440.
+ *                 default: 120
+ *     responses:
+ *       200:
+ *         description: Kept alive until the returned time.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 userId:
+ *                   type: string
+ *                 until:
+ *                   type: string
+ *                   format: date-time
+ *       400:
+ *         description: Invalid minutes.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   delete:
+ *     tags: [Sessions]
+ *     summary: End a keep-alive
+ *     description: The userId expires for idleness again. A userId listed in CAMOFOX_KEEPALIVE_USERS stays kept.
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Keep-alive ended.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 userId:
+ *                   type: string
+ *                 ended:
+ *                   type: boolean
+ *                 standing:
+ *                   type: boolean
+ */
+app.put('/sessions/:userId/keepalive', authMiddleware(), (req, res) => {
+  const minutes = req.body?.minutes ?? KEEPALIVE_DEFAULT_MINUTES;
+  if (!validKeepaliveMinutes(minutes)) {
+    return res.status(400).json({ error: `minutes must be a number above 0 and at most ${KEEPALIVE_MAX_MINUTES}` });
+  }
+  const userId = normalizeUserId(req.params.userId);
+  const until = new Date(keepAlive.keep(userId, minutes)).toISOString();
+  log('info', 'session kept alive', { userId, until });
+  res.json({ ok: true, userId, until });
+});
+
+app.delete('/sessions/:userId/keepalive', authMiddleware(), (req, res) => {
+  const userId = normalizeUserId(req.params.userId);
+  const ended = keepAlive.end(userId);
+  log('info', 'session keep-alive ended', { userId, ended });
+  res.json({ ok: true, userId, ended, standing: keepAlive.isStanding(userId) });
+});
+
 // Cleanup stale sessions
 setInterval(() => {
   const now = Date.now();
@@ -7640,6 +7735,7 @@ setInterval(() => {
     const evaluating = Array.from(session.tabGroups.values()).some((group) =>
       Array.from(group.values()).some((tabState) => isEvaluating(tabState, now)));
     if (evaluating) session.lastAccess = now;
+    if (keepAlive.isKeptAlive(userId, now)) session.lastAccess = now;
     if (SESSION_TIMEOUT_MS > 0 && now - session.lastAccess > SESSION_TIMEOUT_MS) {
       session._closing = true;
       const idleMs = now - session.lastAccess;
@@ -7708,7 +7804,7 @@ setInterval(() => {
   for (const [userId, session] of sessions) {
     for (const [listItemId, group] of session.tabGroups) {
       for (const [tabId, tabState] of group) {
-        if (!tabState._lastReaperCheck || isEvaluating(tabState, now)) {
+        if (!tabState._lastReaperCheck || isEvaluating(tabState, now) || keepAlive.isKeptAlive(userId, now)) {
           tabState._lastReaperCheck = now;
           tabState._lastReaperToolCalls = tabState.toolCalls;
           continue;

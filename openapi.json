@@ -3640,6 +3640,119 @@
         }
       }
     },
+    "/sessions/{userId}/keepalive": {
+      "put": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Keep a user's tabs and session from expiring for idleness",
+        "description": "Until the deadline, the tab inactivity reaper and the session timeout skip this userId, for work that makes\nno API calls, such as a person signing in over VNC. Memory pressure handling, crashed-tab reaping and\nDELETE /sessions/{userId} are unchanged. userIds listed in CAMOFOX_KEEPALIVE_USERS are always kept.\n",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "minutes": {
+                    "type": "number",
+                    "description": "How long to keep the session, above 0 and at most 1440.",
+                    "default": 120
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Kept alive until the returned time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "userId": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid minutes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "End a keep-alive",
+        "description": "The userId expires for idleness again. A userId listed in CAMOFOX_KEEPALIVE_USERS stays kept.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Keep-alive ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "userId": {
+                      "type": "string"
+                    },
+                    "ended": {
+                      "type": "boolean"
+                    },
+                    "standing": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/": {
       "get": {
         "tags": [

@@ -38,6 +38,8 @@ const INFRA_HTTP_ONLY = new Set([
   'POST /stop',
   'POST /pressure/cleanup',
   'DELETE /sessions/{userId}',
+  'PUT /sessions/{userId}/keepalive',
+  'DELETE /sessions/{userId}/keepalive',
   'GET /sessions/{userId}/traces',
   'GET /sessions/{userId}/traces/{filename}',
   'DELETE /sessions/{userId}/traces/{filename}',
