@@ -65,6 +65,7 @@ import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
+import { cgroupMemory } from './lib/cgroup-memory.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
@@ -820,25 +821,6 @@ function isTabCreateDeadlineTimeout(err) {
     typeof err?.message === 'string' &&
     err.message.startsWith('tab create timed out after') &&
     err.code !== 'new_page_timeout';
-}
-
-// The service cgroup's memory against its systemd MemoryHigh (else MemoryMax); null off cgroup v2.
-// Sitting near the cap is normal (cache fills it, swap absorbs anon); stalling there is what
-// makes new pages time out, so atCap also needs the kernel's memory pressure (PSI).
-function cgroupMemory() {
-  try {
-    const rel = fs.readFileSync('/proc/self/cgroup', 'utf8').match(/^0::(.*)$/m)?.[1];
-    if (!rel) return null;
-    const read = (name) => fs.readFileSync(`/sys/fs/cgroup${rel}/${name}`, 'utf8').trim();
-    const mb = (v) => (v === 'max' ? null : Math.round(Number(v) / 1048576));
-    const usedMb = mb(read('memory.current'));
-    const capMb = mb(read('memory.high')) ?? mb(read('memory.max'));
-    const stalledPct = Number(read('memory.pressure').match(/^some avg10=([\d.]+)/m)?.[1] ?? 0);
-    const nearCap = capMb !== null && usedMb >= capMb * 0.95;
-    return { usedMb, capMb, stalledPct, nearCap, atCap: nearCap && stalledPct >= 20 };
-  } catch {
-    return null;
-  }
 }
 
 function memoryCapResponse(res, mem) {
@@ -8680,6 +8662,7 @@ app.post('/act', async (req, res) => {
 // Periodic stats beacon (every 5 min)
 setInterval(() => {
   const mem = process.memoryUsage();
+  const cg = cgroupMemory();
   let totalTabs = 0;
   for (const [, session] of sessions) {
     for (const [, group] of session.tabGroups) {
@@ -8693,6 +8676,7 @@ setInterval(() => {
     heapUsedBytes: mem.heapUsed,
     uptimeSeconds: Math.floor(process.uptime()),
     browserConnected: browser?.isConnected() ?? false,
+    cgroupUsedMb: cg?.usedMb, cgroupAnonMb: cg?.anonMb, cgroupCapMb: cg?.capMb, cgroupStalledPct: cg?.stalledPct, cgroupAtCap: cg?.atCap,
   });
 }, 5 * 60_000);
 
