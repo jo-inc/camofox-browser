@@ -64,6 +64,7 @@ import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
+import { evaluateWorldError, sourceForWorld } from './lib/evaluate-world.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
@@ -1391,6 +1392,7 @@ async function launchBrowserInstance() {
         geoip: !!launchProxy,
         locale: launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity }),
         virtual_display: vdDisplay,
+        main_world_eval: true,
         exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
         // Popups become managed tabs (see the page 'popup' handler), so a
         // scripted target=_blank click must open one. Camoufox builds up to
@@ -6076,6 +6078,14 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
  *               script:
  *                 type: string
  *                 description: JavaScript source evaluated in the page context before every navigation.
+ *               world:
+ *                 type: string
+ *                 enum: [main, isolated]
+ *                 default: main
+ *                 description: >
+ *                   main installs the script in the page's own JavaScript world, so a fetch or
+ *                   XHR hook sees the page's requests. isolated installs it in Camoufox's
+ *                   sandbox, where the page cannot see it and it cannot patch what the page uses.
  *     responses:
  *       200:
  *         description: Init script registered.
@@ -6112,6 +6122,8 @@ app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '25
     const { userId, script } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     if (typeof script !== 'string' || !script.trim()) return res.status(400).json({ error: 'script (string) required' });
+    const worldError = evaluateWorldError(req.body.world);
+    if (worldError) return res.status(400).json({ error: worldError });
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -6122,7 +6134,7 @@ app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '25
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     await withTabLock(req.params.tabId, async () => {
-      await tabState.page.addInitScript({ content: script });
+      await tabState.page.addInitScript({ content: sourceForWorld(script, req.body.world) });
     });
 
     pluginEvents.emit('tab:init-script', { userId, tabId: req.params.tabId, scriptLen: script.length });
@@ -7004,6 +7016,15 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *                 minimum: 1000
  *                 maximum: 900000
  *                 description: Deadline for this evaluate. Defaults to the handler timeout. A timeout keeps the tab.
+ *               world:
+ *                 type: string
+ *                 enum: [main, isolated]
+ *                 default: main
+ *                 description: >
+ *                   main runs in the page's own JavaScript world, so page globals such as
+ *                   app state are visible. isolated runs in Camoufox's sandbox, which shares
+ *                   the DOM but cannot see or be seen by page scripts. An expression that
+ *                   starts with `mw:` runs in the main world either way.
  *     responses:
  *       504:
  *         description: The evaluate passed timeoutMs (code evaluate_timeout). The tab is kept and the script may still be running.
@@ -7054,6 +7075,9 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     if (!expression) return res.status(400).json({ error: 'expression is required' });
+    const worldError = evaluateWorldError(req.body.world);
+    if (worldError) return res.status(400).json({ error: worldError });
+    const source = sourceForWorld(expression, req.body.world);
     const timeoutMs = req.body.timeoutMs ?? requestTimeoutMs();
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > EVALUATE_MAX_TIMEOUT_MS) {
       return res.status(400).json({ error: `timeoutMs must be an integer from 1000 to ${EVALUATE_MAX_TIMEOUT_MS}` });
@@ -7073,7 +7097,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     const evaluate = () => {
       const running = { until: Date.now() + timeoutMs };
       (tabState.evaluating ??= new Set()).add(running);
-      return tabState.page.evaluate(expression).finally(() => tabState.evaluating.delete(running));
+      return tabState.page.evaluate(source).finally(() => tabState.evaluating.delete(running));
     };
     // A slow script is the caller's, not a stuck tab: on timeout the tab and its page stay up.
     // Evaluate never takes the per-tab lock: a stuck script must not block other evaluates on the
