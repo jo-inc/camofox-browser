@@ -249,6 +249,12 @@ export const TOOL_DEFS = [
           description:
             'Evaluate deadline in ms (1000 to 900000, default 30000). Over 30000 the script runs as a server job and this call waits for it. On timeout the tab is kept.',
         },
+        world: {
+          type: 'string',
+          enum: ['main', 'isolated'],
+          description:
+            "main (default): the page's own JavaScript world, where page globals and app state are visible. isolated: Camoufox's sandbox, which shares the DOM but cannot see page scripts or be seen by them.",
+        },
       },
       required: ['tabId', 'expression'],
     },
@@ -357,6 +363,12 @@ export const TOOL_DEFS = [
       properties: {
         tabId: { type: 'string', description: 'Tab identifier' },
         script: { type: 'string', description: 'JavaScript source to run before each navigation' },
+        world: {
+          type: 'string',
+          enum: ['main', 'isolated'],
+          description:
+            "main (default): the page's own JavaScript world, so a fetch or XHR hook sees the page's requests. isolated: Camoufox's sandbox, invisible to the page.",
+        },
       },
       required: ['tabId', 'script'],
     },
@@ -664,7 +676,7 @@ export function buildRequest(name, args, ctx) {
         path: `/tabs/${args.tabId}/evaluate`,
         auth: 'accessKey',
         responseKind: 'json',
-        body: { userId, expression: args.expression, ...(args.timeoutMs != null ? { timeoutMs: args.timeoutMs } : {}) },
+        body: { userId, expression: args.expression, ...(args.timeoutMs != null ? { timeoutMs: args.timeoutMs } : {}), ...(args.world != null ? { world: args.world } : {}) },
       };
     case 'camofox_activate':
       return {
@@ -724,7 +736,7 @@ export function buildRequest(name, args, ctx) {
         path: `/tabs/${args.tabId}/init-script`,
         auth: 'accessKey',
         responseKind: 'json',
-        body: { userId, script: args.script },
+        body: { userId, script: args.script, ...(args.world != null ? { world: args.world } : {}) },
       };
     case 'camofox_export_storage_state':
       return {
