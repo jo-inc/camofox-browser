@@ -12,6 +12,22 @@ function createTestApp() {
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z4mQAAAAASUVORK5CYII=';
   
   // Simple pages for navigation tests
+  // A page with its own JavaScript state, as a web app has. Its title
+  // says whether an init script reached the page's own window before the page ran.
+  app.get('/pageGlobal', (req, res) => {
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Page Global</title></head>
+      <body>
+        <h1>Page global</h1>
+        <script>
+          window.appState = { user: 'ada' };
+          document.title = window.__initHook === 'installed' ? 'hooked' : 'plain';
+        </script>
+      </body></html>
+    `);
+  });
+
   app.get('/pageA', (req, res) => {
     res.send(`
       <!DOCTYPE html>
