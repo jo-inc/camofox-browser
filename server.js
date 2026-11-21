@@ -1317,6 +1317,10 @@ function isCamoufoxGeoipError(err) {
 const virtualDisplayRegistry = createVirtualDisplayRegistry(() => new DefaultVirtualDisplay());
 
 async function buildLaunchOptionsWithGeoipFallback(baseOptions, attemptMeta) {
+  // The timeout bounds the GeoIP lookup, which has a fallback. Without GeoIP
+  // there is nothing to fall back to, and the first call also loads the
+  // fingerprint model, which can take several seconds on a slow host.
+  if (!baseOptions.geoip) return await launchOptions(baseOptions);
   try {
     return await withTimeout(launchOptions(baseOptions), GEOIP_SETUP_TIMEOUT_MS, 'GeoIP setup');
   } catch (err) {
