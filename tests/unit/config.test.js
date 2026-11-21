@@ -129,7 +129,7 @@ describe('loadConfig', () => {
 
   test('configures browser RSS restart threshold', () => {
     delete process.env.BROWSER_RSS_RESTART_THRESHOLD_MB;
-    expect(loadConfig().browserRssRestartThresholdMb).toBe(1500);
+    expect(loadConfig().browserRssRestartThresholdMb).toBe(2000);
 
     process.env.BROWSER_RSS_RESTART_THRESHOLD_MB = '2048';
     expect(loadConfig().browserRssRestartThresholdMb).toBe(2048);
