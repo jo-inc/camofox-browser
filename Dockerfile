@@ -6,8 +6,8 @@ FROM node:22-trixie-slim AS camofox-browser
 
 # Pinned Camoufox version for reproducible builds
 # Update these when upgrading Camoufox
-ARG CAMOUFOX_VERSION=152.0.4
-ARG CAMOUFOX_RELEASE=beta.30
+ARG CAMOUFOX_VERSION=158.0.1
+ARG CAMOUFOX_RELEASE=beta.41
 ARG TARGETARCH
 ARG YT_DLP_VERSION=2026.08.19
 ARG YT_DLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
@@ -51,24 +51,17 @@ RUN apt-get update && apt-get install -y \
 
 # Pre-bake Camoufox browser binary into image (downloaded at build time).
 #
-# The browser is baked to a FIXED, non-home cache path. Two independent
-# resolvers must agree on that path, so both env vars below are set:
+# The browser is unpacked once into /opt/camoufox, read-only, and launched in
+# place through CAMOUFOX_EXECUTABLE. That path does not depend on the home
+# directory or UID, so an arbitrary runtime UID never re-downloads the browser.
+# CAMOUFOX_EXECUTABLE also makes the npm postinstall below skip its own fetch.
 #
-#  1. XDG_CACHE_HOME -- used by our own code: lib/config.js camoufoxCacheDir()
-#     and postinstall.js resolve `(XDG_CACHE_HOME || $HOME/.cache) + '/camoufox'`,
-#     so the build-time download/verify and the external-executable path land on
-#     ${XDG_CACHE_HOME}/camoufox.
-#
-#  2. CAMOUFOX_INSTALL_DIR -- used by the camoufox-js library that actually
-#     LAUNCHES the browser at runtime. That library IGNORES XDG_CACHE_HOME; left
-#     to itself it resolves os.homedir()+'/.cache/camoufox', which is exactly the
-#     bug: under a non-root / arbitrary UID os.homedir() is no longer /root, the
-#     baked binary isn't found, and it re-downloads 1.3 GB at runtime and fails.
-#     camoufox-js honors CAMOUFOX_INSTALL_DIR as an explicit override (intended
-#     for baking into an image layer), so pinning it to the baked path makes the
-#     browser discoverable regardless of home directory or UID.
+# XDG_CACHE_HOME is the camoufox package's data directory
+# (${XDG_CACHE_HOME}/camoufox): the fingerprint model baked after `npm ci`, plus
+# the fontconfig and GeoIP files it writes at launch. It is group-0 writable
+# (see the runtime user section) for the same reason as /app.
 ENV XDG_CACHE_HOME=/opt/camoufox-cache
-ENV CAMOUFOX_INSTALL_DIR=/opt/camoufox-cache/camoufox
+ENV CAMOUFOX_EXECUTABLE=/opt/camoufox/camoufox-bin
 
 # Note: unzip returns exit code 1 for warnings (Unicode filenames), so we use || true and verify
 # -f so a 404 fails here instead of writing "Not Found" into the .zip: without it the
@@ -80,13 +73,15 @@ RUN case "${TARGETARCH}" in \
       arm64) CAMOUFOX_ARCH="arm64" ;; \
       *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && mkdir -p ${XDG_CACHE_HOME}/camoufox \
+    && mkdir -p /opt/camoufox ${XDG_CACHE_HOME}/camoufox \
     && curl -fL -o /tmp/camoufox.zip "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
-    && (unzip -q /tmp/camoufox.zip -d ${XDG_CACHE_HOME}/camoufox || true) \
+    && (unzip -q /tmp/camoufox.zip -d /opt/camoufox || true) \
     && rm /tmp/camoufox.zip \
-    && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > ${XDG_CACHE_HOME}/camoufox/version.json \
-    && chmod -R a+rX ${XDG_CACHE_HOME} \
-    && test -f ${XDG_CACHE_HOME}/camoufox/camoufox-bin && echo "Camoufox installed successfully"
+    && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /opt/camoufox/version.json \
+    && chmod -R a+rX,go-w /opt/camoufox \
+    && test -x "${CAMOUFOX_EXECUTABLE}" \
+    && grep -qx "Version=${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}" /opt/camoufox/application.ini \
+    && echo "Camoufox installed successfully"
 
 # yt-dlp is installed and verified by the enabled YouTube plugin hook below.
 
@@ -105,6 +100,11 @@ RUN apt-get update \
     && npm ci --omit=dev \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# The camoufox package generates fingerprints from fpgen's model, which it would
+# otherwise download on the first launch. Importing camoufox first points fpgen
+# at ${XDG_CACHE_HOME}/camoufox/fpgen; ensureModel verifies the pinned sha256.
+RUN node --input-type=module -e "import 'camoufox'; import { ensureModel } from 'fpgen-js'; await ensureModel();"
 
 COPY server.js ./
 COPY camofox.config.json ./
@@ -136,8 +136,9 @@ EXPOSE 9377
 # $HOME when set, so even an arbitrary UID with no /etc/passwd entry (which would
 # otherwise make os.homedir() return '/') resolves to /home/camofox, and the
 # writable runtime dirs (lib/config.js: $HOME/.camofox/{cookies,uploads,profiles,
-# traces}) land somewhere writable. XDG_CACHE_HOME (set above) keeps the baked,
-# read-only browser binary discoverable no matter the home dir.
+# traces}) land somewhere writable. CAMOUFOX_EXECUTABLE (set above) keeps the
+# baked, read-only browser binary discoverable no matter the home dir, and
+# XDG_CACHE_HOME keeps the camoufox package's data directory out of $HOME.
 ENV HOME=/home/camofox
 # The node base image ships a "node" user at uid 1000; remove it so we can claim
 # uid 1000 for the camofox runtime user (primary group 0).
@@ -147,8 +148,8 @@ RUN userdel -r node 2>/dev/null || true \
                /home/camofox/.camofox/uploads \
                /home/camofox/.camofox/profiles \
                /home/camofox/.camofox/traces \
-    && chgrp -R 0 /home/camofox /app \
-    && chmod -R g=u /home/camofox /app
+    && chgrp -R 0 /home/camofox /app ${XDG_CACHE_HOME} \
+    && chmod -R g=u /home/camofox /app ${XDG_CACHE_HOME}
 
 USER 1000
 
