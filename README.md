@@ -671,7 +671,7 @@ Browser behavior can be tuned in `camofox.config.json`:
 | `CAMOFOX_SHUTDOWN_TIMEOUT_MS` | Maximum time graceful shutdown waits for persistence checkpoints and browser/session cleanup before forcing exit. Must be a positive integer. | `45000` (45s) |
 | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
 | `MAX_OLD_SPACE_SIZE` | Node.js V8 JavaScript-heap limit (MB), passed to `node --max-old-space-size`. Raise it (e.g. `256`/`512`) if the Node process hits heap-allocation errors under heavy load. Note: this caps only the JS heap -- it does **not** bound the Camoufox/Firefox process tree or large external buffers (screenshots, download artifacts), which are the usual drivers of native-memory growth. For those, see `BROWSER_RSS_RESTART_THRESHOLD_MB` and `NATIVE_MEM_RESTART_THRESHOLD_MB`. | `128` |
-| `BROWSER_RSS_RESTART_THRESHOLD_MB` | Restart the browser when the Camoufox/Firefox process-tree RSS grows past this. Runs in both idle and active phases (active-phase restarts close live sessions first, so clients get a retryable `503`). | `1500` |
+| `BROWSER_RSS_RESTART_THRESHOLD_MB` | Restart the browser when the Camoufox/Firefox process-tree RSS grows past this. Runs in both idle and active phases (active-phase restarts close live sessions first, so clients get a retryable `503`). | `2000` |
 | `NATIVE_MEM_RESTART_THRESHOLD_MB` | Restart the browser when Node's native (non-heap) memory grows past this above its idle baseline. Checked only while idle. | `300` |
 | `PROXY_STRATEGY` | Proxy mode: `backconnect` (rotating sticky sessions) or blank (single endpoint) | - |
 | `PROXY_PROTOCOL` | Proxy protocol: `http`, `https`, `socks4`, or `socks5`. | `http` |
