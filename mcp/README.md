@@ -15,7 +15,7 @@ The MCP server is a thin stdio client over the camofox REST server. Two pieces:
 
 Registering the MCP server does **not** require being inside the camofox-browser checkout. The examples below work from any directory.
 
-`mcp/` is also an **independently installable package** (`@askjo/camofox-browser-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox-js`, `playwright-core`, `express`, or the ~300MB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are defined in `mcp/lib/tool-contracts.mjs`, which ships inside the standalone package. The OpenClaw plugin (`plugin.ts`) imports the same canonical module, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
+`mcp/` is also an **independently installable package** (`@askjo/camofox-browser-mcp`, its own `package.json`). It depends on nothing but `@modelcontextprotocol/sdk` — no `camoufox`, `playwright-core`, `express`, or the ~1.3GB browser binary download that the core server pulls in. Tool names, JSON-Schema parameters, REST routes, and response shaping are defined in `mcp/lib/tool-contracts.mjs`, which ships inside the standalone package. The OpenClaw plugin (`plugin.ts`) imports the same canonical module, so the two hosts cannot drift. See **Option D** below if you only want the MCP adapter (e.g. pointing `CAMOFOX_BASE_URL` at a REST server running elsewhere).
 
 ## 1. Start the REST server
 
@@ -23,7 +23,7 @@ Clone the repo and start the server (one-time binary download on first run):
 
 ```bash
 git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
-npm install   # downloads Camoufox (~300MB) on first run
+npm install   # downloads Camoufox (~1.3GB) on first run
 npm start     # → http://localhost:9377
 ```
 
@@ -45,7 +45,7 @@ npm install -g @askjo/camofox-browser
 npx -y @askjo/camofox-browser-mcp
 
 # Option D — MCP adapter only, no core server deps (lightest footprint)
-#   Skips camoufox-js/playwright-core/express and the browser binary download —
+#   Skips camoufox/playwright-core/express and the browser binary download —
 #   use this if a camofox-browser REST server is already running (locally or
 #   remotely) and you only need the stdio adapter.
 git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser/mcp

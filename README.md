@@ -107,7 +107,7 @@ Or from source:
 git clone https://github.com/jo-inc/camofox-browser
 cd camofox-browser
 npm install
-npm start  # downloads Camoufox on first run (~300MB)
+npm start  # downloads Camoufox on first run (~1.3GB)
 ```
 
 Default port is `9377`. See [Environment Variables](#environment-variables) for all options.
@@ -116,7 +116,7 @@ Default port is `9377`. See [Environment Variables](#environment-variables) for 
 >
 > **External Camoufox executable:** set `CAMOUFOX_EXECUTABLE=/path/to/camoufox-bin` before `npm install` and when starting the server to skip the bundled download and launch that executable. Compatibility aliases are `CAMOUFOX_EXECUTABLE_PATH` and `CAMOFOX_EXECUTABLE_PATH`. This is useful for NixOS paths such as `/nix/store/.../camoufox-bin`; the executable must come from a Camoufox bundle that includes `properties.json`, `version.json`, and `fontconfig/`.
 >
-> **Air-gapped or custom binary management:** prefer `CAMOUFOX_EXECUTABLE` when you already have a Camoufox bundle. Otherwise disable the auto-fetch with `npm install --ignore-scripts` (skips lifecycle scripts for *every* dependency -- bluntest option) or, more surgically, `npm install --omit=optional` plus a manual `npx camoufox-js fetch` step against your mirror. Note that `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install` no longer skips the Camoufox download (the postinstall sanitizes the env locally); use `--ignore-scripts` or `CAMOUFOX_EXECUTABLE` for that.
+> **Air-gapped or custom binary management:** prefer `CAMOUFOX_EXECUTABLE` when you already have a Camoufox bundle. Otherwise disable the auto-fetch with `npm install --ignore-scripts` (skips lifecycle scripts for *every* dependency -- bluntest option) or, more surgically, `npm install --omit=optional` plus a manual `npm run fetch-bin` (or `npx camoufox fetch`) step against your mirror. Note that `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install` no longer skips the Camoufox download (the postinstall sanitizes the env locally); use `--ignore-scripts` or `CAMOUFOX_EXECUTABLE` for that.
 
 ### Docker
 
@@ -751,7 +751,7 @@ The cookie import endpoint (`POST /sessions/:userId/cookies`) is gated behind `C
 
 ### Binary download
 
-The Camoufox browser engine (~300MB) is downloaded at `npm install` time by [`camoufox-js`](https://www.npmjs.com/package/camoufox-js), an npm package maintained by the [Camoufox project](https://camoufox.com). It downloads from [official GitHub releases](https://github.com/nicedayzhu/camoufox/releases) with integrity verification handled by `camoufox-js`. No custom download URLs, no URL shorteners, no raw IP addresses.
+The Camoufox browser engine (~1.3GB) is downloaded at `npm install` time by [`camoufox`](https://www.npmjs.com/package/camoufox), the official TypeScript launcher maintained by the [Camoufox project](https://camoufox.com) ([source](https://github.com/daijro/camoufox/tree/main/typescript)). It downloads the browser release the package is paired with from [official GitHub releases](https://github.com/daijro/camoufox/releases) and checks it against the sha256 digest GitHub publishes for the asset before unpacking. No custom download URLs, no URL shorteners, no raw IP addresses.
 
 ### Telemetry
 
