@@ -80,16 +80,19 @@ describe('postinstall downloader', () => {
     const fetcher = { install };
     const init = jest.fn().mockResolvedValue(fetcher);
     const downloadGeoIp = jest.fn().mockResolvedValue(undefined);
+    const downloadModel = jest.fn().mockResolvedValue(undefined);
 
     await downloadBundledCamoufox({
       createFetcher: () => ({ init }),
       shouldDownloadGeoIp: () => true,
       downloadGeoIp,
+      downloadModel,
     });
 
     expect(init).toHaveBeenCalledTimes(1);
     expect(install).toHaveBeenCalledTimes(1);
     expect(downloadGeoIp).toHaveBeenCalledTimes(1);
+    expect(downloadModel).toHaveBeenCalledTimes(1);
   });
 
   test('skips the GeoIP database when its reader is unavailable', async () => {
@@ -100,6 +103,7 @@ describe('postinstall downloader', () => {
       createFetcher: () => ({ init: async () => ({ install }) }),
       shouldDownloadGeoIp: () => false,
       downloadGeoIp,
+      downloadModel: jest.fn().mockResolvedValue(undefined),
     });
 
     expect(install).toHaveBeenCalledTimes(1);

@@ -10,6 +10,7 @@ import { INSTALL_DIR } from 'camoufox';
 import {
   BUNDLED_CAMOUFOX_RELEASE,
   downloadBundledCamoufox,
+  downloadFingerprintModel,
   isBundledCamoufoxInstalled,
 } from './lib/camoufox-download.js';
 
@@ -68,6 +69,12 @@ export async function main() {
 
   if (isBundledCamoufoxInstalled()) {
     process.stdout.write('[camofox-browser] postinstall: Camoufox binary already cached.\n');
+    try {
+      await downloadFingerprintModel();
+    } catch (error) {
+      warn(`failed to download the fingerprint model: ${error instanceof Error ? error.message : String(error)}`);
+      warn('  Manual fix: npm run fetch-bin');
+    }
     return;
   }
 
