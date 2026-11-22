@@ -481,23 +481,23 @@ To file telemetry reports in your own GitHub repo instead of `jo-inc/camofox-bro
    - Install the app on your target repo (Install App -> select repo)
    - Note your **App ID** (number on the app's General page) and **Installation ID** (from the URL after installing: `github.com/settings/installations/{id}`)
 
-2. **Deploy the endpoint** -- clone this repo and deploy the worker:
+2. **Set up the worker** -- clone this repo and install `cf`:
    ```bash
    cd workers/crash-reporter
    # Edit cloudflare.config.ts: set accountId to your Cloudflare account ID
    # and worker.name to a name of your own
-   npm install
+   npm ci
    npx cf auth login
-   npx cf deploy
    ```
-   `cf` needs Node.js 22.18 or later. The worker is a single TypeScript file with zero runtime npm dependencies. It also runs on Deno, Bun, or any runtime with the Web Crypto API.
+   `cf` needs Node.js 22.23+, 24.22+, or 26.12+. The worker is a single TypeScript file with zero runtime npm dependencies. It also runs on Deno, Bun, or any runtime with the Web Crypto API.
 
-3. **Set worker secrets:**
+3. **Deploy with the worker secrets** (in the same shell):
    ```bash
-   cd workers/crash-reporter
    # Key must be PKCS#8 DER base64 (not raw PEM)
    KEY=$(openssl pkcs8 -topk8 -inform PEM -outform DER -nocrypt -in your-app.pem | base64 | tr -d '\n')
-   cat > .secrets.json <<JSON
+   SECRETS=$(mktemp)  # private to you (mode 0600)
+   trap 'rm -f "$SECRETS"' EXIT
+   cat > "$SECRETS" <<JSON
    {
      "GH_APP_ID": "YOUR_APP_ID",
      "GH_INSTALL_ID": "YOUR_INSTALL_ID",
@@ -505,8 +505,8 @@ To file telemetry reports in your own GitHub repo instead of `jo-inc/camofox-bro
      "GH_REPO": "your-org/your-repo"
    }
    JSON
-   npx cf deploy --secrets-file .secrets.json
-   rm .secrets.json
+   npx cf deploy --secrets-file "$SECRETS"
+   rm -f "$SECRETS"
    ```
    `GH_REPO` is optional and defaults to `jo-inc/camofox-browser`. Later deploys keep the secrets already set on the Worker.
 
