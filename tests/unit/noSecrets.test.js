@@ -69,9 +69,9 @@ describe('no embedded secrets in distributed files', () => {
     expect(source).toContain('__SOURCE_SHA256__');
   });
 
-  test('wrangler.toml has correct worker name', () => {
-    const toml = readFileSync(join(__dirname, '../../workers/crash-reporter/wrangler.toml'), 'utf-8');
-    expect(toml).toContain('name = "camofox-telemetry"');
+  test('cloudflare.config.ts has correct worker name', () => {
+    const config = readFileSync(join(__dirname, '../../workers/crash-reporter/cloudflare.config.ts'), 'utf-8');
+    expect(config).toContain('name: "camofox-telemetry"');
   });
 
   test('deploy workflow triggers on worker changes from main', () => {

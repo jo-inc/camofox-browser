@@ -10,7 +10,8 @@
  *   GET  /source  -- returns { commit, sha256 } for verification
  *   GET  /health  -- health check
  *
- * Env secrets (set via `wrangler secret put`):
+ * Env secrets (set via `npx wrangler secret put <NAME> --name camofox-telemetry`,
+ * or uploaded with `cf deploy --secrets-file <PATH>`):
  *   GH_APP_ID, GH_INSTALL_ID, GH_PRIVATE_KEY
  *
  * Source: https://github.com/jo-inc/camofox-browser/blob/main/workers/crash-reporter/index.ts

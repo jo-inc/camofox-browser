@@ -11,22 +11,35 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     name: Deploy to Cloudflare Workers
+    defaults:
+      run:
+        working-directory: workers/crash-reporter
+    env:
+      CF_SEND_TELEMETRY: 'false'
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: workers/crash-reporter/package-lock.json
+
+      - name: Install
+        run: npm ci
 
       - name: Inject source verification hashes
         run: |
           COMMIT=$(git rev-parse --short HEAD)
-          HASH=$(sha256sum workers/crash-reporter/index.ts | cut -d' ' -f1)
-          sed -i "s/__COMMIT_SHA__/$COMMIT/" workers/crash-reporter/index.ts
-          sed -i "s/__SOURCE_SHA256__/$HASH/" workers/crash-reporter/index.ts
+          HASH=$(sha256sum index.ts | cut -d' ' -f1)
+          sed -i "s/__COMMIT_SHA__/$COMMIT/" index.ts
+          sed -i "s/__SOURCE_SHA256__/$HASH/" index.ts
 
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3.14.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: workers/crash-reporter
+        run: npx cf deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   notify-agenthook:
     needs: [deploy]

@@ -1,0 +1,4 @@
+.cloudflare/
+node_modules/
+.secrets.json
+.dev.vars
