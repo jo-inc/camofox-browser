@@ -1,5 +1,4 @@
-import { Camoufox, launchOptions } from 'camoufox-js';
-import { VirtualDisplay } from 'camoufox-js/dist/virtdisplay.js';
+import { Camoufox, launchOptions, VirtualDisplay } from 'camoufox';
 import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
@@ -953,10 +952,10 @@ function clearBrowserIdleTimer() {
 
 // Detects errors that retrying cannot recover from (e.g., Camoufox binary
 // missing because postinstall was skipped). The user must run
-// `npx camoufox-js fetch` and restart; looping on this wastes resources
+// `npx camoufox fetch` and restart; looping on this wastes resources
 // and buries the actionable error under noise.
 //
-// Sentinel: matches the human-readable message thrown by camoufox-js's
+// Sentinel: matches the human-readable message thrown by camoufox's
 // FileNotFoundError in dist/pkgman.js (Version.fromPath). FileNotFoundError
 // is not exported from the public API, so substring matching is the only
 // available hook. If the upstream message changes, this regex needs an
@@ -969,7 +968,7 @@ function camoufoxInstallRemediation() {
   if (CONFIG.camoufoxExecutablePath) {
     return 'verify CAMOUFOX_EXECUTABLE points to a Camoufox bundle with properties.json, version.json, and fontconfig/';
   }
-  return 'run `npx camoufox-js fetch` then restart the server';
+  return 'run `npx camoufox fetch` then restart the server';
 }
 
 function scheduleBrowserWarmRetry(delayMs = 5000) {
@@ -1129,9 +1128,7 @@ let externalCamoufoxLaunch = null;
 function getExternalCamoufoxLaunch() {
   if (!CONFIG.camoufoxExecutablePath) return null;
   if (!externalCamoufoxLaunch) {
-    externalCamoufoxLaunch = prepareExternalCamoufoxExecutable(CONFIG.camoufoxExecutablePath, {
-      cacheDir: CONFIG.camoufoxCacheDir,
-    });
+    externalCamoufoxLaunch = prepareExternalCamoufoxExecutable(CONFIG.camoufoxExecutablePath);
     log('info', 'using external camoufox executable', {
       executablePath: externalCamoufoxLaunch.executablePath,
       resourceDir: externalCamoufoxLaunch.resourceDir,
@@ -1320,6 +1317,10 @@ function isCamoufoxGeoipError(err) {
 const virtualDisplayRegistry = createVirtualDisplayRegistry(() => new DefaultVirtualDisplay());
 
 async function buildLaunchOptionsWithGeoipFallback(baseOptions, attemptMeta) {
+  // The timeout bounds the GeoIP lookup, which has a fallback. Without GeoIP
+  // there is nothing to fall back to, and the first call also loads the
+  // fingerprint model, which can take several seconds on a slow host.
+  if (!baseOptions.geoip) return await launchOptions(baseOptions);
   try {
     return await withTimeout(launchOptions(baseOptions), GEOIP_SETUP_TIMEOUT_MS, 'GeoIP setup');
   } catch (err) {
@@ -1391,6 +1392,11 @@ async function launchBrowserInstance() {
         locale: launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity }),
         virtual_display: vdDisplay,
         exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
+        // Popups become managed tabs (see the page 'popup' handler), so a
+        // scripted target=_blank click must open one. Camoufox builds up to
+        // 152 shipped this pref off; 158 restores Firefox's default (on),
+        // which silently drops those popups.
+        firefox_user_prefs: { 'dom.disable_open_during_load': false },
       }, {
         attempt,
         proxyServer: launchProxy?.server || null,

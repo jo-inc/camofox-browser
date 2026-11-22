@@ -68,7 +68,7 @@ jobs:
       - name: Install Camoufox
         run: npm run fetch-bin
         env:
-          # camoufox-js uses this for authenticated GitHub release lookups.
+          # The camoufox package uses this for authenticated GitHub release lookups.
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Verify Windows process cleanup
@@ -150,7 +150,7 @@ jobs:
       - name: Install Camoufox
         run: npm run fetch-bin
         env:
-          # camoufox-js uses this for authenticated GitHub release lookups.
+          # The camoufox package uses this for authenticated GitHub release lookups.
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run browser E2E tests

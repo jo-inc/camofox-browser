@@ -4,27 +4,21 @@
 // install the JavaScript package and fetch the browser later.
 
 import { accessSync, constants, existsSync, statSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { platform } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { downloadBundledCamoufox } from './lib/camoufox-download.js';
+import { INSTALL_DIR } from 'camoufox';
+import {
+  BUNDLED_CAMOUFOX_RELEASE,
+  downloadBundledCamoufox,
+  downloadFingerprintModel,
+  isBundledCamoufoxInstalled,
+} from './lib/camoufox-download.js';
 
 const EXTERNAL_EXECUTABLE_ENV_VARS = [
   'CAMOUFOX_EXECUTABLE',
   'CAMOUFOX_EXECUTABLE_PATH',
   'CAMOFOX_EXECUTABLE_PATH',
 ];
-
-function camoufoxCacheDir() {
-  const home = homedir();
-  const plat = platform();
-  if (plat === 'darwin') return join(home, 'Library', 'Caches', 'camoufox');
-  if (plat === 'win32') {
-    const base = process.env.LOCALAPPDATA || join(home, 'AppData', 'Local');
-    return join(base, 'camoufox', 'camoufox', 'Cache');
-  }
-  return join(process.env.XDG_CACHE_HOME || join(home, '.cache'), 'camoufox');
-}
 
 function warn(message) {
   process.stderr.write(`[camofox-browser] postinstall warning: ${message}\n`);
@@ -73,9 +67,14 @@ export async function main() {
     return;
   }
 
-  const versionFile = join(camoufoxCacheDir(), 'version.json');
-  if (existsSync(versionFile)) {
+  if (isBundledCamoufoxInstalled()) {
     process.stdout.write('[camofox-browser] postinstall: Camoufox binary already cached.\n');
+    try {
+      await downloadFingerprintModel();
+    } catch (error) {
+      warn(`failed to download the fingerprint model: ${error instanceof Error ? error.message : String(error)}`);
+      warn('  Manual fix: npm run fetch-bin');
+    }
     return;
   }
 
@@ -84,9 +83,9 @@ export async function main() {
   } catch (error) {
     fail(`failed to download Camoufox: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!existsSync(versionFile)) {
+  if (!isBundledCamoufoxInstalled()) {
     warn('Camoufox cache not populated after fetch.');
-    warn(`  Expected file: ${versionFile}`);
+    warn(`  Expected Camoufox ${BUNDLED_CAMOUFOX_RELEASE} under: ${INSTALL_DIR}`);
     warn('  Manual fix: npm run fetch-bin');
   }
 }
