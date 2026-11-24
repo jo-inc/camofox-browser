@@ -106,13 +106,22 @@ describe('Concurrency', () => {
       ]);
       const failingUrl = `${testSiteUrl}/connection-reset`;
 
+      // These two are sequential, so the connection-reset failure is deterministically a 500.
       await expect(failingClient.navigate(failingTab.tabId, failingUrl)).rejects.toMatchObject({ status: 500 });
       await expect(failingClient.navigate(failingTab.tabId, failingUrl)).rejects.toMatchObject({ status: 500 });
 
-      const [, healthySnapshot] = await Promise.all([
-        expect(failingClient.navigate(failingTab.tabId, failingUrl)).rejects.toMatchObject({ status: 500 }),
+      // This third navigation runs concurrently with another user's request. Under that
+      // race the failed navigation can surface either as a plain connection failure (500)
+      // or as a navigation-race error (409); both mean the navigation did not succeed,
+      // which is all this test cares about.
+      const [failure, healthySnapshot] = await Promise.all([
+        failingClient.navigate(failingTab.tabId, failingUrl).then(
+          () => { throw new Error('expected failing navigation to reject'); },
+          (err) => err,
+        ),
         healthyClient.getSnapshot(healthyTab.tabId),
       ]);
+      expect([500, 409]).toContain(failure.status);
 
       expect(healthySnapshot.snapshot).toContain('Page B');
       expect((await healthyClient.health()).browserConnected).toBe(true);
