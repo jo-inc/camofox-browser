@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
-import { launchOptions } from 'camoufox-js';
+import { launchOptions } from 'camoufox';
 import { firefox } from 'playwright-core';
 import { killProcessIds } from '../../lib/browser-processes.js';
 import {

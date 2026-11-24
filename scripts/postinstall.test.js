@@ -75,20 +75,38 @@ describe('postinstall external executable handling', () => {
 });
 
 describe('postinstall downloader', () => {
-  test('uses camoufox-js without a package-owned child process', async () => {
+  test('uses the camoufox package without a package-owned child process', async () => {
     const install = jest.fn().mockResolvedValue(undefined);
-    const downloadGeoIp = jest.fn();
-    const downloadAddons = jest.fn().mockResolvedValue(undefined);
+    const fetcher = { install };
+    const init = jest.fn().mockResolvedValue(fetcher);
+    const downloadGeoIp = jest.fn().mockResolvedValue(undefined);
+    const downloadModel = jest.fn().mockResolvedValue(undefined);
 
     await downloadBundledCamoufox({
-      createFetcher: () => ({ install }),
-      shouldDownloadGeoIp: true,
+      createFetcher: () => ({ init }),
+      shouldDownloadGeoIp: () => true,
       downloadGeoIp,
-      downloadAddons,
+      downloadModel,
+    });
+
+    expect(init).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(downloadGeoIp).toHaveBeenCalledTimes(1);
+    expect(downloadModel).toHaveBeenCalledTimes(1);
+  });
+
+  test('skips the GeoIP database when its reader is unavailable', async () => {
+    const install = jest.fn().mockResolvedValue(undefined);
+    const downloadGeoIp = jest.fn();
+
+    await downloadBundledCamoufox({
+      createFetcher: () => ({ init: async () => ({ install }) }),
+      shouldDownloadGeoIp: () => false,
+      downloadGeoIp,
+      downloadModel: jest.fn().mockResolvedValue(undefined),
     });
 
     expect(install).toHaveBeenCalledTimes(1);
-    expect(downloadGeoIp).toHaveBeenCalledTimes(1);
-    expect(downloadAddons).toHaveBeenCalledTimes(1);
+    expect(downloadGeoIp).not.toHaveBeenCalled();
   });
 });

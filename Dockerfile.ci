@@ -3,8 +3,8 @@
 
 FROM node:22-trixie-slim
 
-ARG CAMOUFOX_VERSION=152.0.4
-ARG CAMOUFOX_RELEASE=beta.30
+ARG CAMOUFOX_VERSION=158.0.1
+ARG CAMOUFOX_RELEASE=beta.41
 ARG TARGETARCH
 ARG YT_DLP_VERSION=2026.08.19
 ARG YT_DLP_SHA256_AMD64=58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a
@@ -47,20 +47,22 @@ RUN apt-get update && apt-get install -y \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install Camoufox
+# Download and install Camoufox. It is launched in place through
+# CAMOUFOX_EXECUTABLE, which also makes the npm postinstall skip its own fetch.
+ENV CAMOUFOX_EXECUTABLE=/opt/camoufox/camoufox-bin
 RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) CAMOUFOX_ARCH="x86_64" ;; \
       arm64) CAMOUFOX_ARCH="arm64" ;; \
       *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac; \
-    mkdir -p /root/.cache/camoufox; \
+    mkdir -p /opt/camoufox; \
     curl -fSL "https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.${CAMOUFOX_ARCH}.zip" \
       -o /tmp/camoufox.zip; \
-    (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true); \
-    chmod -R 755 /root/.cache/camoufox; \
-    echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json; \
-    test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"; \
+    (unzip -q /tmp/camoufox.zip -d /opt/camoufox || true); \
+    chmod -R 755 /opt/camoufox; \
+    echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /opt/camoufox/version.json; \
+    test -x "${CAMOUFOX_EXECUTABLE}" && echo "Camoufox installed successfully"; \
     rm /tmp/camoufox.zip
 
 WORKDIR /app

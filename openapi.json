@@ -2130,6 +2130,15 @@
                   "script": {
                     "type": "string",
                     "description": "JavaScript source evaluated in the page context before every navigation."
+                  },
+                  "world": {
+                    "type": "string",
+                    "enum": [
+                      "main",
+                      "isolated"
+                    ],
+                    "default": "main",
+                    "description": "main installs the script in the page's own JavaScript world, so a fetch or XHR hook sees the page's requests. isolated installs it in Camoufox's sandbox, where the page cannot see it and it cannot patch what the page uses.\n"
                   }
                 }
               }
@@ -2975,6 +2984,15 @@
                     "minimum": 1000,
                     "maximum": 900000,
                     "description": "Deadline for this evaluate. Defaults to the handler timeout. A timeout keeps the tab."
+                  },
+                  "world": {
+                    "type": "string",
+                    "enum": [
+                      "main",
+                      "isolated"
+                    ],
+                    "default": "main",
+                    "description": "main runs in the page's own JavaScript world, so page globals such as app state are visible. isolated runs in Camoufox's sandbox, which shares the DOM but cannot see or be seen by page scripts. An expression that starts with `mw:` runs in the main world either way.\n"
                   }
                 }
               }

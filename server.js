@@ -1,5 +1,4 @@
-import { Camoufox, launchOptions } from 'camoufox-js';
-import { VirtualDisplay } from 'camoufox-js/dist/virtdisplay.js';
+import { Camoufox, launchOptions, VirtualDisplay } from 'camoufox';
 import { firefox } from 'playwright-core';
 import express from 'express';
 import crypto from 'crypto';
@@ -65,6 +64,7 @@ import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
+import { evaluateWorldError, sourceForWorld } from './lib/evaluate-world.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
@@ -953,10 +953,10 @@ function clearBrowserIdleTimer() {
 
 // Detects errors that retrying cannot recover from (e.g., Camoufox binary
 // missing because postinstall was skipped). The user must run
-// `npx camoufox-js fetch` and restart; looping on this wastes resources
+// `npx camoufox fetch` and restart; looping on this wastes resources
 // and buries the actionable error under noise.
 //
-// Sentinel: matches the human-readable message thrown by camoufox-js's
+// Sentinel: matches the human-readable message thrown by camoufox's
 // FileNotFoundError in dist/pkgman.js (Version.fromPath). FileNotFoundError
 // is not exported from the public API, so substring matching is the only
 // available hook. If the upstream message changes, this regex needs an
@@ -969,7 +969,7 @@ function camoufoxInstallRemediation() {
   if (CONFIG.camoufoxExecutablePath) {
     return 'verify CAMOUFOX_EXECUTABLE points to a Camoufox bundle with properties.json, version.json, and fontconfig/';
   }
-  return 'run `npx camoufox-js fetch` then restart the server';
+  return 'run `npx camoufox fetch` then restart the server';
 }
 
 function scheduleBrowserWarmRetry(delayMs = 5000) {
@@ -1129,9 +1129,7 @@ let externalCamoufoxLaunch = null;
 function getExternalCamoufoxLaunch() {
   if (!CONFIG.camoufoxExecutablePath) return null;
   if (!externalCamoufoxLaunch) {
-    externalCamoufoxLaunch = prepareExternalCamoufoxExecutable(CONFIG.camoufoxExecutablePath, {
-      cacheDir: CONFIG.camoufoxCacheDir,
-    });
+    externalCamoufoxLaunch = prepareExternalCamoufoxExecutable(CONFIG.camoufoxExecutablePath);
     log('info', 'using external camoufox executable', {
       executablePath: externalCamoufoxLaunch.executablePath,
       resourceDir: externalCamoufoxLaunch.resourceDir,
@@ -1320,6 +1318,10 @@ function isCamoufoxGeoipError(err) {
 const virtualDisplayRegistry = createVirtualDisplayRegistry(() => new DefaultVirtualDisplay());
 
 async function buildLaunchOptionsWithGeoipFallback(baseOptions, attemptMeta) {
+  // The timeout bounds the GeoIP lookup, which has a fallback. Without GeoIP
+  // there is nothing to fall back to, and the first call also loads the
+  // fingerprint model, which can take several seconds on a slow host.
+  if (!baseOptions.geoip) return await launchOptions(baseOptions);
   try {
     return await withTimeout(launchOptions(baseOptions), GEOIP_SETUP_TIMEOUT_MS, 'GeoIP setup');
   } catch (err) {
@@ -1390,7 +1392,13 @@ async function launchBrowserInstance() {
         geoip: !!launchProxy,
         locale: launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity }),
         virtual_display: vdDisplay,
+        main_world_eval: true,
         exclude_addons: CONFIG.disableDefaultAddons ? ['UBO'] : undefined,
+        // Popups become managed tabs (see the page 'popup' handler), so a
+        // scripted target=_blank click must open one. Camoufox builds up to
+        // 152 shipped this pref off; 158 restores Firefox's default (on),
+        // which silently drops those popups.
+        firefox_user_prefs: { 'dom.disable_open_during_load': false },
       }, {
         attempt,
         proxyServer: launchProxy?.server || null,
@@ -6070,6 +6078,14 @@ app.post('/tabs/:tabId/mouse-wheel', async (req, res) => {
  *               script:
  *                 type: string
  *                 description: JavaScript source evaluated in the page context before every navigation.
+ *               world:
+ *                 type: string
+ *                 enum: [main, isolated]
+ *                 default: main
+ *                 description: >
+ *                   main installs the script in the page's own JavaScript world, so a fetch or
+ *                   XHR hook sees the page's requests. isolated installs it in Camoufox's
+ *                   sandbox, where the page cannot see it and it cannot patch what the page uses.
  *     responses:
  *       200:
  *         description: Init script registered.
@@ -6106,6 +6122,8 @@ app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '25
     const { userId, script } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     if (typeof script !== 'string' || !script.trim()) return res.status(400).json({ error: 'script (string) required' });
+    const worldError = evaluateWorldError(req.body.world);
+    if (worldError) return res.status(400).json({ error: worldError });
 
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, req.params.tabId);
@@ -6116,7 +6134,7 @@ app.post('/tabs/:tabId/init-script', authMiddleware(), express.json({ limit: '25
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
 
     await withTabLock(req.params.tabId, async () => {
-      await tabState.page.addInitScript({ content: script });
+      await tabState.page.addInitScript({ content: sourceForWorld(script, req.body.world) });
     });
 
     pluginEvents.emit('tab:init-script', { userId, tabId: req.params.tabId, scriptLen: script.length });
@@ -6998,6 +7016,15 @@ app.get('/tabs/:tabId/stats', async (req, res) => {
  *                 minimum: 1000
  *                 maximum: 900000
  *                 description: Deadline for this evaluate. Defaults to the handler timeout. A timeout keeps the tab.
+ *               world:
+ *                 type: string
+ *                 enum: [main, isolated]
+ *                 default: main
+ *                 description: >
+ *                   main runs in the page's own JavaScript world, so page globals such as
+ *                   app state are visible. isolated runs in Camoufox's sandbox, which shares
+ *                   the DOM but cannot see or be seen by page scripts. An expression that
+ *                   starts with `mw:` runs in the main world either way.
  *     responses:
  *       504:
  *         description: The evaluate passed timeoutMs (code evaluate_timeout). The tab is kept and the script may still be running.
@@ -7048,6 +7075,9 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     const { userId, expression } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     if (!expression) return res.status(400).json({ error: 'expression is required' });
+    const worldError = evaluateWorldError(req.body.world);
+    if (worldError) return res.status(400).json({ error: worldError });
+    const source = sourceForWorld(expression, req.body.world);
     const timeoutMs = req.body.timeoutMs ?? requestTimeoutMs();
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > EVALUATE_MAX_TIMEOUT_MS) {
       return res.status(400).json({ error: `timeoutMs must be an integer from 1000 to ${EVALUATE_MAX_TIMEOUT_MS}` });
@@ -7067,7 +7097,7 @@ app.post('/tabs/:tabId/evaluate', express.json({ limit: CONFIG.evaluateMaxBodySi
     const evaluate = () => {
       const running = { until: Date.now() + timeoutMs };
       (tabState.evaluating ??= new Set()).add(running);
-      return tabState.page.evaluate(expression).finally(() => tabState.evaluating.delete(running));
+      return tabState.page.evaluate(source).finally(() => tabState.evaluating.delete(running));
     };
     // A slow script is the caller's, not a stuck tab: on timeout the tab and its page stay up.
     // Evaluate never takes the per-tab lock: a stuck script must not block other evaluates on the

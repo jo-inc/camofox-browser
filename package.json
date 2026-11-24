@@ -32,7 +32,7 @@
     "transcript"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.15"
   },
   "files": [
     "server.js",
@@ -217,9 +217,10 @@
   },
   "dependencies": {
     "better-sqlite3": "13.0.1",
-    "camoufox-js": "0.11.5",
+    "camoufox": "0.5.9",
     "express": "^5.2.1",
-    "playwright-core": "^1.58.0",
+    "fpgen-js": "1.3.0",
+    "playwright-core": ">=1.58.0 <1.63",
     "prom-client": "^15.1.3",
     "swagger-jsdoc": "^6.2.8"
   },

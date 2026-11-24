@@ -19,10 +19,10 @@
     Target architecture: x86_64 or aarch64 (default: x86_64).
 
 .PARAMETER CamoufoxVersion
-    Camoufox version (default: 152.0.4).
+    Camoufox version (default: 158.0.1).
 
 .PARAMETER CamoufoxRelease
-    Camoufox release channel (default: beta.30).
+    Camoufox release channel (default: beta.41).
 
 .PARAMETER ContainerName
     Docker container name (default: camofox-browser).
@@ -43,8 +43,8 @@ param(
     [ValidateSet('x86_64', 'aarch64')]
     [string]$Arch = 'x86_64',
 
-    [string]$CamoufoxVersion = '152.0.4',
-    [string]$CamoufoxRelease = 'beta.30',
+    [string]$CamoufoxVersion = '158.0.1',
+    [string]$CamoufoxRelease = 'beta.41',
     [string]$ContainerName = 'camofox-browser',
     [int]$HostPort = 9377
 )
