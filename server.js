@@ -15,6 +15,7 @@ import { createFlyHelpers } from './lib/fly.js';
 import { createPluginEvents, loadPlugins, typeEventPayload } from './lib/plugins.js';
 import { requireAuth, accessKeyMiddleware, timingSafeCompare as _timingSafeCompare, isLoopbackAddress as _isLoopbackAddress } from './lib/auth.js';
 import { createStorageStateExportHandler } from './lib/storage-state.js';
+import { newContextRestoringStorage } from './lib/storage-restore.js';
 import { MIN_USABLE_POPUP, POPUP_RESIZE_TARGET, shouldResizePopup } from './lib/popup-sizing.js';
 import { windowSnapshot } from './lib/snapshot.js';
 import { extractPageStructure, extractTableRows, attachStructureRefs } from './lib/page-structure.js';
@@ -1651,7 +1652,7 @@ async function getSession(userId, { trace = false } = {}) {
         log('info', 'session proxy assigned', { userId: key, proxy: sessionProxy.server });
       }
       await pluginEvents.emitAsync('session:creating', { userId: key, contextOptions });
-      const context = await b.newContext(contextOptions);
+      const context = await newContextRestoringStorage(b, contextOptions, { userId: key, log });
 
       let tracePath = null;
       if (trace) {
