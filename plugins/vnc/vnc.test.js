@@ -46,11 +46,7 @@ class MockVirtualDisplay {
     this._display = 99;
   }
 
-  get display() {
-    return this._display;
-  }
-
-  get xvfb_args() {
+  get xvfbArgs() {
     return ['-screen', '0', '1x1x24', '-ac', '-nolisten', 'tcp'];
   }
 
@@ -167,7 +163,7 @@ describe('vnc plugin', () => {
     await register(mockApp, ctx, { enabled: true, resolution: '1280x720' });
 
     const vd = ctx.createVirtualDisplay();
-    const args = vd.xvfb_args;
+    const args = vd.xvfbArgs;
     const screenIdx = args.indexOf('0');
     expect(args[screenIdx + 1]).toBe('1280x720x24');
   });
@@ -176,7 +172,7 @@ describe('vnc plugin', () => {
     await register(mockApp, ctx, { enabled: true, resolution: '1920x1080' });
 
     const vd = ctx.createVirtualDisplay();
-    const args = vd.xvfb_args;
+    const args = vd.xvfbArgs;
     const screenIdx = args.indexOf('0');
     expect(args[screenIdx + 1]).toBe('1920x1080x24');
   });
@@ -185,9 +181,17 @@ describe('vnc plugin', () => {
     await register(mockApp, ctx, { enabled: true, resolution: '1920x1080x32' });
 
     const vd = ctx.createVirtualDisplay();
-    const args = vd.xvfb_args;
+    const args = vd.xvfbArgs;
     const screenIdx = args.indexOf('0');
     expect(args[screenIdx + 1]).toBe('1920x1080x32');
+  });
+
+  test("sizes camoufox's real VirtualDisplay, not only the mock", async () => {
+    const { VirtualDisplay } = await import('camoufox');
+    await register(mockApp, { ...ctx, VirtualDisplay }, { enabled: true, resolution: '1920x1080' });
+
+    const args = ctx.createVirtualDisplay().xvfbArgs;
+    expect(args.slice(args.indexOf('-screen'), args.indexOf('-screen') + 3)).toEqual(['-screen', '0', '1920x1080x24']);
   });
 
   test('removes display files only after its Xvfb process exits', async () => {
