@@ -837,29 +837,72 @@ export function authHeaders(spec, config) {
 }
 
 /**
+ * A tab create that outlived the server's deadline while the browser, or a big
+ * saved profile's restore, was still warming up: 503 with
+ * `code: 'tab_create_warming'` and a Retry-After. The work goes on server-side,
+ * so the same request is retried for up to WARMING_RETRY_BUDGET_MS, and the
+ * agent gets the tab or a final error rather than a warming error to retry.
+ */
+const WARMING_CODE = 'tab_create_warming';
+const WARMING_RETRY_BUDGET_MS = 90000;
+const WARMING_RETRY_DEFAULT_MS = 5000;
+
+const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isWarming(status, text) {
+  if (status !== 503) return false;
+  try {
+    return JSON.parse(text)?.code === WARMING_CODE;
+  } catch {
+    return false;
+  }
+}
+
+/** Retry-After as milliseconds: delta-seconds or an HTTP date; the default when absent or unreadable. */
+function retryAfterMs(value, now) {
+  if (value == null || value === '') return WARMING_RETRY_DEFAULT_MS;
+  const trimmed = String(value).trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? WARMING_RETRY_DEFAULT_MS : Math.max(0, at - now);
+}
+
+/**
  * Execute a request spec against a REST base URL. Shared by the MCP server and
  * the OpenClaw plugin so the wire-level behavior (auth headers, image decoding,
- * error formatting) is identical across hosts.
+ * error formatting, the warming retry) is identical across hosts.
  *
  * @param {string} baseUrl - REST server origin (e.g. http://localhost:9377).
  * @param {RequestSpec} spec
  * @param {{accessKey?: string, apiKey?: string}} config
+ * @param {{sleep?: (ms: number) => Promise<void>, now?: () => number, log?: (line: string) => void}} [io] -
+ *   Waits, clock and the one-line-per-retry log (stderr by default; stdout carries the MCP protocol).
  * @returns {Promise<unknown>} JSON value, or an image content block for image specs.
  * @throws {Error} on non-2xx, or when an image route returns non-image bytes.
  */
-export async function fetchSpec(baseUrl, spec, config) {
+export async function fetchSpec(baseUrl, spec, config, { sleep = realSleep, now = Date.now, log = (line) => console.error(line) } = {}) {
   const headers = {
     'Content-Type': 'application/json',
     ...authHeaders(spec, config),
   };
-  const res = await fetch(`${baseUrl}${spec.path}`, {
-    method: spec.method,
-    headers,
-    body: spec.body ? JSON.stringify(spec.body) : undefined,
-  });
-  if (!res.ok) {
+  const started = now();
+  let res;
+  for (let retries = 0; ; retries++) {
+    res = await fetch(`${baseUrl}${spec.path}`, {
+      method: spec.method,
+      headers,
+      body: spec.body ? JSON.stringify(spec.body) : undefined,
+    });
+    if (res.ok) break;
     const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
+    if (!isWarming(res.status, text)) throw new Error(`${res.status}: ${text}`);
+    const elapsed = now() - started;
+    const waitMs = retryAfterMs(res.headers.get('retry-after'), Date.now());
+    if (elapsed + waitMs > WARMING_RETRY_BUDGET_MS) {
+      throw new Error(`${res.status}: ${text} (still warming up after ${retries} retries over ${Math.round(elapsed / 1000)} s)`);
+    }
+    log(`[camofox] ${spec.method} ${spec.path.split('?')[0]}: 503 ${WARMING_CODE}, retry ${retries + 1} in ${Math.round(waitMs / 1000)} s (${Math.round(elapsed / 1000)} s of ${WARMING_RETRY_BUDGET_MS / 1000} s)`);
+    await sleep(waitMs);
   }
   if (spec.responseKind === 'image') {
     const contentType = res.headers.get('content-type') || '';
@@ -885,9 +928,10 @@ export async function fetchSpec(baseUrl, spec, config) {
  * @param {CallContext} ctx - { userId, sessionKey }.
  * @param {string} baseUrl - REST server origin.
  * @param {{apiKey?: string, accessKey?: string, cookiesDir: string}} config - server config.
+ * @param {object} [io] - fetchSpec's waits, clock and retry log.
  * @returns {Promise<{spec: RequestSpec, payload: unknown}>}
  */
-export async function runTool(name, args, ctx, baseUrl, config) {
+export async function runTool(name, args, ctx, baseUrl, config, io) {
   const { userId, sessionKey, ...rest } = args;
   // A profile is a signed-in identity, so a host reaches only the ones its operator listed.
   if (userId && userId !== ctx.userId && !(config.allowedUserIds || []).includes(userId)) {
@@ -900,7 +944,7 @@ export async function runTool(name, args, ctx, baseUrl, config) {
     name === 'camofox_import_cookies'
       ? await buildCookieRequest(args, ctx, config)
       : buildRequest(name, args, ctx);
-  const payload = await fetchSpec(baseUrl, spec, config);
+  const payload = await fetchSpec(baseUrl, spec, config, io);
   return { spec, payload };
 }
 
