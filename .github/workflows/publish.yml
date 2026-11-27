@@ -32,7 +32,6 @@ jobs:
 
       - name: Unit + plugin tests (Jest)
         run: |
-          npm install --no-save jest-junit
           node --experimental-vm-modules node_modules/.bin/jest \
             --testPathPatterns='tests/unit|plugins' \
             --testPathIgnorePatterns='security\.test|tabRecycling\.test|cookies\.test' \
