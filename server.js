@@ -1099,8 +1099,8 @@ function getTotalTabCount() {
 const DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = '1280x720x24';
 
 class DefaultVirtualDisplay extends VirtualDisplay {
-  get xvfb_args() {
-    const args = super.xvfb_args;
+  get xvfbArgs() {
+    const args = super.xvfbArgs;
     const idx = args.indexOf('0');
     if (idx > 0 && args[idx - 1] === '-screen') {
       const patched = [...args];
@@ -1115,7 +1115,7 @@ class DefaultVirtualDisplay extends VirtualDisplay {
     if (!proc || this.xvfbDisplayFilesCleanupRegistered) return super.kill();
 
     this.xvfbDisplayFilesCleanupRegistered = true;
-    const cleanup = () => removeXvfbDisplayFiles(this.display);
+    const cleanup = () => removeXvfbDisplayFiles(this._display);
     if (proc.exitCode === null) proc.once('exit', cleanup);
     else cleanup();
     return super.kill();
