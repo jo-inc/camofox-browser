@@ -215,6 +215,7 @@ Element refs are unambiguous and preferred over CSS selectors — a selector tha
 ## Troubleshooting
 
 - **`503 session_expired` / `tab create timed out`** — the REST server's browser session died (often after a prior failed call destabilized it). Restart `npm start`.
+- **`503 tab_create_warming`** — the browser, or a big saved profile's restore, was still warming up when the server's tab-create deadline passed; the work carries on server-side. The adapter retries it for you, honouring `Retry-After`, for up to about 90 s, and writes one line to stderr per retry. A tool call returns the tab, or a final error ending `(still warming up after N retries over S s)`.
 - **`camofox_scroll` returns `{ok:true}` but the page doesn't move** — expected on lazy-load / virtual-scroll pages; the server's `mouse.wheel` no-ops there. Use `camofox_evaluate` with `window.scrollTo` / `scrollBy`.
 - **`422 strict mode violation ... resolved to N elements`** on `click` — CSS selector matched multiple elements. Re-snapshot and click by element ref.
 - **`403 Forbidden` on `camofox_import_cookies`** — key mismatch between REST server and MCP server, or hitting a remote server without `CAMOFOX_API_KEY`.
