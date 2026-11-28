@@ -4813,10 +4813,11 @@ app.post('/tabs/:tabId/click', async (req, res) => {
       // Full mouse event sequence for stubborn JS click handlers (mirrors Swift WebView.swift)
       // Dispatches: mouseover -> mouseenter -> mousedown -> mouseup -> click
       const dispatchDomClick = async (locator) => {
+        const timeout = Math.max(500, Math.min(3000, remainingBudget()));
         await locator.evaluate((element) => {
           if (!(element instanceof HTMLElement)) throw new Error('Element is not an HTMLElement');
           element.click();
-        });
+        }, undefined, { timeout });
         log('info', 'DOM click dispatched after Playwright click failure');
       };
 
