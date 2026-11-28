@@ -171,13 +171,4 @@ describe('/type keyboard mode validation', () => {
       expect(errors).toContain('text is required');
     });
   });
-
-  describe('keyboard mode default delay', () => {
-    test('default delay is 30ms', () => {
-      // The /type route destructures { delay = 30 }
-      // Verify the contract
-      const defaults = { delay: 30 };
-      expect(defaults.delay).toBe(30);
-    });
-  });
 });

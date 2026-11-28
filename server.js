@@ -65,6 +65,7 @@ import { installViewportTransportShim } from './lib/viewport-transport-shim.js';
 import { createVirtualDisplayRegistry } from './lib/plugin-capabilities.js';
 import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
+import { typeKeys } from './lib/typing-rhythm.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
 import {
@@ -5481,7 +5482,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
   const tabId = req.params.tabId;
   
   try {
-    const { userId, ref, selector, text, mode = 'fill', delay = 30, submit = false, pressEnter = false } = req.body;
+    const { userId, ref, selector, text, mode = 'fill', delay, submit = false, pressEnter = false } = req.body;
     const session = sessions.get(normalizeUserId(userId));
     const found = session && findTab(session, tabId);
     if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
@@ -5530,7 +5531,7 @@ app.post('/tabs/:tabId/type', async (req, res) => {
         } else if (selector) {
           await tabState.page.focus(selector, { timeout: 10000 });
         }
-        await tabState.page.keyboard.type(text, { delay });
+        await typeKeys(tabState.page.keyboard, text, delay);
       }
       if (shouldSubmit) await tabState.page.keyboard.press('Enter');
     });
@@ -8561,7 +8562,7 @@ app.post('/act', async (req, res) => {
         }
         
         case 'type': {
-          const { ref, selector, text, submit, mode = 'fill', delay = 30 } = params;
+          const { ref, selector, text, submit, mode = 'fill', delay } = params;
           if (mode === 'fill' && !ref && !selector) {
             throw new Error('ref or selector required for mode=fill');
           }
@@ -8595,7 +8596,7 @@ app.post('/act', async (req, res) => {
             } else if (selector) {
               await tabState.page.focus(selector, { timeout: 10000 });
             }
-            await tabState.page.keyboard.type(text, { delay });
+            await typeKeys(tabState.page.keyboard, text, delay);
           }
           if (submit) await tabState.page.keyboard.press('Enter');
           return { ok: true, targetId };
