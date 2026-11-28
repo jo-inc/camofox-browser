@@ -67,6 +67,7 @@ import { killProcessIds } from './lib/browser-processes.js';
 import { createHealthProbe } from './lib/health-probe.js';
 import { snapshotOwnedBrowserProcesses, survivingOwnedBrowserProcesses, completedBrowserProfilePaths } from './lib/process-ownership.js';
 import { killWindowsProcessTree, refreshWindowsProcesses } from './lib/windows-processes.js';
+import { createNavigationCheck } from './lib/click-navigation.js';
 import {
   safePageUrl, urlDomain, hashIdentifier,
   isDeadContextError, isPageCrashedError, isTimeoutError,
@@ -4883,11 +4884,18 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           }
         }
         const click = async (options) => clickWithDownloadGuard(tabState, () => locator.click(options));
+        const navigatedSinceClick = createNavigationCheck(tabState.page);
+        const clickNavigated = async (err) => {
+          if (!(await navigatedSinceClick(Math.min(1000, remainingBudget())))) return false;
+          log('info', 'click navigated despite a click error, not retrying', { error: err?.message?.slice(0, 120) });
+          return true;
+        };
         
         if (onGoogleSerp) {
           try {
             await click({ timeout: 3000, force: true });
           } catch (forceErr) {
+            if (await clickNavigated(forceErr)) return;
             log('warn', 'google force click failed, trying DOM click fallback');
             await recoverForceClickFailure(locator);
           }
@@ -4898,12 +4906,14 @@ app.post('/tabs/:tabId/click', async (req, res) => {
           // First try normal click (respects visibility, enabled, not-obscured)
           await click({ timeout: 3000 });
         } catch (err) {
+          if (await clickNavigated(err)) return;
           // Fallback 1: If intercepted by overlay, retry with force
           if (err.message.includes('intercepts pointer events')) {
             log('warn', 'click intercepted, retrying with force');
             try {
               await click({ timeout: 3000, force: true });
             } catch (forceErr) {
+              if (await clickNavigated(forceErr)) return;
               log('warn', 'force click failed, trying DOM click fallback');
               await recoverForceClickFailure(locator);
             }
@@ -4912,6 +4922,7 @@ app.post('/tabs/:tabId/click', async (req, res) => {
             try {
               await click({ timeout: Math.max(1, Math.min(3000, remainingBudget())), force: true });
             } catch (forceErr) {
+              if (await clickNavigated(forceErr)) return;
               log('warn', 'force click failed, trying DOM click fallback');
               await recoverForceClickFailure(locator);
             }
