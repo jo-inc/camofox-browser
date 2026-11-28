@@ -142,6 +142,13 @@ export const TOOL_DEFS = [
         ref: { type: 'string', description: 'Element ref from snapshot (e.g., e2)' },
         selector: { type: 'string', description: 'CSS selector (alternative to ref)' },
         text: { type: 'string', description: 'Text to type' },
+        mode: {
+          type: 'string',
+          enum: ['fill', 'keyboard'],
+          description:
+            'fill (default): set the value at once, needs ref or selector. keyboard: real key presses, one character at a time, for inputs that ignore fill (contenteditable, some framework inputs); ref/selector optional, types into the focused element if omitted',
+        },
+        delay: { type: 'number', description: 'keyboard mode only: milliseconds between key presses (default 30)' },
         pressEnter: { type: 'boolean', description: 'Press Enter after typing' },
       },
       required: ['tabId', 'text'],

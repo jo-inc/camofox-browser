@@ -180,7 +180,7 @@ You should see 12 tools: `camofox_create_tab`, `camofox_snapshot`, `camofox_clic
 | `camofox_snapshot` | Accessibility snapshot + element refs (`e1`, `e2`, ...) + screenshot |
 | `camofox_navigate` | Go to a URL **or** use a search macro (`@google_search`, `@reddit_search`, ...) |
 | `camofox_click` | Click by element ref (`e1`) or CSS selector |
-| `camofox_type` | Type text into a ref/selector, optional `pressEnter` |
+| `camofox_type` | Type text into a ref/selector, optional `pressEnter`; `mode: "keyboard"` sends real key presses (optional `delay` ms between keys) |
 | `camofox_upload` | Attach files to an upload control; `path` (string or array) must be absolute and inside the REST server's `CAMOFOX_UPLOADS_DIR`, optional trigger `ref`/`selector` |
 | `camofox_scroll` | Scroll by pixels (unreliable on lazy-load pages — prefer `camofox_evaluate`) |
 | `camofox_screenshot` | Standalone screenshot, optional `fullPage: true` for the full scrollable page |

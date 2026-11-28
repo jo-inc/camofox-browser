@@ -115,6 +115,18 @@ describe('TOOL_DEFS', () => {
     expect(Object.keys(schema.properties)).toEqual(['tabId', 'path', 'ref', 'selector', 'timeout', 'userId', 'sessionKey']);
   });
 
+  test('type exposes the optional mode and delay of the REST route', () => {
+    const schema = TOOL_DEFS.find((t) => t.name === 'camofox_type').inputSchema;
+    expect(schema.properties.mode.enum).toEqual(['fill', 'keyboard']);
+    expect(schema.properties.delay.type).toBe('number');
+    expect(schema.required).toEqual(['tabId', 'text']);
+  });
+
+  test('type forwards mode and delay to the REST body', () => {
+    const spec = buildRequest('camofox_type', { tabId: 't1', text: 'hi', mode: 'keyboard', delay: 80 }, CTX);
+    expect(spec.body).toEqual({ text: 'hi', mode: 'keyboard', delay: 80, userId: 'u1' });
+  });
+
   test('screenshot exposes an optional fullPage boolean', () => {
     const schema = TOOL_DEFS.find((t) => t.name === 'camofox_screenshot').inputSchema;
     expect(schema.properties.fullPage.type).toBe('boolean');
